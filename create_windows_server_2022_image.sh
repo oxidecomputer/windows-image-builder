@@ -2,87 +2,132 @@
 set -eu
 trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
 
-WIN_IMAGE=${1:-"windows-server-2022-genericcloud-amd64.raw"}
-BLOCK_SZ=${2:-512}
+WIN_IMAGE=/work/out/windows-server-2022-genericcloud-amd64.raw
+
+WIN_ISO=windows-installer.iso
+WIN_REPACK=windows-installer.raw
+VIRTIO_ISO=virtio-win.iso
+OVMF_PATH=OVMF_CODE.fd
+WIN_TOML=windows-server-2022.toml
 
 WINDOWS_SERVER_ISO="https://software-static.download.prss.microsoft.com/sg/download/888969d5-f34g-4e03-ac9d-1f9786c66749/SERVER_EVAL_x64FRE_en-us.iso"
-WIN_ISO=windows-installer.iso
-
 VIRTIO_DRIVERS_ISO="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
-VIRTIO_ISO=virtio-win.iso
+OVMF_BLOB="https://oxide-omicron-build.s3.amazonaws.com/OVMF_CODE_20220922.fd"
 
-UNATTEND_ISO=unattend.iso
+pushd /work/tmp
 
-banner "Grabbing Windows Server 2022 ISO"
-wget --progress=dot:giga $WINDOWS_SERVER_ISO -O $WIN_ISO
+banner "OVMF"
+wget --progress=dot:giga $OVMF_BLOB -O $OVMF_PATH
 
-banner "Grabbing VirtIO Drivers ISO"
+banner "VirtIO"
 wget --progress=dot:giga $VIRTIO_DRIVERS_ISO -O $VIRTIO_ISO
 
-banner "Creating blank image"
+banner "Windows Server 2022"
+wget --progress=dot:giga $WINDOWS_SERVER_ISO -O $WIN_ISO
+
+# Begin re-packing the ISO
+
+# Create blank 5G image for the Windows Setup
+qemu-img create -f raw $WIN_REPACK 5G
+
+# Create GPT structures and a single partition w/ type 'Microsoft Basic Data'
+sgdisk -og $WIN_REPACK
+sgdisk -n=1:0:0 -t 1:0700 $WIN_REPACK
+
+# Create loopback
+WIN_INST_LOFI=${$(pfexec lofiadm -l -a $WIN_REPACK)/p0/s0}
+
+# Format partition as FAT32
+yes | pfexec mkfs -F pcfs -o fat=32 ${WIN_INST_LOFI/dsk/rdsk}
+
+# Mount partition
+mkdir iso-mount
+pfexec mount -F pcfs $WIN_INST_LOFI iso-mount
+
+# Extract original ISO into the mounted disk iamge
+# (Excluding install.wim)
+7z x '-xr!install.wim' $WIN_ISO -oiso-mount
+
+# Extract install.wim separately and split it across multiple files
+# so we don't hit the FAT32 limits
+7z e '-ir!install.wim' $WIN_ISO
+rm $WIN_ISO
+wimlib-imagex split install.wim iso-mount/sources/install.swm 3000
+rm install.wim
+
+# Autounattend.xml will drive the setup without any user input
+cp /work/src/unattend/Autounattend.xml iso-mount/
+
+# Copy any files we want to be installed alongside the OS
+#   $OEM$/$1/ corresponds to the root drive Windows will be installed to (i.e. C:\)
+OEM_PATH=iso-mount/sources/\$OEM\$/\$1/oxide
+mkdir -p $OEM_PATH
+
+# Setup script
+cp /work/src/unattend/OxidePrepBaseImage.ps1 $OEM_PATH/
+
+# Drivers:
+# We don't need this past `offlineServicing` which is still during Windows Setup
+# so no need to copy to $OEM_PATH. Just keep it on the install disk.
+7z e $VIRTIO_ISO -oiso-mount/virtio-drivers/ {viostor,NetKVM}/2k22/amd64/\*.{cat,inf,sys}
+
+# Cloudbase-init config
+mkdir $OEM_PATH/cloudbase/
+cp -r /work/src/unattend/cloudbase-* $OEM_PATH/cloudbase/
+
+pfexec umount iso-mount
+pfexec lofiadm -d $WIN_INST_LOFI
+
+# Create blank image we'll install Windows to
 qemu-img create -f raw $WIN_IMAGE 32G
 
-banner "Creating Unattended scripts & config ISO"
-genisoimage -J -R -o $UNATTEND_ISO unattend
+cat << EOF >$WIN_TOML
+[main]
+name = "windows-server-2022"
+cpus = 2
+memory = 2048
+bootrom = "$OVMF_PATH"
 
-QEMU_ARGS=(
-	-nodefaults
-    -enable-kvm
-    -M pc
-    -m 2048
-    -cpu host,kvm=off,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time
-    -smp 2,sockets=1,cores=2
-    -rtc base=localtime
-    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd
+[block_dev.win_image]
+type = "file"
+path = "$WIN_IMAGE"
+[dev.block0]
+driver = "pci-nvme"
+block_dev = "win_image"
+pci-path = "0.16.0"
 
-    -netdev user,id=net0
-    -device virtio-net-pci,netdev=net0
+[block_dev.win_iso]
+type = "file"
+path = "$WIN_REPACK"
+[dev.block1]
+driver = "pci-nvme"
+block_dev = "win_iso"
+pci-path = "0.17.0"
 
-    -device nvme,drive=drivec,serial=deadbeef,physical_block_size=$BLOCK_SZ,logical_block_size=$BLOCK_SZ,discard_granularity=$BLOCK_SZ
-    -drive if=none,id=drivec,file=$WIN_IMAGE,format=raw
+[dev.net0]
+driver = "pci-virtio-viona"
+vnic = "vnic0"
+pci-path = "0.8.0"
+EOF
 
-    -device ide-cd,drive=win-disk,id=cd-disk0,unit=0,bus=ide.0
-    -drive file=$WIN_ISO,if=none,id=win-disk,media=cdrom
+banner "Creating image"
+pfexec propolis-standalone $WIN_TOML &
+PROPOLIS_PID=$!
 
-    -device ide-cd,drive=virtio-disk,id=cd-disk1,unit=0,bus=ide.1
-    -drive file=$VIRTIO_ISO,if=none,id=virtio-disk,media=cdrom
+# Kick off propolis and wait for the installation to finish
+nc -Uz ttya
+wait $PROPOLIS_PID
 
-    -device ide-cd,drive=unattend-disk,id=cd-disk3,unit=1,bus=ide.0
-    -drive file=$UNATTEND_ISO,if=none,id=unattend-disk,media=cdrom
-
-    -serial stdio
-    -monitor telnet:localhost:8888,server,nowait
-    -display none
-)
-qemu-system-x86_64 "${QEMU_ARGS[@]}" &
-QEMU_PID=$!
-
-banner "Waiting for QEMU to start"
-while ! nc -z localhost 8888; do
-    sleep 1
-done
-
-banner "Starting Windows Server 2022 install"
-# Get past "Press any key to boot from CD or DVD" prompt
-for i in {1..20}; do
-    echo "sendkey ret" | nc -N localhost 8888 >/dev/null || true
-    sleep 1
-done
-
-# Wait for QEMU to finish
-wait $QEMU_PID
-
-banner "Shrinking image"
 # Find the bounds of the last partition (OS partition)
 SECTOR_SZ=$(sgdisk -p $WIN_IMAGE | grep -i "Sector size" | awk '{ print $4; }')
 OS_PART_END_SECTOR=$(sgdisk -i 4 $WIN_IMAGE | grep "Last sector" | awk '{ print $3; }')
 OS_PART_END=$(echo "$OS_PART_END_SECTOR * $SECTOR_SZ" | bc)
 # Resize the image to the end of the last partition + 33 sectors for the secondary GPT table at the end of the disk
 NEW_SIZE=$(echo "($OS_PART_END + ($SECTOR_SZ - ($OS_PART_END % $SECTOR_SZ))) + 33 * $SECTOR_SZ" | bc)
-qemu-img resize -f raw --shrink $WIN_IMAGE $NEW_SIZE
+qemu-img resize -f raw $WIN_IMAGE $NEW_SIZE
 # Repair secondary GPT table
 sgdisk -e $WIN_IMAGE
-# Sparsify the image
-sudo virt-sparsify --in-place $WIN_IMAGE
+
+popd # /work/tmp
 
 banner "Done!"

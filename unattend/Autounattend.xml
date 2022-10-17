@@ -95,22 +95,7 @@
             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <DriverPaths>
                 <PathAndCredentials wcm:action="add" wcm:keyValue="1">
-                    <Path>D:\NetKVM\2k22\amd64</Path>
-                </PathAndCredentials>
-                <PathAndCredentials wcm:action="add" wcm:keyValue="2">
-                    <Path>D:\viostor\2k22\amd64</Path>
-                </PathAndCredentials>
-                <PathAndCredentials wcm:action="add" wcm:keyValue="3">
-                    <Path>E:\NetKVM\2k22\amd64</Path>
-                </PathAndCredentials>
-                <PathAndCredentials wcm:action="add" wcm:keyValue="4">
-                    <Path>E:\viostor\2k22\amd64</Path>
-                </PathAndCredentials>
-                <PathAndCredentials wcm:action="add" wcm:keyValue="5">
-                    <Path>F:\NetKVM\2k22\amd64</Path>
-                </PathAndCredentials>
-                <PathAndCredentials wcm:action="add" wcm:keyValue="6">
-                    <Path>F:\viostor\2k22\amd64</Path>
+                    <Path>C:\virtio-drivers</Path>
                 </PathAndCredentials>
             </DriverPaths>
         </component>
@@ -130,7 +115,7 @@
                 <RunSynchronousCommand wcm:action="add">
                     <Description>Prepare Oxide base image</Description>
                     <Order>1</Order>
-                    <Path>cmd /c "(FOR %i IN (D E F) DO IF EXIST %i:\OxidePrepBaseImage.ps1 Powershell -ExecutionPolicy ByPass %i:\OxidePrepBaseImage.ps1) & pause"</Path>
+                    <Path>cmd /c "(Powershell -ExecutionPolicy ByPass C:\oxide\OxidePrepBaseImage.ps1) & pause"</Path>
                     <WillReboot>OnRequest</WillReboot>
                 </RunSynchronousCommand>
             </RunSynchronous>
