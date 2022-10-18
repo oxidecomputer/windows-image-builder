@@ -30,10 +30,10 @@ ln -s $(pwd) /work/src
 
 export PATH=$PATH:/work/bin
 
-TMP_DEV=$(pfexec ramdiskadm -a work 12g)
-yes | pfexec newfs $TMP_DEV
-pfexec mount $TMP_DEV /work/tmp
-pfexec chmod 1777 /work/tmp
+# TMP_DEV=$(pfexec ramdiskadm -a work 12g)
+# yes | pfexec newfs $TMP_DEV
+# pfexec mount $TMP_DEV /work/tmp
+# pfexec chmod 1777 /work/tmp
 
 banner prerequisites
 ptime -m bash ./install_prerequisites.sh
