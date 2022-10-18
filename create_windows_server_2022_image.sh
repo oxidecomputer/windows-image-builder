@@ -35,7 +35,8 @@ sgdisk -og $WIN_REPACK
 sgdisk -n=1:0:0 -t 1:0700 $WIN_REPACK
 
 # Create loopback
-WIN_INST_LOFI=${$(pfexec lofiadm -l -a $WIN_REPACK)/p0/s0}
+WIN_INST_LOFI=$(pfexec lofiadm -l -a $WIN_REPACK)
+WIN_INST_LOFI=${WIN_INST_LOFI/p0/s0}
 
 # Format partition as FAT32
 yes | pfexec mkfs -F pcfs -o fat=32 ${WIN_INST_LOFI/dsk/rdsk}
