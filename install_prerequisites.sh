@@ -1,5 +1,5 @@
 #!/bin/bash
-set -eu
+set -eux
 
 packages=(
     'pkg:/system/kvm'

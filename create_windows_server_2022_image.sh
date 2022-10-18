@@ -1,5 +1,5 @@
 #!/bin/bash
-set -eu
+set -eux
 trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
 
 WIN_IMAGE=/work/out/windows-server-2022-genericcloud-amd64.raw
