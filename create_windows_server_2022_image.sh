@@ -115,7 +115,8 @@ banner "Creating image"
 pfexec propolis-standalone $WIN_TOML &
 PROPOLIS_PID=$!
 
-# Kick off propolis and dump the VM's COM1 output
+# Kick off propolis once its ready and dump the VM's COM1 output
+while [ ! -e ttya ]; do sleep 1; done
 nc -Ud ttya &
 
 # Wait for the installation to finish
