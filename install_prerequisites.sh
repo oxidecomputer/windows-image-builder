@@ -5,6 +5,7 @@ packages=(
     'pkg:/system/kvm'
 )
 
+rc=0
 { pfexec pkg install -v "${packages[@]}" || rc=$?; }
 # Return codes:
 #  0: Normal Success
