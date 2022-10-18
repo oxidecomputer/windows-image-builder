@@ -5,7 +5,8 @@
 #: target = "helios"
 #: rust_toolchain = "stable"
 #: output_rules = [
-#:	"=/work/out/windows-server-2022-genericcloud-amd64.*",
+#:	"=/work/out/windows-server-2022-genericcloud-amd64.raw",
+#:	"=/work/out/windows-server-2022-genericcloud-amd64.sha256.txt",
 #: ]
 #:
 #: [[publish]]
