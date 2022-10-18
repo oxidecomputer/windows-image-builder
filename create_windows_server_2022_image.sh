@@ -114,8 +114,10 @@ banner "Creating image"
 pfexec propolis-standalone $WIN_TOML &
 PROPOLIS_PID=$!
 
-# Kick off propolis and wait for the installation to finish
-nc -Uz ttya
+# Kick off propolis and dump the VM's COM1 output
+nc -Ud ttya &
+
+# Wait for the installation to finish
 wait $PROPOLIS_PID
 
 # Find the bounds of the last partition (OS partition)

@@ -115,7 +115,7 @@
                 <RunSynchronousCommand wcm:action="add">
                     <Description>Prepare Oxide base image</Description>
                     <Order>1</Order>
-                    <Path>cmd /c "(Powershell -ExecutionPolicy ByPass C:\oxide\OxidePrepBaseImage.ps1) & pause"</Path>
+                    <Path>cmd /c "mode COM1 BAUD=115200 PARITY=n DATA=8 & (Powershell -ExecutionPolicy ByPass C:\oxide\OxidePrepBaseImage.ps1 >\\.\COM1) & pause"</Path>
                     <WillReboot>OnRequest</WillReboot>
                 </RunSynchronousCommand>
             </RunSynchronous>
