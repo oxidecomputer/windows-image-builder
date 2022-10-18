@@ -2,7 +2,7 @@
 #:
 #: name = "Windows Server 2022"
 #: variety = "basic"
-#: target = "helios"
+#: target = "lab"
 #: rust_toolchain = "stable"
 #: output_rules = [
 #:	"=/work/out/windows-server-2022-genericcloud-amd64.raw",
