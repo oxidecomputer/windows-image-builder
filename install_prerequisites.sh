@@ -1,19 +1,6 @@
 #!/bin/bash
 set -eux
 
-packages=(
-    'pkg:/system/kvm' # qemu-img
-)
-
-rc=0
-{ pfexec pkg install -v "${packages[@]}" || rc=$?; }
-# Return codes:
-#  0: Normal Success
-#  4: Failure because we're already up-to-date. Also acceptable.
-if [[ "$rc" -ne 4 ]] && [[ "$rc" -ne 0 ]]; then
-    exit "$rc"
-fi
-
 # Install package for qemu-img
 # (rc=4 if package already installed)
 rc=0;
