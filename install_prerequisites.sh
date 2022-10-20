@@ -14,6 +14,17 @@ if [[ "$rc" -ne 4 ]] && [[ "$rc" -ne 0 ]]; then
     exit "$rc"
 fi
 
+# Install package for qemu-img
+# (rc=4 if package already installed)
+rc=0;
+{ pfexec pkg install -v pkg:/system/kvm || rc=$?; }
+if [[ "$rc" -ne 4 ]] && [[ "$rc" -ne 0 ]]; then
+    exit "$rc"
+fi
+# We also want qemu-img in the next pass so just copy it over
+# we're going from one helios box to another so it's prolly fine...
+cp $(which qemu-img) /work/bin
+
 pushd /work/tmp
 
 REMOVE_DIRS=()
@@ -80,13 +91,6 @@ REMOVE_DIRS+=($(pwd))
 cargo build --release --bin propolis-standalone
 mv target/release/propolis-standalone /work/bin
 popd # propolis
-
-# Create vNIC for VM
-# TODO: move to runner job
-NIC_NAME="vnic0"
-NIC_MAC="02:08:20:ac:e9:30"
-NIC_LINK="$(dladm show-phys -po LINK | tail -1)"
-pfexec dladm create-vnic -t -l $NIC_LINK -m $NIC_MAC $NIC_NAME
 
 popd # /work/tmp
 
