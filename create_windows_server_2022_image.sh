@@ -1,6 +1,5 @@
 #!/bin/bash
 set -eux
-trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
 
 WIN_IMAGE=/work/out/windows-server-2022-genericcloud-amd64.raw
 
@@ -28,40 +27,51 @@ wget --progress=dot:giga $WINDOWS_SERVER_ISO -O $WIN_ISO
 # Begin re-packing the ISO
 
 # Create blank 5G image for the Windows Setup
-qemu-img create -f raw $WIN_REPACK 5G
+qemu-img create -f raw $WIN_REPACK 5.5G
 
-# Create GPT structures and a single partition w/ type 'Microsoft Basic Data'
+# Create GPT structures
 sgdisk -og $WIN_REPACK
-sgdisk -n=1:0:0 -t 1:0700 $WIN_REPACK
+
+# The Windows install image (install.wim) is larger than 4G and so can't be stored on a FAT32 partition.
+# But the Windows installer supports loading the install.wim from a separate partition.
+#   https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/winpe--use-a-single-usb-key-for-winpe-and-a-wim-file---wim?view=windows-11#option-1-create-a-multiple-partition-usb-drive
+# So we create a 1G FAT32 partition for the Windows installer and a 4.5G NTFS partition for the install.wim.
+sgdisk -n=1:0:+1G -t 1:0700 -n=2:0:0 -t 2:0700 $WIN_REPACK
+
+# Assign specific GUIDs to the partitions so we can refer to them unambiguously from Autounattend.xml
+sgdisk -u 1:569CBD84-352D-44D9-B92D-BF25B852925B -u 2:A94E24F7-92C9-405C-82AA-9A1B45BA180C $WIN_REPACK
 
 # Create loopback
 WIN_INST_LOFI=$(pfexec lofiadm -l -a $WIN_REPACK)
-WIN_INST_LOFI=${WIN_INST_LOFI/p0/s0}
+WIN_INST_LOFI_BOOT=${WIN_INST_LOFI/p0/s0}
+WIN_INST_LOFI_SETUP=${WIN_INST_LOFI/p0/s1}
 
-# Format partition as FAT32
-yes | pfexec mkfs -F pcfs -o fat=32 ${WIN_INST_LOFI/dsk/rdsk}
+# Format first partition as FAT32 and mount it
+yes | pfexec mkfs -F pcfs -o fat=32 ${WIN_INST_LOFI_BOOT/dsk/rdsk}
+mkdir setup-boot-mount
+pfexec mount -F pcfs $WIN_INST_LOFI_BOOT setup-boot-mount
 
-# Mount partition
-mkdir iso-mount
-pfexec mount -F pcfs $WIN_INST_LOFI iso-mount
+# Copy everything but the install.wim to the first partition
+7z x '-x!sources/install.wim' $WIN_ISO -osetup-boot-mount
 
-# Extract original ISO into the mounted disk iamge
-# (Excluding install.wim)
-7z x '-xr!install.wim' $WIN_ISO -oiso-mount
+# Format second partition as NTFS and mount it
+SECTOR_SZ=$(sgdisk -p $WIN_REPACK | grep -i "Sector size" | awk '{ print $4; }')
+PART_SECT_START=$(sgdisk -i 2 $WIN_REPACK | grep "First sector" | awk '{ print $3; }')
+NUM_SECT=$(sgdisk -i 2 $WIN_REPACK | grep "Partition size" | awk '{ print $3; }')
+pfexec mkntfs -Q -s $SECTOR_SZ -p $PART_SECT_START -H 16 -S 63 $WIN_INST_LOFI_SETUP $NUM_SECT
+mkdir setup-mount
+pfexec ntfs-3g $WIN_INST_LOFI_SETUP setup-mount
 
-# Extract install.wim separately and split it across multiple files
-# so we don't hit the FAT32 limits
-7z e '-ir!install.wim' $WIN_ISO
+# Extract install.wim into NTFS partition
+7z e '-i!sources/install.wim' $WIN_ISO -osetup-mount
 rm $WIN_ISO
-wimlib-imagex split install.wim iso-mount/sources/install.swm 3000
-rm install.wim
 
 # Autounattend.xml will drive the setup without any user input
-cp /work/src/unattend/Autounattend.xml iso-mount/
+cp /work/src/unattend/Autounattend.xml setup-boot-mount/
 
 # Copy any files we want to be installed alongside the OS
 #   $OEM$/$1/ corresponds to the root drive Windows will be installed to (i.e. C:\)
-OEM_PATH=iso-mount/sources/\$OEM\$/\$1/oxide
+OEM_PATH=setup-boot-mount/sources/\$OEM\$/\$1/oxide
 mkdir -p $OEM_PATH
 
 # Setup script
@@ -70,13 +80,14 @@ cp /work/src/unattend/OxidePrepBaseImage.ps1 $OEM_PATH/
 # Drivers:
 # We don't need this past `offlineServicing` which is still during Windows Setup
 # so no need to copy to $OEM_PATH. Just keep it on the install disk.
-7z e $VIRTIO_ISO -oiso-mount/virtio-drivers/ {viostor,NetKVM}/2k22/amd64/\*.{cat,inf,sys}
+7z e $VIRTIO_ISO -osetup-boot-mount/virtio-drivers/ {viostor,NetKVM}/2k22/amd64/\*.{cat,inf,sys}
 
 # Cloudbase-init config
 mkdir $OEM_PATH/cloudbase/
 cp -r /work/src/unattend/cloudbase-* $OEM_PATH/cloudbase/
 
-pfexec umount iso-mount
+pfexec umount setup-boot-mount
+pfexec umount setup-mount
 pfexec lofiadm -d $WIN_INST_LOFI
 
 # Create blank image we'll install Windows to
