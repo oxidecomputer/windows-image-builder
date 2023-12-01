@@ -1,0 +1,446 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+use std::{
+    process::{Command, Stdio},
+    str::FromStr,
+};
+
+use anyhow::Context as _;
+use camino::Utf8PathBuf;
+use itertools::iproduct;
+
+use crate::{
+    runner::{Script, ScriptStep},
+    util::{grep_command_for_row_and_column, run_command_check_status},
+};
+
+use super::BuildInstallationDiskArgs;
+
+pub struct BuildInstallationDiskScript {
+    steps: Vec<ScriptStep>,
+    args: BuildInstallationDiskArgs,
+}
+
+impl BuildInstallationDiskScript {
+    pub(super) fn new(script_args: BuildInstallationDiskArgs) -> Self {
+        Self { steps: get_script(), args: script_args }
+    }
+}
+
+impl Script for BuildInstallationDiskScript {
+    fn steps(&self) -> &[ScriptStep] {
+        self.steps.as_slice()
+    }
+
+    fn file_prerequisites(&self) -> Vec<Utf8PathBuf> {
+        let mut prereqs = self.args.file_prerequisites();
+        for file in ["cloudbase-init.conf", "cloudbase-init-unattend.conf"] {
+            let mut cloudbase_init = self.args.unattend_dir.clone();
+            cloudbase_init.push(file);
+            prereqs.push(cloudbase_init);
+        }
+
+        prereqs
+    }
+
+    fn initial_context(&self) -> std::collections::HashMap<String, String> {
+        let args = &self.args;
+        [
+            ("work_dir".to_string(), args.work_dir.to_string()),
+            ("windows_iso".to_string(), args.windows_iso.to_string()),
+            ("virtio_iso".to_string(), args.virtio_iso.to_string()),
+            ("unattend_dir".to_string(), args.unattend_dir.to_string()),
+            ("output_image".to_string(), args.output_image.to_string()),
+        ]
+        .into_iter()
+        .collect()
+    }
+}
+
+fn get_script() -> Vec<ScriptStep> {
+    let steps = vec![
+        ScriptStep::with_prereqs(
+            "create new disk to hold installer image",
+            |ctx| {
+                run_command_check_status(Command::new("qemu-img").args([
+                    "create",
+                    "-f",
+                    "raw",
+                    ctx.get_var("output_image").unwrap(),
+                    "5.5G",
+                ]))
+                .map(|_| ())
+            },
+            &["qemu-img"],
+        ),
+        ScriptStep::with_prereqs(
+            "set up GPT partition table on installer disk",
+            |ctx| {
+                run_command_check_status(
+                    Command::new("sgdisk")
+                        .args(["-og", ctx.get_var("output_image").unwrap()]),
+                )
+                .map(|_| ())
+            },
+            &["sgdisk"],
+        ),
+        ScriptStep::with_prereqs(
+            "create partitions on installer disk",
+            |ctx| {
+                run_command_check_status(Command::new("sgdisk").args([
+                    "-n=1:0:+1G",
+                    "-t",
+                    "1:0700",
+                    "-n=2:0:0",
+                    "-t",
+                    "2:0700",
+                    ctx.get_var("output_image").unwrap(),
+                ]))
+                .map(|_| ())
+            },
+            &["sgdisk"],
+        ),
+        ScriptStep::with_prereqs(
+            "set partition IDs for partitions on installer disk",
+            |ctx| {
+                // N.B. These partition GUIDs must match the GUIDs in
+                // Autounattend.xml.
+                const PARTITION_GUID_1: &str =
+                    "569CBD84-352D-44D9-B92D-BF25B852925B";
+                const PARTITION_GUID_2: &str =
+                    "A94E24F7-92C9-405C-82AA-9A1B45BA180C";
+
+                run_command_check_status(Command::new("sgdisk").args([
+                    "-u",
+                    &format!("1:{PARTITION_GUID_1}"),
+                    "-u",
+                    &format!("2:{PARTITION_GUID_2}"),
+                    ctx.get_var("output_image").unwrap(),
+                ]))
+                .map(|_| ())
+            },
+            &["sgdisk"],
+        ),
+        ScriptStep::new("mount installation image as loopback device", |ctx| {
+            let repack_loop =
+                run_command_check_status(Command::new("pfexec").args([
+                    "lofiadm",
+                    "-l",
+                    "-a",
+                    ctx.get_var("output_image").unwrap(),
+                ]))?;
+
+            // `lofiadm` returns a path to a partition on the loopback disk
+            // device. Subsequent commands want to operate on slices instead.
+            // Compute the relevant slice paths and stash them in the context.
+            let repack_loop =
+                String::from_utf8_lossy(&repack_loop.stdout).to_string();
+            let block_device = repack_loop
+                .strip_prefix("/dev/dsk/")
+                .ok_or(anyhow::anyhow!(
+                    "loopback device not mounted under /dev/dsk"
+                ))?
+                .trim_end()
+                .strip_suffix("p0")
+                .ok_or(anyhow::anyhow!(
+                    "loopback device path does not end in partition ID 'p0'"
+                ))?;
+
+            ctx.set_var("repack_loop", repack_loop.trim_end().to_string());
+            ctx.set_var(
+                "repack_loop_setup_raw",
+                format!("/dev/rdsk/{}s0", block_device),
+            );
+            ctx.set_var(
+                "repack_loop_setup",
+                format!("/dev/dsk/{}s0", block_device),
+            );
+            ctx.set_var(
+                "repack_loop_image",
+                format!("/dev/dsk/{}s1", block_device),
+            );
+
+            Ok(())
+        }),
+        ScriptStep::new("create FAT32 filesystem on WinPE partition", |ctx| {
+            let yes_cmd = Command::new("yes").stdout(Stdio::piped()).spawn()?;
+            run_command_check_status(
+                Command::new("pfexec")
+                    .args([
+                        "mkfs",
+                        "-F",
+                        "pcfs",
+                        "-o",
+                        "fat=32",
+                        &ctx.get_var("repack_loop_setup_raw").unwrap(),
+                    ])
+                    .stdin(Stdio::from(yes_cmd.stdout.ok_or(
+                        anyhow::anyhow!(
+                            "failed to get stdout from 'yes' to pipe to 'mkfs'"
+                        ),
+                    )?)),
+            )
+            .map(|_| ())
+        }),
+        ScriptStep::new("mount WinPE partition", |ctx| {
+            let mut setup_mount =
+                Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap())
+                    .unwrap();
+
+            setup_mount.push("setup-mount");
+            std::fs::create_dir_all(&setup_mount)
+                .context("mounting WinPE partition")?;
+
+            run_command_check_status(Command::new("pfexec").args([
+                "mount",
+                "-F",
+                "pcfs",
+                &ctx.get_var("repack_loop_setup").unwrap(),
+                setup_mount.as_str(),
+            ]))?;
+
+            ctx.set_var("setup_mount", setup_mount.to_string());
+            Ok(())
+        }),
+        ScriptStep::with_prereqs(
+            "extract setup files to WinPE partition",
+            |ctx| {
+                // This is an expensive operation, so make `7z` inherit the
+                // runner's stdout so that progress displays in the terminal.
+                run_command_check_status(
+                    Command::new("7z")
+                        .args([
+                            "x",
+                            "-x!sources/install.wim",
+                            ctx.get_var("windows_iso").unwrap(),
+                            &format!(
+                                "-o{}",
+                                &ctx.get_var("setup_mount").unwrap()
+                            ),
+                        ])
+                        .stdout(Stdio::inherit()),
+                )
+                .map(|_| ())
+            },
+            &["7z"],
+        ),
+        ScriptStep::new("copying unattend scripts to WinPE partition", |ctx| {
+            let setup_mount = ctx.get_var("setup_mount").unwrap();
+            let unattend_dir =
+                Utf8PathBuf::from_str(ctx.get_var("unattend_dir").unwrap())
+                    .unwrap();
+
+            for filename in [
+                "Autounattend.xml",
+                "OxidePrepBaseImage.ps1",
+                "specialize-unattend.xml",
+            ] {
+                let mut unattend = unattend_dir.clone();
+                unattend.push(filename);
+                let mut dst = Utf8PathBuf::from_str(setup_mount).unwrap();
+                dst.push(filename);
+                std::fs::copy(&unattend, &dst).with_context(|| {
+                    format!("copying {filename} to WinPE partition")
+                })?;
+            }
+
+            Ok(())
+        }),
+        ScriptStep::new(
+            "copying cloudbase-init scripts to WinPE partition",
+            |ctx| {
+                let unattend_dir =
+                    Utf8PathBuf::from_str(ctx.get_var("unattend_dir").unwrap())
+                        .unwrap();
+                let mut cloudbase_dir =
+                    Utf8PathBuf::from_str(ctx.get_var("setup_mount").unwrap())
+                        .unwrap();
+                cloudbase_dir.push("cloudbase-init");
+                std::fs::create_dir_all(&cloudbase_dir).context(
+                    "creating cloudbase-init directory in WinPE partition",
+                )?;
+                for filename in
+                    ["cloudbase-init-unattend.conf", "cloudbase-init.conf"]
+                {
+                    let mut unattend = unattend_dir.clone();
+                    unattend.push(filename);
+                    let mut dst = cloudbase_dir.clone();
+                    dst.push(filename);
+                    std::fs::copy(&unattend, &dst).with_context(|| {
+                        format!("copying {filename} to WinPE partition")
+                    })?;
+                }
+
+                Ok(())
+            },
+        ),
+        ScriptStep::with_prereqs(
+            "copying virtio drivers to WinPE partition",
+            |ctx| {
+                let setup_mount = ctx.get_var("setup_mount").unwrap();
+                for (driver, ext) in
+                    iproduct!(["viostor", "NetKVM"], ["cat", "inf", "sys"])
+                {
+                    run_command_check_status(
+                        Command::new("7z")
+                            .args([
+                                "e",
+                                ctx.get_var("virtio_iso").unwrap(),
+                                &format!("-o{}/virtio-drivers/", setup_mount),
+                                // TODO(gjc) allow different driver versions
+                                &format!("{driver}/2k22/amd64/*.{ext}"),
+                            ])
+                            .stdout(Stdio::inherit()),
+                    )?;
+                }
+                Ok(())
+            },
+            &["7z"],
+        ),
+        ScriptStep::new("unmounting WinPE partition", |ctx| {
+            let setup_mount = ctx.get_var("setup_mount").unwrap();
+            run_command_check_status(
+                Command::new("pfexec").args(["umount", setup_mount]),
+            )
+            .map(|_| ())
+        }),
+        ScriptStep::with_prereqs(
+            "reading partition parameters for WIM partition",
+            |ctx| {
+                let sector_size = grep_command_for_row_and_column(
+                    Command::new("sgdisk")
+                        .args(["-p", ctx.get_var("output_image").unwrap()]),
+                    "Sector size",
+                    3,
+                )
+                .context("getting sector size from 'sgdisk -p'")?;
+
+                let first_sector = grep_command_for_row_and_column(
+                    Command::new("sgdisk").args([
+                        "-i",
+                        "2",
+                        ctx.get_var("output_image").unwrap(),
+                    ]),
+                    "First sector",
+                    2,
+                )
+                .context("getting first sector offset from 'sgdisk -i'")?;
+
+                let partition_sectors = grep_command_for_row_and_column(
+                    Command::new("sgdisk").args([
+                        "-i",
+                        "2",
+                        ctx.get_var("output_image").unwrap(),
+                    ]),
+                    "Partition size",
+                    2,
+                )
+                .context("getting partition sector count from 'sgdisk -i'")?;
+
+                ctx.set_var("sector_size", sector_size);
+                ctx.set_var("first_sector", first_sector);
+                ctx.set_var("partition_sectors", partition_sectors);
+
+                Ok(())
+            },
+            &["sgdisk"],
+        ),
+        ScriptStep::with_prereqs(
+            "creating NTFS filesystem on WIM partition",
+            |ctx| {
+                let sector_size = ctx.get_var("sector_size").unwrap();
+                let first_sector = ctx.get_var("first_sector").unwrap();
+                let partition_sectors =
+                    ctx.get_var("partition_sectors").unwrap();
+                let repack_loop_image =
+                    ctx.get_var("repack_loop_image").unwrap();
+
+                run_command_check_status(Command::new("pfexec").args([
+                    "mkntfs",
+                    "-Q",
+                    "-s",
+                    sector_size,
+                    "-p",
+                    first_sector,
+                    "-H",
+                    "16",
+                    "-S",
+                    "63",
+                    repack_loop_image,
+                    partition_sectors,
+                ]))
+                .map(|_| ())
+            },
+            &["mkntfs"],
+        ),
+        ScriptStep::with_prereqs(
+            "mounting WIM partition",
+            |ctx| {
+                let mut image_mount =
+                    Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap())
+                        .unwrap();
+                image_mount.push("image-mount");
+                std::fs::create_dir_all(&image_mount)
+                    .context("creating mount point for WIM partition")?;
+
+                let repack_loop_image =
+                    ctx.get_var("repack_loop_image").unwrap();
+
+                run_command_check_status(Command::new("pfexec").args([
+                    "ntfs-3g",
+                    repack_loop_image,
+                    image_mount.as_str(),
+                ]))
+                .map(|_| ())?;
+
+                ctx.set_var("image_mount", image_mount.to_string());
+                Ok(())
+            },
+            &["ntfs-3g"],
+        ),
+        ScriptStep::with_prereqs(
+            "unpacking install.wim into WIM partition",
+            |ctx| {
+                run_command_check_status(
+                    Command::new("7z")
+                        .args([
+                            "e",
+                            "-i!sources/install.wim",
+                            ctx.get_var("windows_iso").unwrap(),
+                            &format!(
+                                "-o{}",
+                                ctx.get_var("image_mount").unwrap()
+                            ),
+                        ])
+                        .stdout(Stdio::inherit()),
+                )
+                .map(|_| ())
+            },
+            &["7z"],
+        ),
+        ScriptStep::new("unmounting image partition", |ctx| {
+            run_command_check_status(
+                Command::new("pfexec")
+                    .args(["umount", ctx.get_var("image_mount").unwrap()]),
+            )
+            .map(|_| ())
+        }),
+        ScriptStep::new("flushing changes to disk", |_ctx| {
+            let mut sync = Command::new("sync");
+            run_command_check_status(&mut sync).map(|_| ())
+        }),
+        ScriptStep::new("remove loopback device", |ctx| {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            run_command_check_status(Command::new("pfexec").args([
+                "lofiadm",
+                "-d",
+                ctx.get_var("repack_loop").unwrap(),
+            ]))
+            .map(|_| ())
+        }),
+    ];
+
+    steps
+}
