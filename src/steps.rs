@@ -20,6 +20,57 @@ pub fn create_output_image(image_path: &str) -> Result<()> {
     .map(|_| ())
 }
 
+pub struct GptPartitionInformation {
+    pub sector_size: String,
+    pub first_sector: String,
+    pub last_sector: String,
+    pub partition_sectors: String,
+}
+
+/// Uses `sgdisk` to get the sector size, first and last sector offset, and
+/// partition size (in sectors) for an arbitrary partition ID in the supplied
+/// image.
+pub fn get_gpt_partition_information(
+    image_path: &str,
+    partition_id: u32,
+) -> Result<GptPartitionInformation> {
+    let partition_id_string = partition_id.to_string();
+    let sector_size = grep_command_for_row_and_column(
+        Command::new("sgdisk").args(["-p", image_path]),
+        "Sector size",
+        3,
+    )
+    .context("running 'sgdisk -p' to get sector size")?;
+
+    let first_sector = grep_command_for_row_and_column(
+        Command::new("sgdisk").args(["-i", &partition_id_string, image_path]),
+        "First sector",
+        2,
+    )
+    .context("getting first sector offset from 'sgdisk -i'")?;
+
+    let last_sector = grep_command_for_row_and_column(
+        Command::new("sgdisk").args(["-i", &partition_id_string, image_path]),
+        "Last sector",
+        2,
+    )
+    .context("getting last sector offset from 'sgdisk -i'")?;
+
+    let partition_sectors = grep_command_for_row_and_column(
+        Command::new("sgdisk").args(["-i", &partition_id_string, image_path]),
+        "Partition size",
+        2,
+    )
+    .context("getting partition sector count from 'sgdisk -i'")?;
+
+    Ok(GptPartitionInformation {
+        sector_size,
+        first_sector,
+        last_sector,
+        partition_sectors,
+    })
+}
+
 /// Uses `sgdisk` to get the sector size and the offset of the last sector in an
 /// output image.
 ///
@@ -40,21 +91,8 @@ pub fn create_output_image(image_path: &str) -> Result<()> {
 pub fn get_output_image_partition_size(
     image_path: &str,
 ) -> Result<(String, String)> {
-    let sector_size = grep_command_for_row_and_column(
-        Command::new("sgdisk").args(["-p", image_path]),
-        "Sector size",
-        3,
-    )
-    .context("running 'sgdisk -p' to get sector size")?;
-
-    let last_sector = grep_command_for_row_and_column(
-        Command::new("sgdisk").args(["-i", "4", image_path]),
-        "Last sector",
-        2,
-    )
-    .context("running 'sgdisk -i' to get partition length in sectors")?;
-
-    Ok((sector_size, last_sector))
+    get_gpt_partition_information(image_path, 4)
+        .map(|info| (info.sector_size, info.last_sector))
 }
 
 /// Given an installed Windows image at `image_path` whose sector size is
