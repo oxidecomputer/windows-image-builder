@@ -1,7 +1,3 @@
-:showtitle:
-:toc: left
-:icons: font
-
 # Windows Image Builder
 
 This repo contains the `wimsy` command-line tool for constructing generic
