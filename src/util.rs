@@ -9,14 +9,18 @@ use std::process::{Command, Output};
 
 use colored::Colorize;
 
+pub fn print_step_message(msg: &str) {
+    println!("  {}", msg);
+}
+
 /// Runs a `Command` and returns its output. Returns `Err` if the command's exit
 /// status indicates that it failed.
 pub fn run_command_check_status(cmd: &mut Command) -> anyhow::Result<Output> {
-    eprintln!("  {} {:?}", "running command:".dimmed(), cmd);
+    print_step_message(&format!("{} {:?}", "running command:".dimmed(), cmd));
     let output = cmd.output()?;
     if !output.status.success() {
         anyhow::bail!(
-            "  '{}' returned non-success exit code: {:?}",
+            "'{}' returned non-success exit code: {:?}",
             cmd.get_program().to_string_lossy(),
             output
         );

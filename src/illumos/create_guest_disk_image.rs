@@ -6,7 +6,7 @@ use std::{os::unix::net::UnixStream, process::Command, str::FromStr};
 
 use crate::{
     runner::{Context, Script, ScriptStep},
-    util::run_command_check_status,
+    util::{print_step_message, run_command_check_status},
 };
 
 use anyhow::{Context as _, Result};
@@ -133,14 +133,17 @@ fn run_propolis_standalone(ctx: &mut Context) -> Result<()> {
     propolis
         .args(["propolis-standalone", ctx.get_var("vm_toml_path").unwrap()]);
 
-    println!("  Launching propolis-standalone: {:?}", propolis);
+    print_step_message(&format!(
+        "Launching propolis-standalone: {:?}",
+        propolis
+    ));
     let mut propolis =
         propolis.spawn().context("spawning propolis-standalone")?;
 
     let mut ttya_path = work_dir.clone();
     ttya_path.push("ttya");
 
-    println!("  Waiting for propolis-standalone to create ttya");
+    print_step_message("Waiting for propolis-standalone to create ttya");
     for _ in 0..=5 {
         if ttya_path.exists() {
             break;
@@ -155,7 +158,9 @@ fn run_propolis_standalone(ctx: &mut Context) -> Result<()> {
     // this procedure because `nc(1)` does not pass any X/Open versioning flags
     // to sockfs `connect`. `UnixStream::connect` does, and under this standard
     // the connector needs write access to be able to connect to the socket.
-    println!("  Waiting for propolis-standalone to finish setting up ttya");
+    print_step_message(
+        "Waiting for propolis-standalone to finish setting up ttya",
+    );
     std::thread::sleep(std::time::Duration::from_secs(5));
     run_command_check_status(Command::new("pfexec").args([
         "chmod",
@@ -166,8 +171,8 @@ fn run_propolis_standalone(ctx: &mut Context) -> Result<()> {
     let _stream = UnixStream::connect(&ttya_path)
         .context("connecting to propolis-standalone's ttya")?;
 
-    println!(
-        "  Waiting for propolis-standalone to exit (this may take a while)"
+    print_step_message(
+        "Waiting for propolis-standalone to exit (this may take a while)",
     );
 
     let status =
