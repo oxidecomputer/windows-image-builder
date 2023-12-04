@@ -19,6 +19,7 @@ use linux::*;
 #[cfg(not(any(target_os = "illumos", target_os = "linux")))]
 compile_error!("only Linux and illumos targets are supported");
 
+pub mod autounattend;
 pub mod runner;
 pub mod steps;
 pub mod util;

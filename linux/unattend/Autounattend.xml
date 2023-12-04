@@ -130,7 +130,7 @@
                 <RunSynchronousCommand wcm:action="add">
                     <Description>Prepare Oxide base image</Description>
                     <Order>1</Order>
-                    <Path>cmd /c "(FOR %i IN (D E F) DO IF EXIST %i:\OxidePrepBaseImage.ps1 Powershell -ExecutionPolicy ByPass %i:\OxidePrepBaseImage.ps1) & pause"</Path>
+                    <Path>cmd /c "FOR %i IN (D E F) DO IF EXIST %i:\prep.cmd cmd.exe /c %i:\prep.cmd ^"%i^""</Path>
                     <WillReboot>OnRequest</WillReboot>
                 </RunSynchronousCommand>
             </RunSynchronous>
