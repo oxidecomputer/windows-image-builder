@@ -306,6 +306,11 @@ impl AutounattendUpdater {
 mod test {
     use super::*;
 
+    const ILLUMOS_UNATTEND: &'static str =
+        include_str!("../illumos/unattend/Autounattend.xml");
+    const LINUX_UNATTEND: &'static str =
+        include_str!("../linux/unattend/Autounattend.xml");
+
     #[test]
     fn replace_illumos_unattend() {
         let updater = AutounattendUpdater::new(
@@ -313,9 +318,7 @@ mod test {
             Some(VirtioDriverVersion::Server2016),
         );
 
-        let original = include_str!("../illumos/unattend/Autounattend.xml");
-
-        let reader = xml::EventReader::new(original.as_bytes());
+        let reader = xml::EventReader::new(ILLUMOS_UNATTEND.as_bytes());
         let writer = xml::EventWriter::new(std::io::empty());
 
         assert_eq!(updater.run_internal(reader, writer).unwrap(), 2);
@@ -328,16 +331,25 @@ mod test {
             Some(VirtioDriverVersion::Server2016),
         );
 
-        let original = include_str!("../linux/unattend/Autounattend.xml");
+        let reader = xml::EventReader::new(LINUX_UNATTEND.as_bytes());
         let mut new: Vec<u8> = Vec::new();
-
-        let reader = xml::EventReader::new(original.as_bytes());
         let writer = xml::EventWriter::new(&mut new);
 
         assert_eq!(updater.run_internal(reader, writer).unwrap(), 7);
 
         let as_str = std::str::from_utf8(&new).unwrap();
-        assert!(original.contains("D:\\NetKVM\\2k22\\amd64"));
+        assert!(LINUX_UNATTEND.contains("D:\\NetKVM\\2k22\\amd64"));
         assert!(as_str.contains("D:\\NetKVM\\2k16\\amd64"));
+    }
+
+    #[test]
+    fn replace_with_no_rules_is_noop() {
+        let updater = AutounattendUpdater::new(None, None);
+
+        for input in &[ILLUMOS_UNATTEND, LINUX_UNATTEND] {
+            let reader = xml::EventReader::new(input.as_bytes());
+            let writer = xml::EventWriter::new(std::io::empty());
+            assert_eq!(updater.run_internal(reader, writer).unwrap(), 0);
+        }
     }
 }
