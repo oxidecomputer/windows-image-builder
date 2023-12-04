@@ -20,6 +20,16 @@ pub enum VirtioDriverVersion {
     Server2022,
 }
 
+impl VirtioDriverVersion {
+    pub fn as_driver_path_component(&self) -> &'static str {
+        match self {
+            VirtioDriverVersion::Server2016 => "2k16",
+            VirtioDriverVersion::Server2019 => "2k19",
+            VirtioDriverVersion::Server2022 => "2k22",
+        }
+    }
+}
+
 // The general idea here is to stream in elements from an Autounattend.xml
 // looking for a hierarchy of tags that matches something the caller wants to
 // replace. For editions, this is buried in the Microsoft-Windows-Setup
@@ -92,11 +102,7 @@ fn replace_version_in_driver_path(
 ) -> String {
     path.replace(
         "\\2k22\\",
-        match version {
-            VirtioDriverVersion::Server2016 => "\\2k16\\",
-            VirtioDriverVersion::Server2019 => "\\2k19\\",
-            VirtioDriverVersion::Server2022 => "\\2k22\\",
-        },
+        &format!("\\{}\\", version.as_driver_path_component()),
     )
 }
 
@@ -323,10 +329,15 @@ mod test {
         );
 
         let original = include_str!("../linux/unattend/Autounattend.xml");
+        let mut new: Vec<u8> = Vec::new();
 
         let reader = xml::EventReader::new(original.as_bytes());
-        let writer = xml::EventWriter::new(std::io::stderr());
+        let writer = xml::EventWriter::new(&mut new);
 
         assert_eq!(updater.run_internal(reader, writer).unwrap(), 7);
+
+        let as_str = std::str::from_utf8(&new).unwrap();
+        assert!(original.contains("D:\\NetKVM\\2k22\\amd64"));
+        assert!(as_str.contains("D:\\NetKVM\\2k16\\amd64"));
     }
 }
