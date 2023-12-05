@@ -2,18 +2,6 @@ $ErrorActionPreference = 'stop'
 
 $setupDrive = "\\?\Volume{569CBD84-352D-44D9-B92D-BF25B852925B}\"
 
-#region Wait for internet access
-$timeout = New-TimeSpan -Seconds 30
-$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-do {
-    $ping = test-connection -Comp 1.1.1.1 -Count 1 -Quiet
-    if ($stopwatch.elapsed -gt $timeout) {
-        Write-Host "No internet connectivity"
-        exit 1
-    }
-} while (-not $ping)
-#endregion
-
 #region Enable serial console
 Write-Host "Enabling Serial Console"
 bcdedit /ems on
@@ -29,6 +17,18 @@ New-NetFirewallRule -DisplayName "Allow Inbound ICMPv4" -Direction Inbound -Prot
 Write-Host "Enabling RDP"
 Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\" -Name "fDenyTSConnections" -Value 0
 Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+#endregion
+
+#region Wait for internet access
+$timeout = New-TimeSpan -Seconds 30
+$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+do {
+    $ping = test-connection -Comp 1.1.1.1 -Count 1 -Quiet
+    if ($stopwatch.elapsed -gt $timeout) {
+        Write-Host "No internet connectivity"
+        exit 1
+    }
+} while (-not $ping)
 #endregion
 
 #region Enable SSH
