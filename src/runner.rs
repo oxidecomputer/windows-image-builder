@@ -98,7 +98,7 @@ pub fn run_script(script: Box<dyn Script>) -> anyhow::Result<()> {
     for step in script.steps() {
         println!("[ .. ] {}", step.label.blue());
         match (step.func)(&mut ctx) {
-            Ok(()) => println!("{} {}", "[ OK ] ".green(), step.label.blue()),
+            Ok(()) => println!("{} {}", "[ OK ]".green(), step.label.blue()),
             Err(e) => {
                 println!("{} {}\n  {}", "[ !! ]".red(), step.label.blue(), e);
                 return Err(e);
