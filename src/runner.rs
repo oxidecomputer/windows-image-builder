@@ -95,12 +95,24 @@ fn check_script_prereqs(script: &dyn Script) -> anyhow::Result<()> {
 pub fn run_script(script: Box<dyn Script>) -> anyhow::Result<()> {
     check_script_prereqs(script.as_ref())?;
     let mut ctx = Context { vars: script.initial_context().clone() };
+
+    // The Unicode code points below are for "Circled Information Source,"
+    // "Heavy White Check Mark," and "Octagonal Sign." Some editors display
+    // these characters incorrectly when they appear inline, and it's just one
+    // character per string, so refer to them by code point.
     for step in script.steps() {
-        println!("[ .. ] {}", step.label.blue());
+        println!("[ ➤ ] {}", step.label.blue());
         match (step.func)(&mut ctx) {
-            Ok(()) => println!("{} {}", "[ OK ]".green(), step.label.blue()),
+            Ok(()) => {
+                println!("{} {}", "[ ✔ ]".green(), step.label.blue())
+            }
             Err(e) => {
-                println!("{} {}\n  {}", "[ !! ]".red(), step.label.blue(), e);
+                println!(
+                    "{} {}\n  {}",
+                    "[ ✗ ]".bright_red(),
+                    step.label.blue(),
+                    e
+                );
                 return Err(e);
             }
         }
