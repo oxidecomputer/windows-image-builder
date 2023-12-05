@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::{Context, Result};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum VirtioDriverVersion {
     Server2016,
     Server2019,

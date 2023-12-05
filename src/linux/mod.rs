@@ -7,7 +7,7 @@
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand};
 
-use crate::runner::Script;
+use crate::{autounattend::VirtioDriverVersion, runner::Script};
 
 use self::create_guest_disk_image::CreateGuestDiskImageScript;
 
@@ -59,14 +59,33 @@ struct CreateGuestDiskImageArgs {
     #[arg(long)]
     unattend_dir: Utf8PathBuf,
 
-    /// The path at which to create the repacked installation disk.
-    #[arg(long)]
-    output_image: Utf8PathBuf,
-
     /// The path to the OVMF bootrom to supply to QEMU for use as a guest
     /// firmware image.
     #[arg(long)]
     ovmf_path: Utf8PathBuf,
+
+    /// An optional image index to write into the Microsoft-Windows-Setup
+    /// component's ImageInstall/OSImage/InstallFrom elements in
+    /// Autounattend.xml. This index determines the edition of Windows that will
+    /// be installed when the installation media contains multiple editions
+    /// (e.g. Server Standard, Standard with the Desktop Experience Pack, etc.).
+    /// If not specified, the index in the Autounattend.xml specified by
+    /// --unattend-dir is used.
+    #[arg(long)]
+    unattend_image_index: Option<u32>,
+
+    /// An optional Windows Server version that specifies the driver
+    /// installation paths to specify in Autounattend.xml. If set, this
+    /// substitutes the appropriate versioned directory name ("2k16", "2k19", or
+    /// "2k22") into the DriverPaths specified in the template Autounattend.xml
+    /// specified by --unattend-dir. If not specified, the existing driver paths
+    /// in that Autounattend.xml are used.
+    #[arg(long, value_enum)]
+    windows_version: Option<VirtioDriverVersion>,
+
+    /// The path at which to create the repacked installation disk.
+    #[arg(long)]
+    output_image: Utf8PathBuf,
 }
 
 impl App {

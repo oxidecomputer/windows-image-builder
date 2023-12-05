@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::{
+    collections::HashMap,
     process::{Command, Stdio},
     str::FromStr,
 };
@@ -18,6 +19,15 @@ use crate::{
 };
 
 use super::BuildInstallationDiskArgs;
+
+const UNATTEND_FILES: &[&'static str] = &[
+    "Autounattend.xml",
+    "cloudbase-init-unattend.conf",
+    "cloudbase-init.conf",
+    "OxidePrepBaseImage.ps1",
+    "prep.cmd",
+    "specialize-unattend.xml",
+];
 
 pub struct BuildInstallationDiskScript {
     steps: Vec<ScriptStep>,
@@ -37,18 +47,19 @@ impl Script for BuildInstallationDiskScript {
 
     fn file_prerequisites(&self) -> Vec<Utf8PathBuf> {
         let mut prereqs = self.args.file_prerequisites();
-        for file in ["cloudbase-init.conf", "cloudbase-init-unattend.conf"] {
-            let mut cloudbase_init = self.args.unattend_dir.clone();
-            cloudbase_init.push(file);
-            prereqs.push(cloudbase_init);
+        for file in UNATTEND_FILES {
+            let mut path = self.args.unattend_dir.clone();
+            path.push(file);
+            prereqs.push(path);
         }
 
         prereqs
     }
 
-    fn initial_context(&self) -> std::collections::HashMap<String, String> {
+    fn initial_context(&self) -> HashMap<String, String> {
         let args = &self.args;
-        [
+
+        let mut ctx: HashMap<String, String> = [
             ("work_dir".to_string(), args.work_dir.to_string()),
             ("windows_iso".to_string(), args.windows_iso.to_string()),
             ("virtio_iso".to_string(), args.virtio_iso.to_string()),
@@ -56,7 +67,25 @@ impl Script for BuildInstallationDiskScript {
             ("output_image".to_string(), args.output_image.to_string()),
         ]
         .into_iter()
-        .collect()
+        .collect();
+
+        if let Some(image_index) = args.unattend_image_index {
+            ctx.insert(
+                "unattend_image_index".to_string(),
+                image_index.to_string(),
+            );
+        }
+
+        if let Some(windows_version) = args.windows_version {
+            ctx.insert(
+                "windows_version".to_string(),
+                windows_version.as_driver_path_component().to_string(),
+            );
+        } else {
+            ctx.insert("windows_version".to_string(), "2k22".to_string());
+        }
+
+        ctx
     }
 }
 
@@ -66,7 +95,11 @@ fn create_installer_disk(ctx: &mut Context) -> Result<()> {
         "-f",
         "raw",
         ctx.get_var("output_image").unwrap(),
-        "5.5G",
+        // The disk needs to be large enough so that its entire size less 1 GiB
+        // (the size of the WinPE partition) is large enough to hold an
+        // arbitrary install.wim. 7 GiB is enough headroom for Server 2016 and
+        // Server 2022.
+        "8G",
     ]))
     .map(|_| ())
 }
@@ -195,6 +228,56 @@ fn extract_setup_to_winpe_partition(ctx: &mut Context) -> Result<()> {
     .map(|_| ())
 }
 
+fn copy_unattend_files_to_work_dir(ctx: &mut Context) -> Result<()> {
+    let mut work_unattend =
+        Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap()).unwrap();
+    work_unattend.push("unattend");
+    std::fs::create_dir_all(&work_unattend)
+        .context("creating temporary directory for unattend files")?;
+
+    let unattend_dir =
+        Utf8PathBuf::from_str(ctx.get_var("unattend_dir").unwrap()).unwrap();
+
+    for filename in UNATTEND_FILES {
+        let mut src = unattend_dir.clone();
+        src.push(filename);
+        let mut dst = work_unattend.clone();
+        dst.push(filename);
+        std::fs::copy(&src, &dst)
+            .with_context(|| format!("copying {src} to {dst}"))?;
+    }
+
+    // Make subsequent steps use unattend files from
+    ctx.set_var("unattend_dir", work_unattend.to_string());
+    Ok(())
+}
+
+fn customize_autounattend_xml(ctx: &mut Context) -> Result<()> {
+    let customizer = crate::autounattend::AutounattendUpdater::new(
+        ctx.get_var("unattend_image_index")
+            .map(|val| val.parse::<u32>().unwrap()),
+        None,
+    );
+
+    let unattend_dir =
+        Utf8PathBuf::from_str(ctx.get_var("unattend_dir").unwrap()).unwrap();
+    let mut unattend_src = unattend_dir.clone();
+    unattend_src.push("Autounattend.tmp");
+    let mut unattend_dst = unattend_dir.clone();
+    unattend_dst.push("Autounattend.xml");
+    std::fs::copy(&unattend_dst, &unattend_src)
+        .context("creating temporary Autounattend.xml")?;
+
+    customizer
+        .run(&unattend_src, &unattend_dst)
+        .context("customizing Autounattend.xml")?;
+
+    std::fs::remove_file(&unattend_src)
+        .context("removing temporary Autounattend.xml")?;
+
+    Ok(())
+}
+
 fn copy_unattend_to_winpe_partition(ctx: &mut Context) -> Result<()> {
     let setup_mount = ctx.get_var("setup_mount").unwrap();
     let unattend_dir =
@@ -254,8 +337,10 @@ fn copy_virtio_to_winpe_partition(ctx: &mut Context) -> Result<()> {
                     "e",
                     ctx.get_var("virtio_iso").unwrap(),
                     &format!("-o{}/virtio-drivers/", setup_mount),
-                    // TODO(gjc) allow different driver versions
-                    &format!("{driver}/2k22/amd64/*.{ext}"),
+                    &format!(
+                        "{driver}/{}/amd64/*.{ext}",
+                        ctx.get_var("windows_version").unwrap()
+                    ),
                 ])
                 .stdout(Stdio::inherit()),
         )?;
@@ -394,6 +479,14 @@ fn get_script() -> Vec<ScriptStep> {
             "extract setup files to WinPE partition",
             extract_setup_to_winpe_partition,
             &["7z"],
+        ),
+        ScriptStep::new(
+            "copy unattend files to working directory",
+            copy_unattend_files_to_work_dir,
+        ),
+        ScriptStep::new(
+            "customizing Autounattend.xml",
+            customize_autounattend_xml,
         ),
         ScriptStep::new(
             "copying unattend scripts to WinPE partition",

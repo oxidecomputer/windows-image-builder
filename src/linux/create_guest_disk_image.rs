@@ -234,6 +234,8 @@ fn get_script() -> Vec<ScriptStep> {
             create_config_iso,
             &["genisoimage"],
         ),
+        // TODO(gjc) copy unattend files to a temporary directory, then apply
+        // autounattend fixups
         ScriptStep::with_prereqs(
             "install Windows to output image using QEMU",
             install_via_qemu,
