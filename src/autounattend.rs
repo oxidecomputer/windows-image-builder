@@ -224,7 +224,6 @@ impl AutounattendUpdater {
                         attributes,
                         ..
                     } => {
-                        dbg!(&next_match_depths, &name.local_name, attributes);
                         for (rule_index, rule) in self.rules.iter().enumerate()
                         {
                             let depth = &mut next_match_depths[rule_index];
