@@ -51,7 +51,7 @@ impl Script for CreateGuestDiskImageScript {
         for file in [
             "cloudbase-init.conf",
             "cloudbase-init-unattend.conf",
-            "cloudbase-unattend.xml",
+            "specialize-unattend.xml",
         ] {
             let mut path = self.args.sources.unattend_dir.clone();
             path.push(file);

@@ -13,10 +13,7 @@ pub const UNATTEND_FILES: &[&'static str] = &[
     "cloudbase-init.conf",
     "OxidePrepBaseImage.ps1",
     "prep.cmd",
-    #[cfg(target_os = "illumos")]
     "specialize-unattend.xml",
-    #[cfg(target_os = "linux")]
-    "cloudbase-unattend.xml",
 ];
 
 #[cfg(target_os = "illumos")]

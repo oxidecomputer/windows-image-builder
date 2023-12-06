@@ -49,7 +49,7 @@ del C:\Windows\Temp\CloudbaseInitSetup.msi
 $confPath = "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf\"
 Copy-Item "$PSScriptRoot\cloudbase-init.conf" -Destination "$confPath\cloudbase-init.conf"
 Copy-Item "$PSScriptRoot\cloudbase-init-unattend.conf" -Destination "$confPath\cloudbase-init-unattend.conf"
-Copy-Item "$PSScriptRoot\cloudbase-unattend.xml" -Destination "$confPath\Unattend.xml"
+Copy-Item "$PSScriptRoot\specialize-unattend.xml" -Destination "$confPath\Unattend.xml"
 
 # Disable the service so it doesn't run on first boot and contend with the unattend first pass.
 # We re-enable it during the specialize phase. See cloudbase-unattend.xml.
