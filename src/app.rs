@@ -51,7 +51,7 @@ pub enum Command {
         propolis_bootrom: Utf8PathBuf,
 
         #[cfg(target_os = "linux")]
-        // #[cfg_attr(target_os = "linux", command(flatten))]
+        #[cfg_attr(target_os = "linux", command(flatten))]
         sources: ImageSources,
 
         /// The path to the OVMF bootrom to supply to QEMU for use as a guest
@@ -59,6 +59,11 @@ pub enum Command {
         #[cfg(target_os = "linux")]
         #[cfg_attr(target_os = "linux", arg(long))]
         ovmf_path: Utf8PathBuf,
+
+        /// Displays a graphical console for the setup VM.
+        #[cfg(target_os = "linux")]
+        #[cfg_attr(target_os = "linux", arg(long, default_value_t = false))]
+        vga_console: bool,
     },
 }
 

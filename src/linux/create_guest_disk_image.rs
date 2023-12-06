@@ -5,15 +5,16 @@
 //! Defines a script for building a Windows guest image on a Linux system using
 //! QEMU.
 
-use std::{io::Write, process::Command, str::FromStr};
+use std::{collections::HashMap, io::Write, process::Command, str::FromStr};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use camino::Utf8PathBuf;
 
 use crate::{
     app::ImageSources,
     runner::{Context, Script, ScriptStep},
     util::run_command_check_status,
+    UNATTEND_FILES,
 };
 
 pub struct CreateGuestDiskImageArgs {
@@ -21,6 +22,7 @@ pub struct CreateGuestDiskImageArgs {
     pub output_image: Utf8PathBuf,
     pub sources: ImageSources,
     pub ovmf_path: Utf8PathBuf,
+    pub vga_console: bool,
 }
 
 pub struct CreateGuestDiskImageScript {
@@ -59,9 +61,9 @@ impl Script for CreateGuestDiskImageScript {
         files
     }
 
-    fn initial_context(&self) -> std::collections::HashMap<String, String> {
+    fn initial_context(&self) -> HashMap<String, String> {
         let args = &self.args;
-        [
+        let mut ctx: HashMap<String, String> = [
             ("work_dir".to_string(), args.work_dir.to_string()),
             ("windows_iso".to_string(), args.sources.windows_iso.to_string()),
             ("virtio_iso".to_string(), args.sources.virtio_iso.to_string()),
@@ -70,7 +72,13 @@ impl Script for CreateGuestDiskImageScript {
             ("ovmf_path".to_string(), args.ovmf_path.to_string()),
         ]
         .into_iter()
-        .collect()
+        .collect();
+
+        if args.vga_console {
+            ctx.insert("vga_console".to_string(), String::new());
+        }
+
+        ctx
     }
 }
 
@@ -94,82 +102,142 @@ fn create_config_iso(ctx: &mut Context) -> Result<()> {
     Ok(())
 }
 
+fn copy_unattend_files_to_work_dir(ctx: &mut Context) -> Result<()> {
+    let mut work_unattend =
+        Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap()).unwrap();
+    work_unattend.push("unattend");
+    std::fs::create_dir_all(&work_unattend)
+        .context("creating temporary directory for unattend files")?;
+
+    let unattend_dir =
+        Utf8PathBuf::from_str(ctx.get_var("unattend_dir").unwrap()).unwrap();
+
+    for filename in UNATTEND_FILES {
+        let mut src = unattend_dir.clone();
+        src.push(filename);
+        let mut dst = work_unattend.clone();
+        dst.push(filename);
+        std::fs::copy(&src, &dst)
+            .with_context(|| format!("copying {src} to {dst}"))?;
+    }
+
+    // Make subsequent steps use unattend files from the working copy.
+    ctx.set_var("unattend_dir", work_unattend.to_string());
+    Ok(())
+}
+
+fn customize_autounattend_xml(ctx: &mut Context) -> Result<()> {
+    let customizer = crate::autounattend::AutounattendUpdater::new(
+        ctx.get_var("unattend_image_index")
+            .map(|val| val.parse::<u32>().unwrap()),
+        None,
+    );
+
+    let unattend_dir =
+        Utf8PathBuf::from_str(ctx.get_var("unattend_dir").unwrap()).unwrap();
+    let mut unattend_src = unattend_dir.clone();
+    unattend_src.push("Autounattend.tmp");
+    let mut unattend_dst = unattend_dir.clone();
+    unattend_dst.push("Autounattend.xml");
+    std::fs::copy(&unattend_dst, &unattend_src)
+        .context("creating temporary Autounattend.xml")?;
+
+    customizer
+        .run(&unattend_src, &unattend_dst)
+        .context("customizing Autounattend.xml")?;
+
+    std::fs::remove_file(&unattend_src)
+        .context("removing temporary Autounattend.xml")?;
+
+    Ok(())
+}
+
 fn install_via_qemu(ctx: &mut Context) -> Result<()> {
     // Launch a VM in QEMU with the installation target disk attached as an NVMe
     // drive and CD-ROM drives containing the Windows installation media, the
     // virtio driver disk, and the answer file ISO created previously. Windows
     // setup will detect the presence of the answer file ISO and use the
     // Autounattend.xml located there to drive installation.
-    let qemu = Command::new("qemu-system-x86_64")
-        .args([
-            "-nodefaults",
-            "-enable-kvm",
-            "-M",
-            "pc",
-            "-m",
-            "2048",
-            "-cpu",
-            "host,kvm=off,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time",
-            "-smp",
-            "2,sockets=1,cores=2",
-            "-rtc",
-            "base=localtime",
-            "-drive",
-            &format!(
-                "if=pflash,format=raw,readonly=on,file={}",
-                ctx.get_var("ovmf_path").unwrap()
-            ),
-            "-netdev",
-            "user,id=net0",
-            "-device",
-            "virtio-net-pci,netdev=net0",
-            "-device",
-            "nvme,drive=drivec,serial=01de01de,physical_block_size=512,\
+
+    let pflash_arg = format!(
+        "if=pflash,format=raw,readonly=on,file={}",
+        ctx.get_var("ovmf_path").unwrap()
+    );
+
+    let install_disk_arg = format!(
+        "if=none,id=drivec,file={},format=raw",
+        ctx.get_var("output_image").unwrap()
+    );
+
+    let windows_iso_arg = format!(
+        "file={},if=none,id=win-disk,media=cdrom",
+        ctx.get_var("windows_iso").unwrap()
+    );
+
+    let virtio_iso_arg = format!(
+        "file={},if=none,id=virtio-disk,media=cdrom",
+        ctx.get_var("virtio_iso").unwrap()
+    );
+
+    let unattend_iso_arg = format!(
+        "file={},if=none,id=unattend-disk,media=cdrom",
+        ctx.get_var("unattend_iso").unwrap()
+    );
+
+    let mut args = vec![
+        "-nodefaults",
+        "-enable-kvm",
+        "-M",
+        "pc",
+        "-m",
+        "2048",
+        "-cpu",
+        "host,kvm=off,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time",
+        "-smp",
+        "2,sockets=1,cores=2",
+        "-rtc",
+        "base=localtime",
+        "-drive",
+        &pflash_arg,
+        "-netdev",
+        "user,id=net0",
+        "-device",
+        "virtio-net-pci,netdev=net0",
+        "-device",
+        "nvme,drive=drivec,serial=01de01de,physical_block_size=512,\
                 logical_block_size=512,discard_granularity=512",
-            "-drive",
-            &format!(
-                "if=none,id=drivec,file={},format=raw",
-                ctx.get_var("output_image").unwrap()
-            ),
-            "-device",
-            "ide-cd,drive=win-disk,id=cd-disk0,unit=0,bus=ide.0",
-            "-drive",
-            &format!(
-                "file={},if=none,id=win-disk,media=cdrom",
-                ctx.get_var("windows_iso").unwrap()
-            ),
-            "-device",
-            "ide-cd,drive=virtio-disk,id=cd-disk1,unit=0,bus=ide.1",
-            "-drive",
-            &format!(
-                "file={},if=none,id=virtio-disk,media=cdrom",
-                ctx.get_var("virtio_iso").unwrap()
-            ),
-            "-device",
-            "ide-cd,drive=unattend-disk,id=cd-disk2,unit=1,bus=ide.0",
-            "-drive",
-            &format!(
-                "file={},if=none,id=unattend-disk,media=cdrom",
-                ctx.get_var("unattend_iso").unwrap()
-            ),
-            // Send serial console output to stdout so that the user can monitor
-            // the installation's progress (the guest is configured to print
-            // setup progress to COM1).
-            "-serial",
-            "stdio",
-            // Set up the QEMU monitor to allow the runner to send keyboard
-            // commands via TCP.
-            "-monitor",
-            "telnet:localhost:8888,server,nowait",
-            "-display",
-            "none",
-            /*
-            "vnc=127.0.0.1:0",
-            "-vga",
-            "std",
-            */
-        ])
-        .spawn()?;
+        "-drive",
+        &install_disk_arg,
+        "-device",
+        "ide-cd,drive=win-disk,id=cd-disk0,unit=0,bus=ide.0",
+        "-drive",
+        &windows_iso_arg,
+        "-device",
+        "ide-cd,drive=virtio-disk,id=cd-disk1,unit=0,bus=ide.1",
+        "-drive",
+        &virtio_iso_arg,
+        "-device",
+        "ide-cd,drive=unattend-disk,id=cd-disk2,unit=1,bus=ide.0",
+        "-drive",
+        &unattend_iso_arg,
+        // Send serial console output to stdout so that the user can monitor
+        // the installation's progress (the guest is configured to print
+        // setup progress to COM1).
+        "-serial",
+        "stdio",
+        // Set up the QEMU monitor to allow the runner to send keyboard
+        // commands via TCP.
+        "-monitor",
+        "telnet:localhost:8888,server,nowait",
+        "-display",
+        "none",
+    ];
+
+    if ctx.get_var("vga_console").is_some() {
+        args.extend_from_slice(&["-vga", "std", "-display", "gtk"]);
+    }
+
+    let qemu = Command::new("qemu-system-x86_64").args(&args).spawn()?;
 
     println!("  Waiting for QEMU to open its telnet port");
     let mut attempts = 0;
@@ -240,8 +308,14 @@ fn get_script() -> Vec<ScriptStep> {
             create_config_iso,
             &["genisoimage"],
         ),
-        // TODO(gjc) copy unattend files to a temporary directory, then apply
-        // autounattend fixups
+        ScriptStep::new(
+            "copy unattend files to work directory",
+            copy_unattend_files_to_work_dir,
+        ),
+        ScriptStep::new(
+            "customize Autounattend.xml",
+            customize_autounattend_xml,
+        ),
         ScriptStep::with_prereqs(
             "install Windows to output image using QEMU",
             install_via_qemu,

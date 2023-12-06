@@ -12,15 +12,18 @@ use self::create_guest_disk_image::{
 
 mod create_guest_disk_image;
 
-fn get_script(app: &crate::app::App) -> Box<dyn Script> {
+pub fn get_script(app: &crate::app::App) -> Box<dyn Script> {
     match &app.command {
-        Command::CreateGuestDiskImage { sources, ovmf_path } => Box::new(
-            CreateGuestDiskImageScript::new(CreateGuestDiskImageArgs {
-                sources: sources.clone(),
-                work_dir: app.work_dir.clone(),
-                output_image: app.output_image.clone(),
-                ovmf_path: ovmf_path.clone(),
-            }),
-        ),
+        Command::CreateGuestDiskImage { sources, ovmf_path, vga_console } => {
+            Box::new(CreateGuestDiskImageScript::new(
+                CreateGuestDiskImageArgs {
+                    sources: sources.clone(),
+                    work_dir: app.work_dir.clone(),
+                    output_image: app.output_image.clone(),
+                    ovmf_path: ovmf_path.clone(),
+                    vga_console: *vga_console,
+                },
+            ))
+        }
     }
 }

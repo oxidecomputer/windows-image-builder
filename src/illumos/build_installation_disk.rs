@@ -17,6 +17,7 @@ use crate::{
     runner::{Context, Script, ScriptStep},
     steps::get_gpt_partition_information,
     util::run_command_check_status,
+    UNATTEND_FILES,
 };
 
 pub struct BuildInstallationDiskArgs {
@@ -24,15 +25,6 @@ pub struct BuildInstallationDiskArgs {
     pub output_image: Utf8PathBuf,
     pub sources: ImageSources,
 }
-
-const UNATTEND_FILES: &[&'static str] = &[
-    "Autounattend.xml",
-    "cloudbase-init-unattend.conf",
-    "cloudbase-init.conf",
-    "OxidePrepBaseImage.ps1",
-    "prep.cmd",
-    "specialize-unattend.xml",
-];
 
 pub struct BuildInstallationDiskScript {
     steps: Vec<ScriptStep>,
