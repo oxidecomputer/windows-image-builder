@@ -4,21 +4,23 @@
 
 //! wimsy: a playful way to manipulate Windows images for use in an Oxide rack.
 
+use app::App;
 use clap::Parser;
 
 #[cfg(target_os = "illumos")]
 mod illumos;
 #[cfg(target_os = "illumos")]
-use illumos::*;
+use illumos::get_script;
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-use linux::*;
+use linux::get_script;
 
 #[cfg(not(any(target_os = "illumos", target_os = "linux")))]
 compile_error!("only Linux and illumos targets are supported");
 
+pub mod app;
 pub mod autounattend;
 pub mod runner;
 pub mod steps;
@@ -26,5 +28,6 @@ pub mod util;
 
 fn main() -> anyhow::Result<()> {
     let app = App::parse();
-    runner::run_script(app.get_script())
+    let script = get_script(&app);
+    runner::run_script(script)
 }

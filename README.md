@@ -91,17 +91,11 @@ The default configuration scripts set up an image with the following properties:
   boots for the first time, it will need to perform some final setup tasks
   (including additional reboots) before it is ready for use.
 
-# Limitations
+# Known issues
 
-Some configuration options can't currently be set through the CLI and instead
-have to be changed by modifying answer files directly.
-
-- The default answer file for Linux users (`linux/unattend/Autounattend.xml`)
-  assumes it should install drivers for Windows Server 2022 guests. To use this
-  file for other guests, find the `DriverPaths` section of the unattend file and
-  replace instances of `2k22` with `2k19` (for Windows Server 2019), `2k16` (for
-  Windows Server 2016), or another appropriate version from the virtio driver
-  disk.
-- The default answer file installs a standard Server edition with the Desktop
-  Experience Pack enabled. To change this, change the image index in the
-  `InstallFrom` tag in `Autounattend.xml`.
+- Although `server2016` is a valid option for the `--windows-version` flag,
+  Server 2016 images don't provision correctly because the method of installing
+  OpenSSH used in OxidePrepBaseImage.ps1 is only supported on Server 2019 and
+  Server 2022.
+- Changing the image ID using the `--unattend-image-index` flag may not work
+  with Windows Server 2022 installation media.

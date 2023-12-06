@@ -11,11 +11,17 @@ use anyhow::Result;
 use camino::Utf8PathBuf;
 
 use crate::{
+    app::ImageSources,
     runner::{Context, Script, ScriptStep},
     util::run_command_check_status,
 };
 
-use super::CreateGuestDiskImageArgs;
+pub struct CreateGuestDiskImageArgs {
+    pub work_dir: Utf8PathBuf,
+    pub output_image: Utf8PathBuf,
+    pub sources: ImageSources,
+    pub ovmf_path: Utf8PathBuf,
+}
 
 pub struct CreateGuestDiskImageScript {
     steps: Vec<ScriptStep>,
@@ -35,8 +41,8 @@ impl Script for CreateGuestDiskImageScript {
 
     fn file_prerequisites(&self) -> Vec<camino::Utf8PathBuf> {
         let mut files = vec![
-            self.args.windows_iso.clone(),
-            self.args.virtio_iso.clone(),
+            self.args.sources.windows_iso.clone(),
+            self.args.sources.virtio_iso.clone(),
             self.args.ovmf_path.clone(),
         ];
 
@@ -45,7 +51,7 @@ impl Script for CreateGuestDiskImageScript {
             "cloudbase-init-unattend.conf",
             "cloudbase-unattend.xml",
         ] {
-            let mut path = self.args.unattend_dir.clone();
+            let mut path = self.args.sources.unattend_dir.clone();
             path.push(file);
             files.push(path);
         }
@@ -57,9 +63,9 @@ impl Script for CreateGuestDiskImageScript {
         let args = &self.args;
         [
             ("work_dir".to_string(), args.work_dir.to_string()),
-            ("windows_iso".to_string(), args.windows_iso.to_string()),
-            ("virtio_iso".to_string(), args.virtio_iso.to_string()),
-            ("unattend_dir".to_string(), args.unattend_dir.to_string()),
+            ("windows_iso".to_string(), args.sources.windows_iso.to_string()),
+            ("virtio_iso".to_string(), args.sources.virtio_iso.to_string()),
+            ("unattend_dir".to_string(), args.sources.unattend_dir.to_string()),
             ("output_image".to_string(), args.output_image.to_string()),
             ("ovmf_path".to_string(), args.ovmf_path.to_string()),
         ]

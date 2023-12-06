@@ -12,7 +12,13 @@ use crate::{
 use anyhow::{Context as _, Result};
 use camino::Utf8PathBuf;
 
-use super::CreateGuestDiskImageArgs;
+pub struct CreateGuestDiskImageArgs {
+    pub work_dir: Utf8PathBuf,
+    pub output_image: Utf8PathBuf,
+    pub vnic_link: String,
+    pub installer_image: Utf8PathBuf,
+    pub propolis_bootrom: Utf8PathBuf,
+}
 
 pub struct CreateGuestDiskImageScript {
     steps: Vec<ScriptStep>,

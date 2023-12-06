@@ -13,12 +13,17 @@ use camino::Utf8PathBuf;
 use itertools::iproduct;
 
 use crate::{
+    app::ImageSources,
     runner::{Context, Script, ScriptStep},
     steps::get_gpt_partition_information,
     util::run_command_check_status,
 };
 
-use super::BuildInstallationDiskArgs;
+pub struct BuildInstallationDiskArgs {
+    pub work_dir: Utf8PathBuf,
+    pub output_image: Utf8PathBuf,
+    pub sources: ImageSources,
+}
 
 const UNATTEND_FILES: &[&'static str] = &[
     "Autounattend.xml",
@@ -46,9 +51,10 @@ impl Script for BuildInstallationDiskScript {
     }
 
     fn file_prerequisites(&self) -> Vec<Utf8PathBuf> {
-        let mut prereqs = self.args.file_prerequisites();
+        // TODO(gjc):fix for ISOs
+        let mut prereqs = vec![];
         for file in UNATTEND_FILES {
-            let mut path = self.args.unattend_dir.clone();
+            let mut path = self.args.sources.unattend_dir.clone();
             path.push(file);
             prereqs.push(path);
         }
@@ -58,25 +64,26 @@ impl Script for BuildInstallationDiskScript {
 
     fn initial_context(&self) -> HashMap<String, String> {
         let args = &self.args;
+        let sources = &self.args.sources;
 
         let mut ctx: HashMap<String, String> = [
             ("work_dir".to_string(), args.work_dir.to_string()),
-            ("windows_iso".to_string(), args.windows_iso.to_string()),
-            ("virtio_iso".to_string(), args.virtio_iso.to_string()),
-            ("unattend_dir".to_string(), args.unattend_dir.to_string()),
+            ("windows_iso".to_string(), sources.windows_iso.to_string()),
+            ("virtio_iso".to_string(), sources.virtio_iso.to_string()),
+            ("unattend_dir".to_string(), sources.unattend_dir.to_string()),
             ("output_image".to_string(), args.output_image.to_string()),
         ]
         .into_iter()
         .collect();
 
-        if let Some(image_index) = args.unattend_image_index {
+        if let Some(image_index) = sources.unattend_image_index {
             ctx.insert(
                 "unattend_image_index".to_string(),
                 image_index.to_string(),
             );
         }
 
-        if let Some(windows_version) = args.windows_version {
+        if let Some(windows_version) = sources.windows_version {
             ctx.insert(
                 "windows_version".to_string(),
                 windows_version.as_driver_path_component().to_string(),
