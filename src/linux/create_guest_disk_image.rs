@@ -158,7 +158,6 @@ fn install_via_qemu(ctx: &mut Context) -> Result<()> {
     // virtio driver disk, and the answer file ISO created previously. Windows
     // setup will detect the presence of the answer file ISO and use the
     // Autounattend.xml located there to drive installation.
-
     let pflash_arg = format!(
         "if=pflash,format=raw,readonly=on,file={}",
         ctx.get_var("ovmf_path").unwrap()
@@ -229,12 +228,12 @@ fn install_via_qemu(ctx: &mut Context) -> Result<()> {
         // commands via TCP.
         "-monitor",
         "telnet:localhost:8888,server,nowait",
-        "-display",
-        "none",
     ];
 
     if ctx.get_var("vga_console").is_some() {
         args.extend_from_slice(&["-vga", "std", "-display", "gtk"]);
+    } else {
+        args.extend_from_slice(&["-display", "none"]);
     }
 
     let qemu = Command::new("qemu-system-x86_64").args(&args).spawn()?;
