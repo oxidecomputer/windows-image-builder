@@ -247,15 +247,12 @@ fn install_via_qemu(ctx: &mut Context, ui: &Ui) -> Result<()> {
         args.extend_from_slice(&["-display", "none"]);
     }
 
-    // TODO(gjc) don't let QEMU yeet stuff to the tty. instead this should go to
-    // a log somewhere in the tmpdir or something
     let qemu = Command::new("qemu-system-x86_64")
         .args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
 
-    // TODO(gjc) hook this up to a proper UI affordance
     ui.set_substep("connecting to QEMU's telnet control interface");
     let mut attempts = 0;
     let mut telnet = loop {

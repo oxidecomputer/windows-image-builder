@@ -14,18 +14,18 @@ use std::{
 use anyhow::{Context, Result};
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
-pub enum VirtioDriverVersion {
+pub enum WindowsVersion {
     Server2016,
     Server2019,
     Server2022,
 }
 
-impl VirtioDriverVersion {
+impl WindowsVersion {
     pub fn as_driver_path_component(&self) -> &'static str {
         match self {
-            VirtioDriverVersion::Server2016 => "2k16",
-            VirtioDriverVersion::Server2019 => "2k19",
-            VirtioDriverVersion::Server2022 => "2k22",
+            WindowsVersion::Server2016 => "2k16",
+            WindowsVersion::Server2019 => "2k19",
+            WindowsVersion::Server2022 => "2k22",
         }
     }
 }
@@ -98,7 +98,7 @@ fn replace_image_index(_: &str, new_index: u32) -> String {
 
 fn replace_version_in_driver_path(
     path: &str,
-    version: VirtioDriverVersion,
+    version: WindowsVersion,
 ) -> String {
     path.replace(
         "\\2k22\\",
@@ -113,7 +113,7 @@ pub struct AutounattendUpdater {
 impl AutounattendUpdater {
     pub fn new(
         image_index: Option<u32>,
-        virtio_driver_version: Option<VirtioDriverVersion>,
+        virtio_driver_version: Option<WindowsVersion>,
     ) -> Self {
         let mut rules = Vec::new();
         if let Some(index) = image_index {
@@ -312,10 +312,8 @@ mod test {
 
     #[test]
     fn replace_illumos_unattend() {
-        let updater = AutounattendUpdater::new(
-            Some(1),
-            Some(VirtioDriverVersion::Server2016),
-        );
+        let updater =
+            AutounattendUpdater::new(Some(1), Some(WindowsVersion::Server2016));
 
         let reader = xml::EventReader::new(ILLUMOS_UNATTEND.as_bytes());
         let writer = xml::EventWriter::new(std::io::empty());
@@ -325,10 +323,8 @@ mod test {
 
     #[test]
     fn replace_linux_unattend() {
-        let updater = AutounattendUpdater::new(
-            Some(1),
-            Some(VirtioDriverVersion::Server2016),
-        );
+        let updater =
+            AutounattendUpdater::new(Some(1), Some(WindowsVersion::Server2016));
 
         let reader = xml::EventReader::new(LINUX_UNATTEND.as_bytes());
         let mut new: Vec<u8> = Vec::new();

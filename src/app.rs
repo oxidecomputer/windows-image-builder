@@ -5,7 +5,7 @@
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand};
 
-use crate::autounattend::VirtioDriverVersion;
+use crate::autounattend::WindowsVersion;
 
 #[derive(Parser)]
 pub struct App {
@@ -110,5 +110,5 @@ pub struct ImageSources {
     /// specified by --unattend-dir. If not specified, the existing driver paths
     /// in that Autounattend.xml are used.
     #[arg(long, value_enum)]
-    pub windows_version: Option<VirtioDriverVersion>,
+    pub windows_version: Option<WindowsVersion>,
 }
