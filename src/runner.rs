@@ -5,13 +5,16 @@
 //! Structs, traits, and functions for defining and running a set of scripted
 //! operations.
 
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 use anyhow::Context as _;
 use camino::Utf8PathBuf;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
-type StepFn = dyn Fn(&mut Context) -> anyhow::Result<()>;
+const PROGRESS_TICK_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(100);
+
+type StepFn = dyn Fn(&mut Context, &Ui) -> anyhow::Result<()>;
 
 /// A step in a scripted procedure.
 pub struct ScriptStep {
@@ -30,14 +33,14 @@ pub struct ScriptStep {
 impl ScriptStep {
     pub fn new(
         label: &'static str,
-        func: impl Fn(&mut Context) -> anyhow::Result<()> + 'static,
+        func: impl Fn(&mut Context, &Ui) -> anyhow::Result<()> + 'static,
     ) -> Self {
         Self { label, func: Box::new(func), prereq_commands: Vec::new() }
     }
 
     pub fn with_prereqs(
         label: &'static str,
-        func: impl Fn(&mut Context) -> anyhow::Result<()> + 'static,
+        func: impl Fn(&mut Context, &Ui) -> anyhow::Result<()> + 'static,
         commands: &[&'static str],
     ) -> Self {
         Self { label, func: Box::new(func), prereq_commands: commands.to_vec() }
@@ -90,16 +93,16 @@ fn check_script_prereqs(script: &dyn Script) -> anyhow::Result<()> {
     Ok(())
 }
 
+struct StepAndProgress<'a> {
+    step: &'a ScriptStep,
+    bar: ProgressBar,
+}
+
 /// Runs a script, pretty-printing its various labels and the outcomes of each
 /// step.
 pub fn run_script(script: Box<dyn Script>) -> anyhow::Result<()> {
     check_script_prereqs(script.as_ref())?;
     let mut ctx = Context { vars: script.initial_context().clone() };
-
-    struct StepAndProgress<'a> {
-        step: &'a ScriptStep,
-        bar: ProgressBar,
-    }
 
     let multi = MultiProgress::new();
     let steps_with_progress: Vec<StepAndProgress> = script
@@ -108,20 +111,30 @@ pub fn run_script(script: Box<dyn Script>) -> anyhow::Result<()> {
         .map(|step| {
             let bar = multi.add(ProgressBar::new_spinner());
             bar.set_message(step.label);
+            bar.set_style(
+                ProgressStyle::with_template("  {msg:.dim}").unwrap(),
+            );
+            bar.tick();
             StepAndProgress { step, bar }
         })
         .collect();
 
     for step in steps_with_progress {
-        step.bar.enable_steady_tick(std::time::Duration::from_millis(250));
-        match (step.step.func)(&mut ctx) {
+        step.bar.set_style(ProgressStyle::default_spinner());
+        step.bar.enable_steady_tick(PROGRESS_TICK_INTERVAL);
+        let ui = Ui { current_step: &step };
+        match (step.step.func)(&mut ctx, &ui) {
             Ok(()) => {
+                step.bar.set_message(step.step.label);
                 step.bar.set_style(
-                    ProgressStyle::with_template("✓ {msg}").unwrap(),
+                    ProgressStyle::with_template("✓ {msg:.green}").unwrap(),
                 );
                 step.bar.finish();
             }
             Err(e) => {
+                step.bar.set_style(
+                    ProgressStyle::with_template("⚠ {msg:.bold.red}").unwrap(),
+                );
                 step.bar.finish();
                 return Err(e);
             }
@@ -151,5 +164,20 @@ impl Context {
     /// if one was present.
     pub fn set_var(&mut self, var: &str, value: String) -> Option<String> {
         self.vars.insert(var.to_owned(), value)
+    }
+}
+
+pub struct Ui<'step, 'progress> {
+    current_step: &'progress StepAndProgress<'step>,
+}
+
+impl Ui<'_, '_> {
+    pub fn set_substep(&self, substep: impl Into<Cow<'static, str>>) {
+        let bar = &self.current_step.bar;
+        bar.set_message(format!(
+            "{}: {}",
+            self.current_step.step.label,
+            &substep.into()
+        ));
     }
 }

@@ -7,7 +7,7 @@
 
 use std::process::{Command, Output};
 
-use colored::Colorize;
+use crate::runner::Ui;
 
 // TODO(gjc) drop this in favor of a real UI affordance
 pub fn print_step_message(_msg: &str) {
@@ -16,8 +16,11 @@ pub fn print_step_message(_msg: &str) {
 
 /// Runs a `Command` and returns its output. Returns `Err` if the command's exit
 /// status indicates that it failed.
-pub fn run_command_check_status(cmd: &mut Command) -> anyhow::Result<Output> {
-    print_step_message(&format!("{} {:?}", "running command:".dimmed(), cmd));
+pub fn run_command_check_status(
+    cmd: &mut Command,
+    ui: &Ui,
+) -> anyhow::Result<Output> {
+    ui.set_substep(format!("{} {:?}", "executing: ", cmd));
     let output = cmd.output()?;
     if !output.status.success() {
         anyhow::bail!(
@@ -39,8 +42,9 @@ pub fn grep_command_for_row_and_column(
     cmd: &mut Command,
     row_contains: &str,
     column: usize,
+    ui: &Ui,
 ) -> anyhow::Result<String> {
-    let output = run_command_check_status(cmd)?.stdout;
+    let output = run_command_check_status(cmd, ui)?.stdout;
     let output = String::from_utf8_lossy(&output);
     for line in output.lines() {
         if !line.contains(row_contains) {

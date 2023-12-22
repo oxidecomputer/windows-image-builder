@@ -6,16 +6,20 @@
 
 use std::process::Command;
 
-use crate::util::{grep_command_for_row_and_column, run_command_check_status};
+use crate::{
+    runner::Ui,
+    util::{grep_command_for_row_and_column, run_command_check_status},
+};
 
 use anyhow::{Context as _, Result};
 
 /// Uses `qemu-img` to create a blank output disk to which Windows can be
 /// installed.
-pub fn create_output_image(image_path: &str) -> Result<()> {
+pub fn create_output_image(image_path: &str, ui: &Ui) -> Result<()> {
     run_command_check_status(
         Command::new("qemu-img")
             .args(["create", "-f", "raw", image_path, "30G"]),
+        ui,
     )
     .map(|_| ())
 }
@@ -33,12 +37,14 @@ pub struct GptPartitionInformation {
 pub fn get_gpt_partition_information(
     image_path: &str,
     partition_id: u32,
+    ui: &Ui,
 ) -> Result<GptPartitionInformation> {
     let partition_id_string = partition_id.to_string();
     let sector_size = grep_command_for_row_and_column(
         Command::new("sgdisk").args(["-p", image_path]),
         "Sector size",
         3,
+        ui,
     )
     .context("running 'sgdisk -p' to get sector size")?;
 
@@ -46,6 +52,7 @@ pub fn get_gpt_partition_information(
         Command::new("sgdisk").args(["-i", &partition_id_string, image_path]),
         "First sector",
         2,
+        ui,
     )
     .context("getting first sector offset from 'sgdisk -i'")?;
 
@@ -53,6 +60,7 @@ pub fn get_gpt_partition_information(
         Command::new("sgdisk").args(["-i", &partition_id_string, image_path]),
         "Last sector",
         2,
+        ui,
     )
     .context("getting last sector offset from 'sgdisk -i'")?;
 
@@ -60,6 +68,7 @@ pub fn get_gpt_partition_information(
         Command::new("sgdisk").args(["-i", &partition_id_string, image_path]),
         "Partition size",
         2,
+        ui,
     )
     .context("getting partition sector count from 'sgdisk -i'")?;
 
@@ -90,8 +99,9 @@ pub fn get_gpt_partition_information(
 ///   output.
 pub fn get_output_image_partition_size(
     image_path: &str,
+    ui: &Ui,
 ) -> Result<(String, String)> {
-    get_gpt_partition_information(image_path, 4)
+    get_gpt_partition_information(image_path, 4, ui)
         .map(|info| (info.sector_size, info.last_sector))
 }
 
@@ -103,6 +113,7 @@ pub fn shrink_output_image(
     image_path: &str,
     sector_size: &str,
     last_sector: &str,
+    ui: &Ui,
 ) -> Result<()> {
     let sector_size =
         sector_size.parse::<u64>().context("parsing sector size as u64")?;
@@ -117,17 +128,23 @@ pub fn shrink_output_image(
     // that this GPT won't exist in the truncated disk; the caller needs to
     // recreate it, e.g. using `sgdisk -e`.
     let new_disk_size = os_partition_size + (34 * sector_size);
-    run_command_check_status(Command::new("qemu-img").args([
-        "resize",
-        "-f",
-        "raw",
-        image_path,
-        &new_disk_size.to_string(),
-    ]))
+    run_command_check_status(
+        Command::new("qemu-img").args([
+            "resize",
+            "-f",
+            "raw",
+            image_path,
+            &new_disk_size.to_string(),
+        ]),
+        ui,
+    )
     .map(|_| ())
 }
 
-pub fn repair_secondary_gpt(image_path: &str) -> Result<()> {
-    run_command_check_status(Command::new("sgdisk").args(["-e", image_path]))
-        .map(|_| ())
+pub fn repair_secondary_gpt(image_path: &str, ui: &Ui) -> Result<()> {
+    run_command_check_status(
+        Command::new("sgdisk").args(["-e", image_path]),
+        ui,
+    )
+    .map(|_| ())
 }

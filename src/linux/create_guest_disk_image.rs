@@ -17,7 +17,7 @@ use camino::Utf8PathBuf;
 
 use crate::{
     app::ImageSources,
-    runner::{Context, Script, ScriptStep},
+    runner::{Context, Script, ScriptStep, Ui},
     util::run_command_check_status,
     UNATTEND_FILES,
 };
@@ -87,27 +87,30 @@ impl Script for CreateGuestDiskImageScript {
     }
 }
 
-fn create_output_image(ctx: &mut Context) -> Result<()> {
-    crate::steps::create_output_image(ctx.get_var("output_image").unwrap())
+fn create_output_image(ctx: &mut Context, ui: &Ui) -> Result<()> {
+    crate::steps::create_output_image(ctx.get_var("output_image").unwrap(), ui)
 }
 
-fn create_config_iso(ctx: &mut Context) -> Result<()> {
+fn create_config_iso(ctx: &mut Context, ui: &Ui) -> Result<()> {
     let mut unattend_iso =
         Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap()).unwrap();
     unattend_iso.push("unattend.iso");
-    run_command_check_status(Command::new("genisoimage").args([
-        "-J",
-        "-R",
-        "-o",
-        unattend_iso.as_str(),
-        ctx.get_var("unattend_dir").unwrap(),
-    ]))?;
+    run_command_check_status(
+        Command::new("genisoimage").args([
+            "-J",
+            "-R",
+            "-o",
+            unattend_iso.as_str(),
+            ctx.get_var("unattend_dir").unwrap(),
+        ]),
+        ui,
+    )?;
 
     ctx.set_var("unattend_iso", unattend_iso.to_string());
     Ok(())
 }
 
-fn copy_unattend_files_to_work_dir(ctx: &mut Context) -> Result<()> {
+fn copy_unattend_files_to_work_dir(ctx: &mut Context, ui: &Ui) -> Result<()> {
     let mut work_unattend =
         Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap()).unwrap();
     work_unattend.push("unattend");
@@ -118,6 +121,7 @@ fn copy_unattend_files_to_work_dir(ctx: &mut Context) -> Result<()> {
         Utf8PathBuf::from_str(ctx.get_var("unattend_dir").unwrap()).unwrap();
 
     for filename in UNATTEND_FILES {
+        ui.set_substep(format!("copying {}", filename));
         let mut src = unattend_dir.clone();
         src.push(filename);
         let mut dst = work_unattend.clone();
@@ -131,7 +135,7 @@ fn copy_unattend_files_to_work_dir(ctx: &mut Context) -> Result<()> {
     Ok(())
 }
 
-fn customize_autounattend_xml(ctx: &mut Context) -> Result<()> {
+fn customize_autounattend_xml(ctx: &mut Context, _ui: &Ui) -> Result<()> {
     let customizer = crate::autounattend::AutounattendUpdater::new(
         ctx.get_var("unattend_image_index")
             .map(|val| val.parse::<u32>().unwrap()),
@@ -157,7 +161,7 @@ fn customize_autounattend_xml(ctx: &mut Context) -> Result<()> {
     Ok(())
 }
 
-fn install_via_qemu(ctx: &mut Context) -> Result<()> {
+fn install_via_qemu(ctx: &mut Context, ui: &Ui) -> Result<()> {
     // Launch a VM in QEMU with the installation target disk attached as an NVMe
     // drive and CD-ROM drives containing the Windows installation media, the
     // virtio driver disk, and the answer file ISO created previously. Windows
@@ -252,7 +256,7 @@ fn install_via_qemu(ctx: &mut Context) -> Result<()> {
         .spawn()?;
 
     // TODO(gjc) hook this up to a proper UI affordance
-    // println!("  Waiting for QEMU to open its telnet port");
+    ui.set_substep("connecting to QEMU's telnet control interface");
     let mut attempts = 0;
     let mut telnet = loop {
         match std::net::TcpStream::connect("127.0.0.1:8888") {
@@ -272,6 +276,7 @@ fn install_via_qemu(ctx: &mut Context) -> Result<()> {
 
     // Simulate mashing the Enter key to get past the "Press any key to boot
     // from CD or DVD" prompt and the Windows boot menu.
+    ui.set_substep("waiting for guest to complete installation");
     for _ in 0..20 {
         telnet.write_all("sendkey ret\n".as_bytes())?;
         telnet.flush()?;
@@ -286,10 +291,11 @@ fn install_via_qemu(ctx: &mut Context) -> Result<()> {
     Ok(())
 }
 
-fn get_partition_size(ctx: &mut Context) -> Result<()> {
+fn get_partition_size(ctx: &mut Context, ui: &Ui) -> Result<()> {
     let (sector_size, last_sector) =
         crate::steps::get_output_image_partition_size(
             ctx.get_var("output_image").unwrap(),
+            ui,
         )?;
 
     ctx.set_var("sector_size", sector_size);
@@ -297,16 +303,17 @@ fn get_partition_size(ctx: &mut Context) -> Result<()> {
     Ok(())
 }
 
-fn shrink_output_image(ctx: &mut Context) -> Result<()> {
+fn shrink_output_image(ctx: &mut Context, ui: &Ui) -> Result<()> {
     crate::steps::shrink_output_image(
         ctx.get_var("output_image").unwrap(),
         ctx.get_var("sector_size").unwrap(),
         ctx.get_var("last_sector").unwrap(),
+        ui,
     )
 }
 
-fn repair_secondary_gpt(ctx: &mut Context) -> Result<()> {
-    crate::steps::repair_secondary_gpt(ctx.get_var("output_image").unwrap())
+fn repair_secondary_gpt(ctx: &mut Context, ui: &Ui) -> Result<()> {
+    crate::steps::repair_secondary_gpt(ctx.get_var("output_image").unwrap(), ui)
 }
 
 fn get_script() -> Vec<ScriptStep> {
