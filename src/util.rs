@@ -9,8 +9,9 @@ use std::process::{Command, Output};
 
 use colored::Colorize;
 
-pub fn print_step_message(msg: &str) {
-    println!("  {}", msg);
+// TODO(gjc) drop this in favor of a real UI affordance
+pub fn print_step_message(_msg: &str) {
+    // println!("  {}", msg);
 }
 
 /// Runs a `Command` and returns its output. Returns `Err` if the command's exit

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use anyhow::Context as _;
 use camino::Utf8PathBuf;
-use colored::Colorize;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 type StepFn = dyn Fn(&mut Context) -> anyhow::Result<()>;
 
@@ -96,23 +96,33 @@ pub fn run_script(script: Box<dyn Script>) -> anyhow::Result<()> {
     check_script_prereqs(script.as_ref())?;
     let mut ctx = Context { vars: script.initial_context().clone() };
 
-    // The Unicode code points below are for "Circled Information Source,"
-    // "Heavy White Check Mark," and "Octagonal Sign." Some editors display
-    // these characters incorrectly when they appear inline, and it's just one
-    // character per string, so refer to them by code point.
-    for step in script.steps() {
-        println!("[ ➤ ] {}", step.label.blue());
-        match (step.func)(&mut ctx) {
+    struct StepAndProgress<'a> {
+        step: &'a ScriptStep,
+        bar: ProgressBar,
+    }
+
+    let multi = MultiProgress::new();
+    let steps_with_progress: Vec<StepAndProgress> = script
+        .steps()
+        .iter()
+        .map(|step| {
+            let bar = multi.add(ProgressBar::new_spinner());
+            bar.set_message(step.label);
+            StepAndProgress { step, bar }
+        })
+        .collect();
+
+    for step in steps_with_progress {
+        step.bar.enable_steady_tick(std::time::Duration::from_millis(250));
+        match (step.step.func)(&mut ctx) {
             Ok(()) => {
-                println!("{} {}", "[ ✔ ]".green(), step.label.blue())
+                step.bar.set_style(
+                    ProgressStyle::with_template("✓ {msg}").unwrap(),
+                );
+                step.bar.finish();
             }
             Err(e) => {
-                println!(
-                    "{} {}\n  {}",
-                    "[ ✗ ]".bright_red(),
-                    step.label.blue(),
-                    e
-                );
+                step.bar.finish();
                 return Err(e);
             }
         }

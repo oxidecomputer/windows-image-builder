@@ -10,6 +10,7 @@ anyhow = "1.0.75"
 camino = "1.1.6"
 clap = { version = "4.4.8", features = ["derive", "wrap_help"] }
 colored = "2.0.4"
+indicatif = "0.17.7"
 itertools = "0.12.0"
 which = "5.0.0"
 xml-rs = "0.8.19"

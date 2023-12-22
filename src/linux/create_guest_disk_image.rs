@@ -5,7 +5,12 @@
 //! Defines a script for building a Windows guest image on a Linux system using
 //! QEMU.
 
-use std::{collections::HashMap, io::Write, process::Command, str::FromStr};
+use std::{
+    collections::HashMap,
+    io::Write,
+    process::{Command, Stdio},
+    str::FromStr,
+};
 
 use anyhow::{Context as _, Result};
 use camino::Utf8PathBuf;
@@ -219,9 +224,11 @@ fn install_via_qemu(ctx: &mut Context) -> Result<()> {
         "ide-cd,drive=unattend-disk,id=cd-disk2,unit=1,bus=ide.0",
         "-drive",
         &unattend_iso_arg,
-        // Send serial console output to stdout so that the user can monitor
-        // the installation's progress (the guest is configured to print
-        // setup progress to COM1).
+        // prep.cmd, the wrapper script that executes OxidePrepBaseImage.ps1,
+        // redirects the child script's output to COM1 and will fail if no
+        // serial device appears to be present, so `-serial` is required here.
+        // Directing QEMU to write to stdio allows this function to decide what
+        // to do with this output.
         "-serial",
         "stdio",
         // Set up the QEMU monitor to allow the runner to send keyboard
@@ -236,9 +243,16 @@ fn install_via_qemu(ctx: &mut Context) -> Result<()> {
         args.extend_from_slice(&["-display", "none"]);
     }
 
-    let qemu = Command::new("qemu-system-x86_64").args(&args).spawn()?;
+    // TODO(gjc) don't let QEMU yeet stuff to the tty. instead this should go to
+    // a log somewhere in the tmpdir or something
+    let qemu = Command::new("qemu-system-x86_64")
+        .args(&args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
 
-    println!("  Waiting for QEMU to open its telnet port");
+    // TODO(gjc) hook this up to a proper UI affordance
+    // println!("  Waiting for QEMU to open its telnet port");
     let mut attempts = 0;
     let mut telnet = loop {
         match std::net::TcpStream::connect("127.0.0.1:8888") {
