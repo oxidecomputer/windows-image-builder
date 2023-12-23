@@ -6,14 +6,11 @@
 //! QEMU.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     io::Write,
     process::{Command, Stdio},
     str::FromStr,
 };
-
-use anyhow::{Context as _, Result};
-use camino::Utf8PathBuf;
 
 use crate::{
     app::ImageSources,
@@ -21,6 +18,10 @@ use crate::{
     util::run_command_check_status,
     UNATTEND_FILES,
 };
+
+use anyhow::{Context as _, Result};
+use camino::Utf8PathBuf;
+use colored::Colorize;
 
 pub struct CreateGuestDiskImageArgs {
     pub work_dir: Utf8PathBuf,
@@ -44,6 +45,104 @@ impl CreateGuestDiskImageScript {
 impl Script for CreateGuestDiskImageScript {
     fn steps(&self) -> &[ScriptStep] {
         self.steps.as_slice()
+    }
+
+    fn print_configuration(
+        &self,
+        mut w: Box<dyn std::io::Write>,
+    ) -> std::io::Result<()> {
+        println!(
+            "Creating an Oxide-compatible Windows image with these options:\n"
+        );
+
+        let args = &self.args;
+        let sources = &args.sources;
+        writeln!(w, "  {}: {}", "Working directory".bold(), args.work_dir)?;
+        writeln!(w, "  {}: {}", "Windows ISO".bold(), sources.windows_iso)?;
+        writeln!(
+            w,
+            "  {}: {}",
+            "Virtio driver ISO".bold(),
+            sources.virtio_iso
+        )?;
+        writeln!(
+            w,
+            "  {}: {}",
+            "Unattend file directory".bold(),
+            sources.unattend_dir
+        )?;
+
+        writeln!(w, "")?;
+
+        if let Some(index) = sources.unattend_image_index {
+            writeln!(
+                w,
+                "  Image index to insert into Autounattend.xml: {}",
+                index
+            )?;
+        } else {
+            writeln!(w, "  Will use default image index in Autounattend.xml")?;
+        }
+
+        if let Some(version) = sources.windows_version {
+            writeln!(w, "  Target Windows version: {}", version)?;
+        } else {
+            writeln!(
+                w,
+                "  Will use default Windows version in Autounattend.xml"
+            )?;
+        }
+
+        writeln!(w, "")?;
+        writeln!(w, "  {}: {}", "Output file".bold(), args.output_image)?;
+
+        Ok(())
+    }
+
+    fn check_prerequisites(&self) -> std::result::Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        let mut files = vec![
+            self.args.sources.windows_iso.clone(),
+            self.args.sources.virtio_iso.clone(),
+            self.args.ovmf_path.clone(),
+        ];
+
+        for file in UNATTEND_FILES {
+            let mut path = self.args.sources.unattend_dir.clone();
+            path.push(file);
+            files.push(path);
+        }
+
+        for file in files {
+            if !file.exists() {
+                errors.push(format!("'{}' not found", file));
+            } else if !file.is_file() {
+                errors.push(format!("'{}' exists but isn't a file", file));
+            }
+        }
+
+        let mut executables = BTreeSet::new();
+        for step in self.steps() {
+            for dep in step.prereq_commands() {
+                executables.insert(dep);
+            }
+        }
+
+        for dep in executables {
+            if let Err(e) = which::which(dep) {
+                errors.push(format!(
+                    "binary or command '{}' not found (is it on your PATH?): \
+                    {}",
+                    dep, e
+                ));
+            }
+        }
+
+        if !errors.is_empty() {
+            Err(errors)
+        } else {
+            Ok(())
+        }
     }
 
     fn file_prerequisites(&self) -> Vec<camino::Utf8PathBuf> {

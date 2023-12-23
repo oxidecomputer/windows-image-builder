@@ -20,6 +20,16 @@ pub enum WindowsVersion {
     Server2022,
 }
 
+impl std::fmt::Display for WindowsVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WindowsVersion::Server2016 => write!(f, "Windows Server 2016"),
+            WindowsVersion::Server2019 => write!(f, "Windows Server 2019"),
+            WindowsVersion::Server2022 => write!(f, "Windows Server 2022"),
+        }
+    }
+}
+
 impl WindowsVersion {
     pub fn as_driver_path_component(&self) -> &'static str {
         match self {

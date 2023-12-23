@@ -5,10 +5,14 @@
 //! Structs, traits, and functions for defining and running a set of scripted
 //! operations.
 
-use std::{borrow::Cow, collections::HashMap};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    io::{Read, Write},
+};
 
-use anyhow::Context as _;
 use camino::Utf8PathBuf;
+use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 const PROGRESS_TICK_INTERVAL: std::time::Duration =
@@ -45,12 +49,23 @@ impl ScriptStep {
     ) -> Self {
         Self { label, func: Box::new(func), prereq_commands: commands.to_vec() }
     }
+
+    pub fn prereq_commands(&self) -> &[&'static str] {
+        self.prereq_commands.as_slice()
+    }
 }
 
 /// Implemented by objects that can be used as scripts.
 pub trait Script {
     /// Yields a slice of steps that can be executed to run this script.
     fn steps(&self) -> &[ScriptStep];
+
+    fn print_configuration(
+        &self,
+        w: Box<dyn std::io::Write>,
+    ) -> std::io::Result<()>;
+
+    fn check_prerequisites(&self) -> Result<(), Vec<String>>;
 
     /// Yields a `Vec` of paths to files that must exist for this script to run
     /// to completion.
@@ -61,38 +76,6 @@ pub trait Script {
     fn initial_context(&self) -> HashMap<String, String>;
 }
 
-/// Checks that all of a script's prerequisites are satisfied.
-fn check_script_prereqs(script: &dyn Script) -> anyhow::Result<()> {
-    let mut errors = Vec::new();
-    for step in script.steps() {
-        for command in &step.prereq_commands {
-            if let Err(e) = which::which(command).with_context(|| {
-                format!(
-                    "checking prerequisite '{}' for script step '{}'",
-                    command, step.label
-                )
-            }) {
-                errors.push(e);
-            }
-        }
-    }
-
-    for file in script.file_prerequisites() {
-        if !camino::Utf8Path::exists(&file) {
-            errors.push(anyhow::anyhow!(
-                "prerequisite file '{}' not found",
-                file
-            ));
-        }
-    }
-
-    if !errors.is_empty() {
-        anyhow::bail!("one or more prerequisites not satisfied: {:#?}", errors);
-    }
-
-    Ok(())
-}
-
 struct StepAndProgress<'a> {
     step: &'a ScriptStep,
     bar: ProgressBar,
@@ -101,9 +84,26 @@ struct StepAndProgress<'a> {
 /// Runs a script, pretty-printing its various labels and the outcomes of each
 /// step.
 pub fn run_script(script: Box<dyn Script>) -> anyhow::Result<()> {
-    check_script_prereqs(script.as_ref())?;
-    let mut ctx = Context { vars: script.initial_context().clone() };
+    script.print_configuration(Box::new(std::io::stdout()))?;
+    println!("");
 
+    if let Err(e) = script.check_prerequisites() {
+        let s = "Some prerequisites were not satisfied:".bold();
+        println!("{}", s);
+
+        for unsatisfied in e.iter() {
+            println!("  {}", unsatisfied);
+        }
+
+        println!("");
+        anyhow::bail!("some script prerequisites weren't satisfied");
+    }
+
+    println!("Press Enter to continue or CTRL-C to cancel.");
+    std::io::stdout().flush()?;
+    std::io::stdin().read(&mut [0u8])?;
+
+    let mut ctx = Context { vars: script.initial_context().clone() };
     let multi = MultiProgress::new();
     let steps_with_progress: Vec<StepAndProgress> = script
         .steps()
