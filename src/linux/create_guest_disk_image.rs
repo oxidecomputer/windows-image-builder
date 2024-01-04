@@ -146,11 +146,11 @@ impl Script for CreateGuestDiskImageScript {
     }
 }
 
-fn create_output_image(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn create_output_image(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     crate::steps::create_output_image(ctx.get_var("output_image").unwrap(), ui)
 }
 
-fn create_config_iso(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn create_config_iso(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     let mut unattend_iso =
         Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap()).unwrap();
     unattend_iso.push("unattend.iso");
@@ -169,7 +169,10 @@ fn create_config_iso(ctx: &mut Context, ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn copy_unattend_files_to_work_dir(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn copy_unattend_files_to_work_dir(
+    ctx: &mut Context,
+    ui: &dyn Ui,
+) -> Result<()> {
     let mut work_unattend =
         Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap()).unwrap();
     work_unattend.push("unattend");
@@ -194,7 +197,7 @@ fn copy_unattend_files_to_work_dir(ctx: &mut Context, ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn customize_autounattend_xml(ctx: &mut Context, _ui: &Ui) -> Result<()> {
+fn customize_autounattend_xml(ctx: &mut Context, _ui: &dyn Ui) -> Result<()> {
     let customizer = crate::autounattend::AutounattendUpdater::new(
         ctx.get_var("unattend_image_index")
             .map(|val| val.parse::<u32>().unwrap()),
@@ -220,7 +223,7 @@ fn customize_autounattend_xml(ctx: &mut Context, _ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn install_via_qemu(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn install_via_qemu(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     // Launch a VM in QEMU with the installation target disk attached as an NVMe
     // drive and CD-ROM drives containing the Windows installation media, the
     // virtio driver disk, and the answer file ISO created previously. Windows
@@ -347,7 +350,7 @@ fn install_via_qemu(ctx: &mut Context, ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn get_partition_size(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn get_partition_size(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     let (sector_size, last_sector) =
         crate::steps::get_output_image_partition_size(
             ctx.get_var("output_image").unwrap(),
@@ -359,7 +362,7 @@ fn get_partition_size(ctx: &mut Context, ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn shrink_output_image(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn shrink_output_image(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     crate::steps::shrink_output_image(
         ctx.get_var("output_image").unwrap(),
         ctx.get_var("sector_size").unwrap(),
@@ -368,7 +371,7 @@ fn shrink_output_image(ctx: &mut Context, ui: &Ui) -> Result<()> {
     )
 }
 
-fn repair_secondary_gpt(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn repair_secondary_gpt(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     crate::steps::repair_secondary_gpt(ctx.get_var("output_image").unwrap(), ui)
 }
 

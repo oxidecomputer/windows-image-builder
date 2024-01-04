@@ -95,7 +95,7 @@ impl Script for CreateGuestDiskImageScript {
     }
 }
 
-fn create_vnic(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn create_vnic(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     run_command_check_status(
         Command::new("pfexec").args([
             "dladm",
@@ -110,11 +110,11 @@ fn create_vnic(ctx: &mut Context, ui: &Ui) -> Result<()> {
     .map(|_| ())
 }
 
-fn create_output_image(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn create_output_image(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     crate::steps::create_output_image(ctx.get_var("output_image").unwrap(), ui)
 }
 
-fn write_vm_toml(ctx: &mut Context, _ui: &Ui) -> Result<()> {
+fn write_vm_toml(ctx: &mut Context, _ui: &dyn Ui) -> Result<()> {
     let mut vm_toml_path =
         Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap()).unwrap();
     vm_toml_path.push("vm.toml");
@@ -163,7 +163,7 @@ pci-path = "0.8.0"
     Ok(())
 }
 
-fn run_propolis_standalone(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn run_propolis_standalone(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     let current_dir = std::env::current_dir().context(
         "getting current directory before launching propolis-standalone",
     )?;
@@ -236,7 +236,7 @@ fn run_propolis_standalone(ctx: &mut Context, ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn get_partition_size(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn get_partition_size(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     let (sector_size, last_sector) =
         crate::steps::get_output_image_partition_size(
             ctx.get_var("output_image").unwrap(),
@@ -248,7 +248,7 @@ fn get_partition_size(ctx: &mut Context, ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn shrink_output_image(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn shrink_output_image(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     crate::steps::shrink_output_image(
         ctx.get_var("output_image").unwrap(),
         ctx.get_var("sector_size").unwrap(),
@@ -257,11 +257,11 @@ fn shrink_output_image(ctx: &mut Context, ui: &Ui) -> Result<()> {
     )
 }
 
-fn repair_secondary_gpt(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn repair_secondary_gpt(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     crate::steps::repair_secondary_gpt(ctx.get_var("output_image").unwrap(), ui)
 }
 
-fn remove_vnic(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn remove_vnic(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     run_command_check_status(
         Command::new("pfexec").args([
             "dladm",

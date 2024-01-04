@@ -15,7 +15,7 @@ use anyhow::{Context as _, Result};
 
 /// Uses `qemu-img` to create a blank output disk to which Windows can be
 /// installed.
-pub fn create_output_image(image_path: &str, ui: &Ui) -> Result<()> {
+pub fn create_output_image(image_path: &str, ui: &dyn Ui) -> Result<()> {
     run_command_check_status(
         Command::new("qemu-img")
             .args(["create", "-f", "raw", image_path, "30G"]),
@@ -37,7 +37,7 @@ pub struct GptPartitionInformation {
 pub fn get_gpt_partition_information(
     image_path: &str,
     partition_id: u32,
-    ui: &Ui,
+    ui: &dyn Ui,
 ) -> Result<GptPartitionInformation> {
     let partition_id_string = partition_id.to_string();
     let sector_size = grep_command_for_row_and_column(
@@ -99,7 +99,7 @@ pub fn get_gpt_partition_information(
 ///   output.
 pub fn get_output_image_partition_size(
     image_path: &str,
-    ui: &Ui,
+    ui: &dyn Ui,
 ) -> Result<(String, String)> {
     get_gpt_partition_information(image_path, 4, ui)
         .map(|info| (info.sector_size, info.last_sector))
@@ -113,7 +113,7 @@ pub fn shrink_output_image(
     image_path: &str,
     sector_size: &str,
     last_sector: &str,
-    ui: &Ui,
+    ui: &dyn Ui,
 ) -> Result<()> {
     let sector_size =
         sector_size.parse::<u64>().context("parsing sector size as u64")?;
@@ -141,7 +141,7 @@ pub fn shrink_output_image(
     .map(|_| ())
 }
 
-pub fn repair_secondary_gpt(image_path: &str, ui: &Ui) -> Result<()> {
+pub fn repair_secondary_gpt(image_path: &str, ui: &dyn Ui) -> Result<()> {
     run_command_check_status(
         Command::new("sgdisk").args(["-e", image_path]),
         ui,

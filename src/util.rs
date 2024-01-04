@@ -23,9 +23,9 @@ pub fn print_step_message(_msg: &str) {
 /// status indicates that it failed.
 pub fn run_command_check_status(
     cmd: &mut Command,
-    ui: &Ui,
+    ui: &dyn Ui,
 ) -> anyhow::Result<Output> {
-    ui.set_substep(format!("{} {:?}", "executing: ", cmd));
+    ui.set_substep(&format!("{} {:?}", "executing: ", cmd));
     let output = cmd.output()?;
     if !output.status.success() {
         anyhow::bail!(
@@ -47,7 +47,7 @@ pub fn grep_command_for_row_and_column(
     cmd: &mut Command,
     row_contains: &str,
     column: usize,
-    ui: &Ui,
+    ui: &dyn Ui,
 ) -> anyhow::Result<String> {
     let output = run_command_check_status(cmd, ui)?.stdout;
     let output = String::from_utf8_lossy(&output);

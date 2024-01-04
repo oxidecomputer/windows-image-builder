@@ -6,7 +6,6 @@
 //! operations.
 
 use std::{
-    borrow::Cow,
     collections::HashMap,
     io::{Read, Write},
     process::Stdio,
@@ -18,7 +17,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 const PROGRESS_TICK_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(100);
 
-type StepFn = dyn Fn(&mut Context, &Ui) -> anyhow::Result<()>;
+type StepFn = dyn Fn(&mut Context, &dyn Ui) -> anyhow::Result<()>;
 
 /// A step in a scripted procedure.
 pub struct ScriptStep {
@@ -37,14 +36,14 @@ pub struct ScriptStep {
 impl ScriptStep {
     pub fn new(
         label: &'static str,
-        func: impl Fn(&mut Context, &Ui) -> anyhow::Result<()> + 'static,
+        func: impl Fn(&mut Context, &dyn Ui) -> anyhow::Result<()> + 'static,
     ) -> Self {
         Self { label, func: Box::new(func), prereq_commands: Vec::new() }
     }
 
     pub fn with_prereqs(
         label: &'static str,
-        func: impl Fn(&mut Context, &Ui) -> anyhow::Result<()> + 'static,
+        func: impl Fn(&mut Context, &dyn Ui) -> anyhow::Result<()> + 'static,
         commands: &[&'static str],
     ) -> Self {
         Self { label, func: Box::new(func), prereq_commands: commands.to_vec() }
@@ -104,51 +103,12 @@ pub fn run_script(
         std::io::stdin().read(&mut [0u8])?;
     }
 
-    let mut ctx = Context { vars: script.initial_context().clone() };
-    let multi = interactive.then_some(MultiProgress::new());
-
-    let steps_with_progress: Vec<StepAndProgress> = script
-        .steps()
-        .iter()
-        .map(|step| {
-            let bar = if let Some(multi) = &multi {
-                multi.add(ProgressBar::new_spinner())
-            } else {
-                ProgressBar::new_spinner()
-            };
-
-            bar.set_message(step.label);
-            bar.set_style(
-                ProgressStyle::with_template("  {msg:.dim}").unwrap(),
-            );
-            bar.tick();
-            StepAndProgress { step, bar }
-        })
-        .collect();
-
-    for step in steps_with_progress {
-        step.bar.set_style(ProgressStyle::default_spinner());
-        step.bar.enable_steady_tick(PROGRESS_TICK_INTERVAL);
-        let ui = Ui { current_step: &step, interactive };
-        match (step.step.func)(&mut ctx, &ui) {
-            Ok(()) => {
-                step.bar.set_message(step.step.label);
-                step.bar.set_style(
-                    ProgressStyle::with_template("✓ {msg:.green}").unwrap(),
-                );
-                step.bar.finish();
-            }
-            Err(e) => {
-                step.bar.set_style(
-                    ProgressStyle::with_template("⚠ {msg:.bold.red}").unwrap(),
-                );
-                step.bar.finish();
-                return Err(e);
-            }
-        }
+    let ctx = Context { vars: script.initial_context().clone() };
+    if interactive {
+        run_interactive_script(script, ctx)
+    } else {
+        NonInteractiveUi::run_script(script, ctx)
     }
-
-    Ok(())
 }
 
 /// A shared script execution context, provided to each step in a running
@@ -174,26 +134,101 @@ impl Context {
     }
 }
 
-pub struct Ui<'step, 'progress> {
-    current_step: &'progress StepAndProgress<'step>,
-    interactive: bool,
+pub trait Ui {
+    fn set_substep(&self, substep: &str);
+    fn stdout_target(&self) -> Stdio;
 }
 
-impl Ui<'_, '_> {
-    pub fn set_substep(&self, substep: impl Into<Cow<'static, str>>) {
+struct InteractiveUi<'step, 'progress> {
+    current_step: &'progress StepAndProgress<'step>,
+}
+
+fn run_interactive_script(
+    script: Box<dyn Script>,
+    mut ctx: Context,
+) -> anyhow::Result<()> {
+    let multi = MultiProgress::new();
+    let steps_with_progress: Vec<StepAndProgress> = script
+        .steps()
+        .iter()
+        .map(|step| {
+            let bar = multi.add(ProgressBar::new_spinner());
+            bar.set_message(step.label);
+            bar.set_style(
+                ProgressStyle::with_template("  {msg:.dim}").unwrap(),
+            );
+            bar.tick();
+            StepAndProgress { step, bar }
+        })
+        .collect();
+
+    for step in steps_with_progress {
+        step.bar.set_style(ProgressStyle::default_spinner());
+        step.bar.enable_steady_tick(PROGRESS_TICK_INTERVAL);
+        let ui = InteractiveUi { current_step: &step };
+        match (step.step.func)(&mut ctx, &ui) {
+            Ok(()) => {
+                step.bar.set_message(step.step.label);
+                step.bar.set_style(
+                    ProgressStyle::with_template("✓ {msg:.green}").unwrap(),
+                );
+                step.bar.finish();
+            }
+            Err(e) => {
+                step.bar.set_style(
+                    ProgressStyle::with_template("⚠ {msg:.bold.red}").unwrap(),
+                );
+                step.bar.finish();
+                return Err(e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+impl Ui for InteractiveUi<'_, '_> {
+    fn set_substep(&self, substep: &str) {
         let bar = &self.current_step.bar;
         bar.set_message(format!(
             "{}: {}",
-            self.current_step.step.label,
-            &substep.into()
+            self.current_step.step.label, substep
         ));
     }
 
-    pub fn stdout_target(&self) -> Stdio {
-        if self.interactive {
-            Stdio::piped()
-        } else {
-            Stdio::inherit()
+    fn stdout_target(&self) -> Stdio {
+        Stdio::piped()
+    }
+}
+
+struct NonInteractiveUi;
+
+impl NonInteractiveUi {
+    pub fn run_script(
+        script: Box<dyn Script>,
+        mut ctx: Context,
+    ) -> anyhow::Result<()> {
+        for step in script.steps() {
+            println!("Starting step: {}", step.label);
+            let ui = Self;
+            match (step.func)(&mut ctx, &ui) {
+                Ok(()) => println!("Completed: {}", step.label),
+                Err(e) => {
+                    println!("Failed: {}", step.label);
+                    println!("  {:?}", e);
+                    return Err(e);
+                }
+            }
         }
+        Ok(())
+    }
+}
+
+impl Ui for NonInteractiveUi {
+    fn set_substep(&self, substep: &str) {
+        println!("  {}", substep);
+    }
+    fn stdout_target(&self) -> Stdio {
+        Stdio::inherit()
     }
 }

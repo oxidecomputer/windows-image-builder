@@ -153,7 +153,7 @@ impl Script for BuildInstallationDiskScript {
     }
 }
 
-fn create_installer_disk(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn create_installer_disk(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     run_command_check_status(
         Command::new("qemu-img").args([
             "create",
@@ -171,7 +171,7 @@ fn create_installer_disk(ctx: &mut Context, ui: &Ui) -> Result<()> {
     .map(|_| ())
 }
 
-fn set_up_installer_gpt_table(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn set_up_installer_gpt_table(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     run_command_check_status(
         Command::new("sgdisk")
             .args(["-og", ctx.get_var("output_image").unwrap()]),
@@ -180,7 +180,10 @@ fn set_up_installer_gpt_table(ctx: &mut Context, ui: &Ui) -> Result<()> {
     .map(|_| ())
 }
 
-fn create_installer_disk_partitions(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn create_installer_disk_partitions(
+    ctx: &mut Context,
+    ui: &dyn Ui,
+) -> Result<()> {
     run_command_check_status(
         Command::new("sgdisk").args([
             "-n=1:0:+1G",
@@ -196,7 +199,10 @@ fn create_installer_disk_partitions(ctx: &mut Context, ui: &Ui) -> Result<()> {
     .map(|_| ())
 }
 
-fn set_installer_disk_partition_ids(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn set_installer_disk_partition_ids(
+    ctx: &mut Context,
+    ui: &dyn Ui,
+) -> Result<()> {
     // N.B. These partition GUIDs must match the GUIDs in
     // Autounattend.xml.
     const PARTITION_GUID_1: &str = "569CBD84-352D-44D9-B92D-BF25B852925B";
@@ -217,7 +223,7 @@ fn set_installer_disk_partition_ids(ctx: &mut Context, ui: &Ui) -> Result<()> {
 
 fn mount_installer_disk_as_loopback_device(
     ctx: &mut Context,
-    ui: &Ui,
+    ui: &dyn Ui,
 ) -> Result<()> {
     let repack_loop = run_command_check_status(
         Command::new("pfexec").args([
@@ -253,7 +259,7 @@ fn mount_installer_disk_as_loopback_device(
     Ok(())
 }
 
-fn create_winpe_fat32(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn create_winpe_fat32(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     let yes_cmd = Command::new("yes").stdout(Stdio::piped()).spawn()?;
     run_command_check_status(
         Command::new("pfexec")
@@ -273,7 +279,7 @@ fn create_winpe_fat32(ctx: &mut Context, ui: &Ui) -> Result<()> {
     .map(|_| ())
 }
 
-fn mount_winpe_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn mount_winpe_partition(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     let mut setup_mount =
         Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap()).unwrap();
 
@@ -296,7 +302,10 @@ fn mount_winpe_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn extract_setup_to_winpe_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn extract_setup_to_winpe_partition(
+    ctx: &mut Context,
+    ui: &dyn Ui,
+) -> Result<()> {
     run_command_check_status(
         Command::new("7z")
             .args([
@@ -311,7 +320,10 @@ fn extract_setup_to_winpe_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
     .map(|_| ())
 }
 
-fn copy_unattend_files_to_work_dir(ctx: &mut Context, _ui: &Ui) -> Result<()> {
+fn copy_unattend_files_to_work_dir(
+    ctx: &mut Context,
+    _ui: &dyn Ui,
+) -> Result<()> {
     let mut work_unattend =
         Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap()).unwrap();
     work_unattend.push("unattend");
@@ -335,7 +347,7 @@ fn copy_unattend_files_to_work_dir(ctx: &mut Context, _ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn customize_autounattend_xml(ctx: &mut Context, _ui: &Ui) -> Result<()> {
+fn customize_autounattend_xml(ctx: &mut Context, _ui: &dyn Ui) -> Result<()> {
     let customizer = crate::autounattend::AutounattendUpdater::new(
         ctx.get_var("unattend_image_index")
             .map(|val| val.parse::<u32>().unwrap()),
@@ -361,7 +373,10 @@ fn customize_autounattend_xml(ctx: &mut Context, _ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn copy_unattend_to_winpe_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn copy_unattend_to_winpe_partition(
+    ctx: &mut Context,
+    ui: &dyn Ui,
+) -> Result<()> {
     let setup_mount = ctx.get_var("setup_mount").unwrap();
     let unattend_dir =
         Utf8PathBuf::from_str(ctx.get_var("unattend_dir").unwrap()).unwrap();
@@ -372,7 +387,7 @@ fn copy_unattend_to_winpe_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
         "prep.cmd",
         "specialize-unattend.xml",
     ] {
-        ui.set_substep(format!("  copying {filename} to WinPE partition"));
+        ui.set_substep(&format!("  copying {filename} to WinPE partition"));
         let mut unattend = unattend_dir.clone();
         unattend.push(filename);
         if !unattend.exists() {
@@ -391,7 +406,7 @@ fn copy_unattend_to_winpe_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
 
 fn copy_cloudbase_init_to_winpe_partition(
     ctx: &mut Context,
-    _ui: &Ui,
+    _ui: &dyn Ui,
 ) -> Result<()> {
     let unattend_dir =
         Utf8PathBuf::from_str(ctx.get_var("unattend_dir").unwrap()).unwrap();
@@ -413,7 +428,10 @@ fn copy_cloudbase_init_to_winpe_partition(
     Ok(())
 }
 
-fn copy_virtio_to_winpe_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn copy_virtio_to_winpe_partition(
+    ctx: &mut Context,
+    ui: &dyn Ui,
+) -> Result<()> {
     let setup_mount = ctx.get_var("setup_mount").unwrap();
     for (driver, ext) in iproduct!(["viostor", "NetKVM"], ["cat", "inf", "sys"])
     {
@@ -435,7 +453,7 @@ fn copy_virtio_to_winpe_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn unmount_winpe_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn unmount_winpe_partition(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     let setup_mount = ctx.get_var("setup_mount").unwrap();
     run_command_check_status(
         Command::new("pfexec").args(["umount", setup_mount]),
@@ -444,7 +462,7 @@ fn unmount_winpe_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
     .map(|_| ())
 }
 
-fn get_wim_partition_parameters(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn get_wim_partition_parameters(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     let params = get_gpt_partition_information(
         ctx.get_var("output_image").unwrap(),
         2,
@@ -458,7 +476,7 @@ fn get_wim_partition_parameters(ctx: &mut Context, ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn create_wim_partition_ntfs(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn create_wim_partition_ntfs(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     let sector_size = ctx.get_var("sector_size").unwrap();
     let first_sector = ctx.get_var("first_sector").unwrap();
     let partition_sectors = ctx.get_var("partition_sectors").unwrap();
@@ -484,7 +502,7 @@ fn create_wim_partition_ntfs(ctx: &mut Context, ui: &Ui) -> Result<()> {
     .map(|_| ())
 }
 
-fn mount_wim_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn mount_wim_partition(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     let mut image_mount =
         Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap()).unwrap();
     image_mount.push("image-mount");
@@ -507,7 +525,7 @@ fn mount_wim_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn copy_install_wim(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn copy_install_wim(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     run_command_check_status(
         Command::new("7z")
             .args([
@@ -522,7 +540,7 @@ fn copy_install_wim(ctx: &mut Context, ui: &Ui) -> Result<()> {
     .map(|_| ())
 }
 
-fn unmount_wim_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn unmount_wim_partition(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     run_command_check_status(
         Command::new("pfexec")
             .args(["umount", ctx.get_var("image_mount").unwrap()]),
@@ -531,7 +549,7 @@ fn unmount_wim_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
     .map(|_| ())
 }
 
-fn remove_loopback_device(ctx: &mut Context, ui: &Ui) -> Result<()> {
+fn remove_loopback_device(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     // Sleep briefly to ensure the sync finishes before trying to remove the
     // device.
     std::thread::sleep(std::time::Duration::from_secs(2));
