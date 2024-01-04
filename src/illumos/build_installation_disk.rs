@@ -361,7 +361,7 @@ fn customize_autounattend_xml(ctx: &mut Context, _ui: &Ui) -> Result<()> {
     Ok(())
 }
 
-fn copy_unattend_to_winpe_partition(ctx: &mut Context, _ui: &Ui) -> Result<()> {
+fn copy_unattend_to_winpe_partition(ctx: &mut Context, ui: &Ui) -> Result<()> {
     let setup_mount = ctx.get_var("setup_mount").unwrap();
     let unattend_dir =
         Utf8PathBuf::from_str(ctx.get_var("unattend_dir").unwrap()).unwrap();
@@ -372,7 +372,7 @@ fn copy_unattend_to_winpe_partition(ctx: &mut Context, _ui: &Ui) -> Result<()> {
         "prep.cmd",
         "specialize-unattend.xml",
     ] {
-        println!("  copying {filename} to WinPE partition");
+        ui.set_substep(format!("  copying {filename} to WinPE partition"));
         let mut unattend = unattend_dir.clone();
         unattend.push(filename);
         if !unattend.exists() {
