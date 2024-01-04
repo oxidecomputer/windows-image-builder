@@ -5,9 +5,14 @@
 //! Utility functions shared by multiple scripts, possibly across multiple
 //! target OSes.
 
-use std::process::{Command, Output};
+use std::{
+    collections::BTreeSet,
+    process::{Command, Output},
+};
 
-use crate::runner::Ui;
+use camino::Utf8PathBuf;
+
+use crate::runner::{ScriptStep, Ui};
 
 // TODO(gjc) drop this in favor of a real UI affordance
 pub fn print_step_message(_msg: &str) {
@@ -65,4 +70,41 @@ pub fn grep_command_for_row_and_column(
         cmd.get_program().to_string_lossy(),
         output
     );
+}
+
+/// Checks each file in `files` to make sure that it exists and is a file.
+/// Returns a `Vec` of strings describing any missing or incorrectly-typed
+/// files, or an empty `Vec` if all the files are present.
+pub fn check_file_prerequisites(files: &[Utf8PathBuf]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for file in files {
+        if !file.exists() {
+            errors.push(format!("'{}' not found", file));
+        } else if !file.is_file() {
+            errors.push(format!("'{}' exists but isn't a file", file));
+        }
+    }
+
+    errors
+}
+
+pub fn check_executable_prerequisites(steps: &[ScriptStep]) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut executables = BTreeSet::new();
+    for step in steps {
+        for dep in step.prereq_commands() {
+            executables.insert(dep);
+        }
+    }
+
+    for dep in executables {
+        if let Err(e) = which::which(dep) {
+            errors.push(format!(
+                "binary or command '{}' not found (is it on your PATH?): {}",
+                dep, e
+            ));
+        }
+    }
+
+    errors
 }

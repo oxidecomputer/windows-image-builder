@@ -9,11 +9,20 @@ use crate::autounattend::WindowsVersion;
 
 #[derive(Parser)]
 pub struct App {
+    /// The directory in which to store temporary files.
     #[arg(long)]
     pub work_dir: Utf8PathBuf,
 
+    /// The path to the tool's output disk image (i.e. the generated all-in-one
+    /// installation disk or guest disk image).
     #[arg(long)]
     pub output_image: Utf8PathBuf,
+
+    /// Forces the tool to run in an interactive or non-interactive mode. If not
+    /// set, the tool infers whether to run interactively from whether it is
+    /// running in an interactive terminal.
+    #[arg(long, default_value = Option::None)]
+    pub interactive: Option<bool>,
 
     #[command(subcommand)]
     pub command: Command,

@@ -9,9 +9,9 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     io::{Read, Write},
+    process::Stdio,
 };
 
-use camino::Utf8PathBuf;
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
@@ -67,10 +67,6 @@ pub trait Script {
 
     fn check_prerequisites(&self) -> Result<(), Vec<String>>;
 
-    /// Yields a `Vec` of paths to files that must exist for this script to run
-    /// to completion.
-    fn file_prerequisites(&self) -> Vec<Utf8PathBuf>;
-
     /// Yields a `HashMap` that contains key-value pairs that should be inserted
     /// into the script's `[Context]` prior to running it.
     fn initial_context(&self) -> HashMap<String, String>;
@@ -83,7 +79,10 @@ struct StepAndProgress<'a> {
 
 /// Runs a script, pretty-printing its various labels and the outcomes of each
 /// step.
-pub fn run_script(script: Box<dyn Script>) -> anyhow::Result<()> {
+pub fn run_script(
+    script: Box<dyn Script>,
+    interactive: bool,
+) -> anyhow::Result<()> {
     script.print_configuration(Box::new(std::io::stdout()))?;
     println!("");
 
@@ -99,17 +98,25 @@ pub fn run_script(script: Box<dyn Script>) -> anyhow::Result<()> {
         anyhow::bail!("some script prerequisites weren't satisfied");
     }
 
-    println!("Press Enter to continue or CTRL-C to cancel.");
-    std::io::stdout().flush()?;
-    std::io::stdin().read(&mut [0u8])?;
+    if interactive {
+        println!("Press Enter to continue or CTRL-C to cancel.");
+        std::io::stdout().flush()?;
+        std::io::stdin().read(&mut [0u8])?;
+    }
 
     let mut ctx = Context { vars: script.initial_context().clone() };
-    let multi = MultiProgress::new();
+    let multi = interactive.then_some(MultiProgress::new());
+
     let steps_with_progress: Vec<StepAndProgress> = script
         .steps()
         .iter()
         .map(|step| {
-            let bar = multi.add(ProgressBar::new_spinner());
+            let bar = if let Some(multi) = &multi {
+                multi.add(ProgressBar::new_spinner())
+            } else {
+                ProgressBar::new_spinner()
+            };
+
             bar.set_message(step.label);
             bar.set_style(
                 ProgressStyle::with_template("  {msg:.dim}").unwrap(),
@@ -122,7 +129,7 @@ pub fn run_script(script: Box<dyn Script>) -> anyhow::Result<()> {
     for step in steps_with_progress {
         step.bar.set_style(ProgressStyle::default_spinner());
         step.bar.enable_steady_tick(PROGRESS_TICK_INTERVAL);
-        let ui = Ui { current_step: &step };
+        let ui = Ui { current_step: &step, interactive };
         match (step.step.func)(&mut ctx, &ui) {
             Ok(()) => {
                 step.bar.set_message(step.step.label);
@@ -169,6 +176,7 @@ impl Context {
 
 pub struct Ui<'step, 'progress> {
     current_step: &'progress StepAndProgress<'step>,
+    interactive: bool,
 }
 
 impl Ui<'_, '_> {
@@ -179,5 +187,13 @@ impl Ui<'_, '_> {
             self.current_step.step.label,
             &substep.into()
         ));
+    }
+
+    pub fn stdout_target(&self) -> Stdio {
+        if self.interactive {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        }
     }
 }

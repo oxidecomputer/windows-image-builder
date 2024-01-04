@@ -5,12 +5,18 @@
 use std::{os::unix::net::UnixStream, process::Command, str::FromStr};
 
 use crate::{
-    runner::{Context, Script, ScriptStep},
-    util::{print_step_message, run_command_check_status},
+    runner::{Context, Script, ScriptStep, Ui},
+    util::{
+        check_executable_prerequisites, check_file_prerequisites,
+        print_step_message, run_command_check_status,
+    },
 };
 
 use anyhow::{Context as _, Result};
 use camino::Utf8PathBuf;
+use colored::Colorize;
+
+const VNIC_NAME: &str = "vnic0";
 
 pub struct CreateGuestDiskImageArgs {
     pub work_dir: Utf8PathBuf,
@@ -36,11 +42,42 @@ impl Script for CreateGuestDiskImageScript {
         self.steps.as_slice()
     }
 
-    fn file_prerequisites(&self) -> Vec<camino::Utf8PathBuf> {
-        vec![
+    fn print_configuration(
+        &self,
+        mut w: Box<dyn std::io::Write>,
+    ) -> std::io::Result<()> {
+        writeln!(
+            w,
+            "Installing Windows in propolis-standalone with these options:\n"
+        )?;
+
+        let args = &self.args;
+        writeln!(w, "  {}: {}", "Working directory".bold(), args.work_dir)?;
+        writeln!(w, "  {}: {}", "Installer disk".bold(), args.installer_image)?;
+        writeln!(w, "  {}: {}", "Guest bootrom".bold(), args.propolis_bootrom)?;
+        writeln!(w, "  {}: {}", "VNIC physical link".bold(), args.vnic_link)?;
+        writeln!(w, "  {}: {}", "VNIC name".bold(), VNIC_NAME)?;
+        writeln!(w, "")?;
+        writeln!(w, "  {}: {}", "Output file".bold(), args.output_image)?;
+
+        Ok(())
+    }
+
+    fn check_prerequisites(&self) -> std::result::Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        let files = vec![
             self.args.installer_image.clone(),
             self.args.propolis_bootrom.clone(),
-        ]
+        ];
+
+        errors.extend(check_file_prerequisites(&files).into_iter());
+        errors.extend(check_executable_prerequisites(self.steps()).into_iter());
+
+        if !errors.is_empty() {
+            Err(errors)
+        } else {
+            Ok(())
+        }
     }
 
     fn initial_context(&self) -> std::collections::HashMap<String, String> {
@@ -48,7 +85,7 @@ impl Script for CreateGuestDiskImageScript {
         [
             ("work_dir".to_string(), args.work_dir.to_string()),
             ("vnic_link".to_string(), args.vnic_link.clone()),
-            ("vnic_name".to_string(), "vnic0".to_string()),
+            ("vnic_name".to_string(), VNIC_NAME.to_string()),
             ("installer_image".to_string(), args.installer_image.to_string()),
             ("output_image".to_string(), args.output_image.to_string()),
             ("propolis_bootrom".to_string(), args.propolis_bootrom.to_string()),
@@ -58,23 +95,26 @@ impl Script for CreateGuestDiskImageScript {
     }
 }
 
-fn create_vnic(ctx: &mut Context) -> Result<()> {
-    run_command_check_status(Command::new("pfexec").args([
-        "dladm",
-        "create-vnic",
-        "-t",
-        "-l",
-        ctx.get_var("vnic_link").unwrap(),
-        ctx.get_var("vnic_name").unwrap(),
-    ]))
+fn create_vnic(ctx: &mut Context, ui: &Ui) -> Result<()> {
+    run_command_check_status(
+        Command::new("pfexec").args([
+            "dladm",
+            "create-vnic",
+            "-t",
+            "-l",
+            ctx.get_var("vnic_link").unwrap(),
+            ctx.get_var("vnic_name").unwrap(),
+        ]),
+        ui,
+    )
     .map(|_| ())
 }
 
-fn create_output_image(ctx: &mut Context) -> Result<()> {
-    crate::steps::create_output_image(ctx.get_var("output_image").unwrap())
+fn create_output_image(ctx: &mut Context, ui: &Ui) -> Result<()> {
+    crate::steps::create_output_image(ctx.get_var("output_image").unwrap(), ui)
 }
 
-fn write_vm_toml(ctx: &mut Context) -> Result<()> {
+fn write_vm_toml(ctx: &mut Context, _ui: &Ui) -> Result<()> {
     let mut vm_toml_path =
         Utf8PathBuf::from_str(ctx.get_var("work_dir").unwrap()).unwrap();
     vm_toml_path.push("vm.toml");
@@ -123,7 +163,7 @@ pci-path = "0.8.0"
     Ok(())
 }
 
-fn run_propolis_standalone(ctx: &mut Context) -> Result<()> {
+fn run_propolis_standalone(ctx: &mut Context, ui: &Ui) -> Result<()> {
     let current_dir = std::env::current_dir().context(
         "getting current directory before launching propolis-standalone",
     )?;
@@ -137,7 +177,9 @@ fn run_propolis_standalone(ctx: &mut Context) -> Result<()> {
 
     let mut propolis = Command::new("pfexec");
     propolis
-        .args(["propolis-standalone", ctx.get_var("vm_toml_path").unwrap()]);
+        .args(["propolis-standalone", ctx.get_var("vm_toml_path").unwrap()])
+        .stdout(ui.stdout_target())
+        .stderr(ui.stdout_target());
 
     print_step_message(&format!(
         "Launching propolis-standalone: {:?}",
@@ -168,11 +210,10 @@ fn run_propolis_standalone(ctx: &mut Context) -> Result<()> {
         "Waiting for propolis-standalone to finish setting up ttya",
     );
     std::thread::sleep(std::time::Duration::from_secs(5));
-    run_command_check_status(Command::new("pfexec").args([
-        "chmod",
-        "666",
-        ttya_path.as_str(),
-    ]))?;
+    run_command_check_status(
+        Command::new("pfexec").args(["chmod", "666", ttya_path.as_str()]),
+        ui,
+    )?;
 
     let _stream = UnixStream::connect(&ttya_path)
         .context("connecting to propolis-standalone's ttya")?;
@@ -195,10 +236,11 @@ fn run_propolis_standalone(ctx: &mut Context) -> Result<()> {
     Ok(())
 }
 
-fn get_partition_size(ctx: &mut Context) -> Result<()> {
+fn get_partition_size(ctx: &mut Context, ui: &Ui) -> Result<()> {
     let (sector_size, last_sector) =
         crate::steps::get_output_image_partition_size(
             ctx.get_var("output_image").unwrap(),
+            ui,
         )?;
 
     ctx.set_var("sector_size", sector_size);
@@ -206,24 +248,28 @@ fn get_partition_size(ctx: &mut Context) -> Result<()> {
     Ok(())
 }
 
-fn shrink_output_image(ctx: &mut Context) -> Result<()> {
+fn shrink_output_image(ctx: &mut Context, ui: &Ui) -> Result<()> {
     crate::steps::shrink_output_image(
         ctx.get_var("output_image").unwrap(),
         ctx.get_var("sector_size").unwrap(),
         ctx.get_var("last_sector").unwrap(),
+        ui,
     )
 }
 
-fn repair_secondary_gpt(ctx: &mut Context) -> Result<()> {
-    crate::steps::repair_secondary_gpt(ctx.get_var("output_image").unwrap())
+fn repair_secondary_gpt(ctx: &mut Context, ui: &Ui) -> Result<()> {
+    crate::steps::repair_secondary_gpt(ctx.get_var("output_image").unwrap(), ui)
 }
 
-fn remove_vnic(ctx: &mut Context) -> Result<()> {
-    run_command_check_status(Command::new("pfexec").args([
-        "dladm",
-        "delete-vnic",
-        ctx.get_var("vnic_name").unwrap(),
-    ]))
+fn remove_vnic(ctx: &mut Context, ui: &Ui) -> Result<()> {
+    run_command_check_status(
+        Command::new("pfexec").args([
+            "dladm",
+            "delete-vnic",
+            ctx.get_var("vnic_name").unwrap(),
+        ]),
+        ui,
+    )
     .map(|_| ())
 }
 

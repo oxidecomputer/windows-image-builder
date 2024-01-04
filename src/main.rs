@@ -37,6 +37,11 @@ pub mod util;
 
 fn main() -> anyhow::Result<()> {
     let app = App::parse();
+    let interactive = match app.interactive {
+        Some(val) => val,
+        None => atty::is(atty::Stream::Stdout),
+    };
+
     let script = get_script(&app);
-    runner::run_script(script)
+    runner::run_script(script, interactive)
 }

@@ -51,7 +51,8 @@ impl Script for CreateGuestDiskImageScript {
         &self,
         mut w: Box<dyn std::io::Write>,
     ) -> std::io::Result<()> {
-        println!(
+        writeln!(
+            w,
             "Creating an Oxide-compatible Windows image with these options:\n"
         );
 
@@ -71,6 +72,7 @@ impl Script for CreateGuestDiskImageScript {
             "Unattend file directory".bold(),
             sources.unattend_dir
         )?;
+        writeln!(w, "  {}: {}", "Guest bootrom".bold(), args.ovmf_path)?;
 
         writeln!(w, "")?;
 
@@ -113,56 +115,14 @@ impl Script for CreateGuestDiskImageScript {
             files.push(path);
         }
 
-        for file in files {
-            if !file.exists() {
-                errors.push(format!("'{}' not found", file));
-            } else if !file.is_file() {
-                errors.push(format!("'{}' exists but isn't a file", file));
-            }
-        }
-
-        let mut executables = BTreeSet::new();
-        for step in self.steps() {
-            for dep in step.prereq_commands() {
-                executables.insert(dep);
-            }
-        }
-
-        for dep in executables {
-            if let Err(e) = which::which(dep) {
-                errors.push(format!(
-                    "binary or command '{}' not found (is it on your PATH?): \
-                    {}",
-                    dep, e
-                ));
-            }
-        }
+        errors.extend(check_file_prerequisites(&files).into_iter());
+        errors.extend(check_executable_prerequisites(self.steps()).into_iter());
 
         if !errors.is_empty() {
             Err(errors)
         } else {
             Ok(())
         }
-    }
-
-    fn file_prerequisites(&self) -> Vec<camino::Utf8PathBuf> {
-        let mut files = vec![
-            self.args.sources.windows_iso.clone(),
-            self.args.sources.virtio_iso.clone(),
-            self.args.ovmf_path.clone(),
-        ];
-
-        for file in [
-            "cloudbase-init.conf",
-            "cloudbase-init-unattend.conf",
-            "specialize-unattend.xml",
-        ] {
-            let mut path = self.args.sources.unattend_dir.clone();
-            path.push(file);
-            files.push(path);
-        }
-
-        files
     }
 
     fn initial_context(&self) -> HashMap<String, String> {
