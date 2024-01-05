@@ -13,17 +13,23 @@ Windows should install.
 
 ## Install prerequisite binaries
 
-On Linux, run `linux/install_prerequisites.sh` to ensure the necessary tools and
-packages are installed.
+On Linux distros with aptitude-based package managers, run
+`linux/install_prerequisites.sh` to ensure the necessary tools and packages are
+installed. The following packages and tools are required:
+
+* `qemu` and `ovmf` to run the Windows installer in a virtual machine
+* `qemu-img` and `libguestfs-tools` to create and manage virtual disks and their
+  filesystems
+* `sgdisk` to modify virtual disks' GUID partition tables
+* `genisoimage` to create an ISO containing the unattended setup scripts
 
 ## Obtain installation media and virtio drivers
 
 `wimsy` requires the locations of a few files:
 
 - An ISO disk image containing Windows installation media
-- An ISO disk image containing appropriately signed virtio drivers, such as the
-  [images](https://github.com/virtio-win/virtio-win-pkg-scripts/blob/master/README.md)
-  supplied by the Fedora Project
+- An ISO disk image containing appropriately signed virtio drivers, arranged in
+  the directory structure used in the [driver images](https://github.com/virtio-win/virtio-win-pkg-scripts/blob/master/README.md) created by the Fedora Project
 - A UEFI guest firmware image; on a Linux system with virtualization tools
   installed, this is typically found in `/usr/share/OVMF/OVMF_CODE.fd`
 
@@ -44,25 +50,39 @@ target/release/wimsy create-guest-disk-image --help
 An example invocation might be
 
 ```bash
-target/release/wimsy create-guest-disk-image \
+target/release/wimsy \
 --work-dir /tmp \
+--output-image ./wimsy-ws2022.img \
+create-guest-disk-image \
 --windows-iso ./WS2022_SERVER_EVAL_x64FRE_en-us.iso \
 --virtio-iso ./virtio-win-0.1.217.iso \
 --unattend-dir ./linux/unattend \
 --ovmf-path /usr/share/OVMF/OVMF_CODE.fd \
---output-image ./wimsy-ws2022.img
 ```
 
-`wimsy` will set up an installation VM in QEMU and drive the setup process
-automatically. The VM's serial console output will appear in the terminal while
-the VM is running. This process will take several minutes to complete.
+The installation is driven using the files and scripts in the directory passed
+to `--unattend-dir`. You can modify these files directly to customize your
+image, but `wimsy` provides some command line switches to apply common
+modifications:
+
+- The `--unattend-image-index` switch changes the image index specified in
+  `Autounattend.xml`, which changes the Windows edition Setup will attempt to
+  install (e.g. selecting between Server Standard and Server Datacenter with or
+  without a Desktop Experience Pack).
+- The `--windows-version` switch rewrites the driver paths in `Autounattend.xml`
+  to install virtio drivers corresponding to a specific Windows version.
+
+When running on Linux, adding the `--vga-console` switch directs QEMU to run
+with a VGA console attached to the guest so that you can watch and interact with
+Windows Setup visually.
 
 # Image configuration
 
 The default configuration scripts set up an image with the following properties:
 
 - **Drivers**: The scripts install virtio-net and virtio-block device drivers.
-- **Software**: The scripts install a lightly modified version of
+- **Software**: The scripts install a lightly modified
+  [fork](https://github.com/luqmana/cloudbase-init/tree/oxide) of
   [cloudbase-init](https://cloudbase-init.readthedocs.io/en/latest/) that is
   configured to read `cloud-init` metadata from an attached VFAT-formatted disk.
   See cloudbase-init's documentation on [no-cloud configuration
@@ -86,7 +106,7 @@ The default configuration scripts set up an image with the following properties:
   default. Users of these images must supply the appropriate license information
   or set up a key management server that their Windows instances can access.
 - **Generalized images**: The scripts run `sysprep /generalize` after running
-  the setup process, producing a "generalized" image that can be used as the
+  the setup process, producing a generalized image that can be used as the
   base image for multiple Oxide disks. When a new VM based on a `wimsy` image
   boots for the first time, it will need to perform some final setup tasks
   (including additional reboots) before it is ready for use.
@@ -97,5 +117,3 @@ The default configuration scripts set up an image with the following properties:
   Server 2016 images don't provision correctly because the method of installing
   OpenSSH used in OxidePrepBaseImage.ps1 is only supported on Server 2019 and
   Server 2022.
-- Changing the image ID using the `--unattend-image-index` flag may not work
-  with Windows Server 2022 installation media.
