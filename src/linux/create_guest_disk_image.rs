@@ -6,7 +6,7 @@
 //! QEMU.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     io::Write,
     process::{Command, Stdio},
     str::FromStr,
@@ -15,7 +15,10 @@ use std::{
 use crate::{
     app::ImageSources,
     runner::{Context, Script, ScriptStep, Ui},
-    util::run_command_check_status,
+    util::{
+        check_executable_prerequisites, check_file_prerequisites,
+        run_command_check_status,
+    },
     UNATTEND_FILES,
 };
 
@@ -54,7 +57,7 @@ impl Script for CreateGuestDiskImageScript {
         writeln!(
             w,
             "Creating an Oxide-compatible Windows image with these options:\n"
-        );
+        )?;
 
         let args = &self.args;
         let sources = &args.sources;
@@ -183,7 +186,7 @@ fn copy_unattend_files_to_work_dir(
         Utf8PathBuf::from_str(ctx.get_var("unattend_dir").unwrap()).unwrap();
 
     for filename in UNATTEND_FILES {
-        ui.set_substep(format!("copying {}", filename));
+        ui.set_substep(&format!("copying {}", filename));
         let mut src = unattend_dir.clone();
         src.push(filename);
         let mut dst = work_unattend.clone();
