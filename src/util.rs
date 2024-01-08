@@ -14,11 +14,6 @@ use camino::Utf8PathBuf;
 
 use crate::runner::{ScriptStep, Ui};
 
-// TODO(gjc) drop this in favor of a real UI affordance
-pub fn print_step_message(_msg: &str) {
-    // println!("  {}", msg);
-}
-
 /// Runs a `Command` and returns its output. Returns `Err` if the command's exit
 /// status indicates that it failed.
 pub fn run_command_check_status(

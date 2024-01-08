@@ -8,7 +8,7 @@ use crate::{
     runner::{Context, Script, ScriptStep, Ui},
     util::{
         check_executable_prerequisites, check_file_prerequisites,
-        print_step_message, run_command_check_status,
+        run_command_check_status,
     },
 };
 
@@ -181,17 +181,14 @@ fn run_propolis_standalone(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
         .stdout(ui.stdout_target())
         .stderr(ui.stdout_target());
 
-    print_step_message(&format!(
-        "Launching propolis-standalone: {:?}",
-        propolis
-    ));
+    ui.set_substep(&format!("Launching propolis-standalone: {:?}", propolis));
     let mut propolis =
         propolis.spawn().context("spawning propolis-standalone")?;
 
     let mut ttya_path = work_dir.clone();
     ttya_path.push("ttya");
 
-    print_step_message("Waiting for propolis-standalone to create ttya");
+    ui.set_substep("Waiting for propolis-standalone to create ttya");
     for _ in 0..=5 {
         if ttya_path.exists() {
             break;
@@ -206,9 +203,7 @@ fn run_propolis_standalone(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     // this procedure because `nc(1)` does not pass any X/Open versioning flags
     // to sockfs `connect`. `UnixStream::connect` does, and under this standard
     // the connector needs write access to be able to connect to the socket.
-    print_step_message(
-        "Waiting for propolis-standalone to finish setting up ttya",
-    );
+    ui.set_substep("Waiting for propolis-standalone to finish setting up ttya");
     std::thread::sleep(std::time::Duration::from_secs(5));
     run_command_check_status(
         Command::new("pfexec").args(["chmod", "666", ttya_path.as_str()]),
@@ -218,7 +213,7 @@ fn run_propolis_standalone(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     let _stream = UnixStream::connect(&ttya_path)
         .context("connecting to propolis-standalone's ttya")?;
 
-    print_step_message(
+    ui.set_substep(
         "Waiting for propolis-standalone to exit (this may take a while)",
     );
 
