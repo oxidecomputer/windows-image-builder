@@ -13,7 +13,7 @@ Windows should install.
 
 ## Install prerequisite binaries
 
-On Linux distros with aptitude-based package managers, run
+On Linux distros with Debian (aptitude-based) package managers, run
 `linux/install_prerequisites.sh` to ensure the necessary tools and packages are
 installed. The following packages and tools are required:
 
@@ -76,12 +76,65 @@ When running on Linux, adding the `--vga-console` switch directs QEMU to run
 with a VGA console attached to the guest so that you can watch and interact with
 Windows Setup visually.
 
+## Other OSes
+
+While the `wimsy` executable is only supported on Linux and illumos systems, the
+installation method used by the Linux executable can be used in other
+environments by creating a VM with the following attached devices and
+configuration settings:
+
+- A blank installation disk (at least 30 GiB)
+- The following ISOs, attached as virtual CD-ROM drives or other removable
+  media:
+  - A Windows installation ISO
+  - A virtio driver ISO
+  - An ISO containing the contents of the `linux/unattend` directory
+- A virtual network adapter
+- UEFI-based guest firmware (e.g. a Hyper-V Generation 2 VM)
+
 # Image configuration
 
-The default configuration scripts set up an image with the following properties:
+Windows guests running on an Oxide rack work best with the following software
+and settings:
 
-- **Drivers**: The scripts install virtio-net and virtio-block device drivers.
-- **Software**: The scripts install a lightly modified
+- **Drivers**: The Oxide stack uses virtio network and block device drivers for
+  its virtual network adapter and the cloud-init volumes it attaches to guests.
+  Windows guests will need drivers for both of these devices.
+- **Remote access**: Windows guests can be accessed via the Windows Emergency
+  Management Services console (EMS) running over a virtual serial port, via
+  Remote Desktop, or via SSH.
+  - **EMS**: The EMS console must be explicitly
+    [configured](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/boot-parameters-to-enable-ems-redirection)
+    to run over COM1.
+  - **SSH**: To access an instance over SSH, the guest must have a running
+    [SSH
+    service](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse?tabs=gui),
+    and the relevant user(s) must have valid passwords or SSH keys.
+  - **Remote Desktop (RDP)**: To access an instance over RDP:
+    - The guest's firewall rules must accept incoming TCP and UDP connections on
+      port 3389.
+    - The Oxide instance's firewall rules must also accept TCP and UDP
+      connections on port 3389.
+    - Remote Desktop sessions must be [enabled in the
+      registry](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-terminalservices-localsessionmanager-fdenytsconnections). 
+
+The scripts in this repo configure images as follows:
+
+- The scripts install virtio network and block device drivers.
+- The built-in administrator account is disabled, and an `oxide` account in the
+  administrators group is added in its place. This account has a random password
+  that must be re-set before the account can be accessed; generally this is done
+  by supplying SSH keys at instance creation time, connecting over SSH, and
+  using the `net user` command to change the `oxide` account password.
+- The scripts configure the following settings:
+  - The EMS console is enabled and can be accessed using the Oxide serial
+    console API.
+  - The guest firewall is configured to allow ping and Remote Desktop access.
+  - The `fDenyTSConnections` registry value is set to 0 to allow incoming RDP
+    connections.
+- The scripts install OpenSSH and configure the SSH server service to start
+  automatically on system startup.
+- The scripts install a lightly modified
   [fork](https://github.com/luqmana/cloudbase-init/tree/oxide) of
   [cloudbase-init](https://cloudbase-init.readthedocs.io/en/latest/) that is
   configured to read `cloud-init` metadata from an attached VFAT-formatted disk.
@@ -89,31 +142,12 @@ The default configuration scripts set up an image with the following properties:
   drives](https://cloudbase-init.readthedocs.io/en/latest/services.html#nocloud-configuration-drive)
   and [cloud config
   userdata](https://cloudbase-init.readthedocs.io/en/latest/userdata.html#cloud-config)
-  for more information. The scripts also install an OpenSSH daemon and configure
-  it to start automatically on Windows startup.
-- **User accounts**: The built-in administrator account is disabled. The system
-  creates an account named `oxide` with a random password and copies SSH keys
-  from the cloud config metadata into the user's `authorized_keys` file. Note
-  that you must log in via SSH and use `net user` to change the `oxide` user's
-  password in order to log into an interactive console session (e.g. via Remote
-  Desktop).
-- **Other configuration**: 
-  - The Remote Desktop service is enabled and configured to allow terminal
-    service connections.
-  - The Emergency Management Console (EMS) is enabled and configured to connect
-    to COM1. It is accessible via the serial console functions in the Oxide API.
-- **Activation**: `wimsy` images don't have license keys and aren't activated by
-  default. Users of these images must supply the appropriate license information
-  or set up a key management server that their Windows instances can access.
-- **Generalized images**: The scripts run `sysprep /generalize` after running
-  the setup process, producing a generalized image that can be used as the
-  base image for multiple Oxide disks. When a new VM based on a `wimsy` image
-  boots for the first time, it will need to perform some final setup tasks
-  (including additional reboots) before it is ready for use.
-
-# Known issues
-
-- Although `server2016` is a valid option for the `--windows-version` flag,
-  Server 2016 images don't provision correctly because the method of installing
-  OpenSSH used in OxidePrepBaseImage.ps1 is only supported on Server 2019 and
-  Server 2022.
+  for more information. The first time a disk based on one of these images is
+  booted, the cloudbase-init config directs cloudbase-init to do the following:
+  - The guest OS's hostname is set to the instance's hostname.
+  - The `oxide` account's `authorized_keys` are set to the SSH keys specified
+    when the instance was created.
+  - The main OS installation volume is automatically extended to consume any
+    unused data on the boot disk.
+- Images produced by these scripts are generalized and can be used to create
+  multiple distinct instances/boot disks.
