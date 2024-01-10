@@ -54,17 +54,48 @@ impl ScriptStep {
     }
 }
 
+/// Describes a set of files or commands a script expects to be present but that
+/// appear to be missing.
+#[derive(Default)]
+pub struct MissingPrerequisites {
+    /// A set of strings describing fatal errors--i.e., conditions that will
+    /// prevent the script from working at all.
+    errors: Vec<String>,
+
+    /// A set of strings describing mere warnings--i.e., conditions that might
+    /// prevent the script from working as intended, but that the user might
+    /// also have intended and therefore know are safe to ignore.
+    warnings: Vec<String>,
+}
+
+impl MissingPrerequisites {
+    pub fn from_messages(errors: Vec<String>, warnings: Vec<String>) -> Self {
+        Self { errors, warnings }
+    }
+
+    pub fn add_error(&mut self, error: String) {
+        self.errors.push(error)
+    }
+
+    pub fn add_warning(&mut self, warning: String) {
+        self.warnings.push(warning)
+    }
+}
+
 /// Implemented by objects that can be used as scripts.
 pub trait Script {
     /// Yields a slice of steps that can be executed to run this script.
     fn steps(&self) -> &[ScriptStep];
 
+    /// Prints a message to the specified writer describing what this script
+    /// will do.
     fn print_configuration(
         &self,
         w: Box<dyn std::io::Write>,
     ) -> std::io::Result<()>;
 
-    fn check_prerequisites(&self) -> Result<(), Vec<String>>;
+    /// Checks that this script's prerequisites are
+    fn check_prerequisites(&self) -> MissingPrerequisites;
 
     /// Yields a `HashMap` that contains key-value pairs that should be inserted
     /// into the script's `[Context]` prior to running it.
@@ -85,16 +116,31 @@ pub fn run_script(
     script.print_configuration(Box::new(std::io::stdout()))?;
     println!("");
 
-    if let Err(e) = script.check_prerequisites() {
-        let s = "Some prerequisites were not satisfied:".bold();
-        println!("{}", s);
-
-        for unsatisfied in e.iter() {
-            println!("  {}", unsatisfied);
+    let missing = script.check_prerequisites();
+    if !missing.errors.is_empty() {
+        println!("{}", "Some prerequisites were not satisfied:".bold());
+        for error in missing.errors.iter() {
+            println!("  {}", error);
         }
 
         println!("");
+        if !missing.warnings.is_empty() {
+            println!("The following warnings were also raised:");
+            for warning in missing.warnings.iter() {
+                println!("  {}", warning);
+            }
+
+            println!("");
+        }
+
         anyhow::bail!("some script prerequisites weren't satisfied");
+    } else if !missing.warnings.is_empty() {
+        println!("{}", "Warning! Some prerequisites may be missing:".bold());
+        for warning in missing.warnings.iter() {
+            println!("  {}", warning);
+        }
+
+        println!("");
     }
 
     if interactive {

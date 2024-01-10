@@ -14,7 +14,7 @@ use std::{
 
 use crate::{
     app::ImageSources,
-    runner::{Context, Script, ScriptStep, Ui},
+    runner::{Context, MissingPrerequisites, Script, ScriptStep, Ui},
     util::{
         check_executable_prerequisites, check_file_prerequisites,
         run_command_check_status,
@@ -104,28 +104,39 @@ impl Script for CreateGuestDiskImageScript {
         Ok(())
     }
 
-    fn check_prerequisites(&self) -> std::result::Result<(), Vec<String>> {
+    fn check_prerequisites(&self) -> MissingPrerequisites {
         let mut errors = Vec::new();
+        let mut warnings = Vec::new();
         let mut files = vec![
             self.args.sources.windows_iso.clone(),
             self.args.sources.virtio_iso.clone(),
             self.args.ovmf_path.clone(),
         ];
 
+        // The ISOs and bootrom are strictly required to proceed.
+        errors.extend(check_file_prerequisites(&files).into_iter());
+
+        // The unattend files are generally desirable, but it's possible to run
+        // without them. For example:
+        //
+        // - The user may have supplied an ISO that already contains an
+        //   Autounattend.xml.
+        // - The user may have changed the installation scripts not to install
+        //   cloudbase-init and so doesn't care about injecting its
+        //   configuration files.
+        files.clear();
         for file in UNATTEND_FILES {
             let mut path = self.args.sources.unattend_dir.clone();
             path.push(file);
             files.push(path);
         }
 
-        errors.extend(check_file_prerequisites(&files).into_iter());
+        warnings.extend(check_file_prerequisites(&files).into_iter());
+
+        // All the relevant executables are required to proceed.
         errors.extend(check_executable_prerequisites(self.steps()).into_iter());
 
-        if !errors.is_empty() {
-            Err(errors)
-        } else {
-            Ok(())
-        }
+        MissingPrerequisites::from_messages(errors, warnings)
     }
 
     fn initial_context(&self) -> HashMap<String, String> {
@@ -191,8 +202,15 @@ fn copy_unattend_files_to_work_dir(
         src.push(filename);
         let mut dst = work_unattend.clone();
         dst.push(filename);
-        std::fs::copy(&src, &dst)
-            .with_context(|| format!("copying {src} to {dst}"))?;
+        if let Err(e) = std::fs::copy(&src, &dst) {
+            match e.kind() {
+                std::io::ErrorKind::NotFound => {}
+                _ => {
+                    return Err(e)
+                        .with_context(|| format!("copying {}", filename))
+                }
+            }
+        }
     }
 
     // Make subsequent steps use unattend files from the working copy.

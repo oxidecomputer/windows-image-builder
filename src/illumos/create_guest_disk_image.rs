@@ -5,7 +5,7 @@
 use std::{os::unix::net::UnixStream, process::Command, str::FromStr};
 
 use crate::{
-    runner::{Context, Script, ScriptStep, Ui},
+    runner::{Context, MissingPrerequisites, Script, ScriptStep, Ui},
     util::{
         check_executable_prerequisites, check_file_prerequisites,
         run_command_check_status,
@@ -63,7 +63,7 @@ impl Script for CreateGuestDiskImageScript {
         Ok(())
     }
 
-    fn check_prerequisites(&self) -> std::result::Result<(), Vec<String>> {
+    fn check_prerequisites(&self) -> MissingPrerequisites {
         let mut errors = Vec::new();
         let files = vec![
             self.args.installer_image.clone(),
@@ -73,11 +73,7 @@ impl Script for CreateGuestDiskImageScript {
         errors.extend(check_file_prerequisites(&files).into_iter());
         errors.extend(check_executable_prerequisites(self.steps()).into_iter());
 
-        if !errors.is_empty() {
-            Err(errors)
-        } else {
-            Ok(())
-        }
+        MissingPrerequisites::from_messages(errors, vec![])
     }
 
     fn initial_context(&self) -> std::collections::HashMap<String, String> {

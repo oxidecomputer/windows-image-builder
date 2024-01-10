@@ -15,7 +15,7 @@ use itertools::iproduct;
 
 use crate::{
     app::ImageSources,
-    runner::{Context, Script, ScriptStep, Ui},
+    runner::{Context, MissingPrerequisites, Script, ScriptStep, Ui},
     steps::get_gpt_partition_information,
     util::{
         check_executable_prerequisites, check_file_prerequisites,
@@ -96,27 +96,27 @@ impl Script for BuildInstallationDiskScript {
         Ok(())
     }
 
-    fn check_prerequisites(&self) -> std::result::Result<(), Vec<String>> {
+    fn check_prerequisites(&self) -> MissingPrerequisites {
         let mut errors = Vec::new();
+        let mut warnings = Vec::new();
         let mut files = vec![
             self.args.sources.windows_iso.clone(),
             self.args.sources.virtio_iso.clone(),
         ];
 
+        errors.extend(check_file_prerequisites(&files).into_iter());
+
+        files.clear();
         for file in UNATTEND_FILES {
             let mut path = self.args.sources.unattend_dir.clone();
             path.push(file);
             files.push(path);
         }
 
-        errors.extend(check_file_prerequisites(&files).into_iter());
+        warnings.extend(check_file_prerequisites(&files).into_iter());
         errors.extend(check_executable_prerequisites(self.steps()).into_iter());
 
-        if !errors.is_empty() {
-            Err(errors)
-        } else {
-            Ok(())
-        }
+        MissingPrerequisites::from_messages(errors, warnings)
     }
 
     fn initial_context(&self) -> HashMap<String, String> {
@@ -338,8 +338,15 @@ fn copy_unattend_files_to_work_dir(
         src.push(filename);
         let mut dst = work_unattend.clone();
         dst.push(filename);
-        std::fs::copy(&src, &dst)
-            .with_context(|| format!("copying {src} to {dst}"))?;
+        if let Err(e) = std::fs::copy(&src, &dst) {
+            match e.kind() {
+                std::io::ErrorKind::NotFound => {}
+                _ => {
+                    return Err(e)
+                        .with_context(|| format!("copying {}", filename))
+                }
+            }
+        }
     }
 
     // Make subsequent steps use unattend files from
