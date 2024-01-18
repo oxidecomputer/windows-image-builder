@@ -49,7 +49,7 @@ del C:\Windows\Temp\CloudbaseInitSetup.msi
 $confPath = "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf\"
 Copy-Item "$PSScriptRoot\cloudbase-init.conf" -Destination "$confPath\cloudbase-init.conf"
 Copy-Item "$PSScriptRoot\cloudbase-init-unattend.conf" -Destination "$confPath\cloudbase-init-unattend.conf"
-Copy-Item "$PSScriptRoot\specialize-unattend.xml" -Destination "$confPath\Unattend.xml"
+Copy-Item "$PSScriptRoot\specialize-unattend.xml" -Destination "$confPath\specialize-unattend.xml"
 
 # Disable the service so it doesn't run on first boot and contend with the unattend first pass.
 # We re-enable it during the specialize phase. See cloudbase-unattend.xml.
@@ -76,5 +76,5 @@ if ($newSz -lt $maxSz) { Resize-Partition -DriveLetter C -Size $newSz; Write-Hos
 
 #region Generalize image
 Write-Host "Generalizing image"
-C:\Windows\System32\Sysprep\sysprep.exe /generalize /oobe /shutdown /unattend:"C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf\Unattend.xml"
+C:\Windows\System32\Sysprep\sysprep.exe /generalize /oobe /shutdown /unattend:"$confPath\specialize-unattend.xml"
 #endregion
