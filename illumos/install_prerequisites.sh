@@ -49,13 +49,13 @@ if [[ ! -d "$OUTPUT_DIR" ]]; then
     exit 1
 fi
 
-# Install package for qemu-img
-# (rc=4 if package already installed)
-pkgs=("pkg:/system/kvm" "ooce/system/file-system/ntfs-3g" "ooce/driver/fuse")
+# Install required packages.
+pkgs=("pkg:/system/kvm" "pkg:/ooce/system/file-system/ntfs-3g" "pkg:/ooce/driver/fuse" "pkg:/compress/p7zip")
 for name in "${pkgs[@]}"
 do
 	rc=0;
 	{ pfexec pkg install -v "$name" || rc=$?; }
+	# $rc is 4 if the package is already installed.
 	if [[ "$rc" -ne 4 ]] && [[ "$rc" -ne 0 ]]; then
 	    exit "$rc"
 	fi
