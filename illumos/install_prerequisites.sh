@@ -50,16 +50,13 @@ if [[ ! -d "$OUTPUT_DIR" ]]; then
 fi
 
 # Install required packages.
-pkgs=("pkg:/system/kvm" "pkg:/ooce/system/file-system/ntfs-3g" "pkg:/ooce/driver/fuse" "pkg:/compress/p7zip")
-for name in "${pkgs[@]}"
-do
-	rc=0;
-	{ pfexec pkg install -v "$name" || rc=$?; }
-	# $rc is 4 if the package is already installed.
-	if [[ "$rc" -ne 4 ]] && [[ "$rc" -ne 0 ]]; then
-	    exit "$rc"
-	fi
-done
+pkgs="pkg:/system/kvm pkg:/ooce/system/file-system/ntfs-3g pkg:/ooce/driver/fuse pkg:/compress/p7zip"
+rc=0;
+{ pfexec pkg install -v $pkgs || rc=$?; }
+# $rc is 4 if the package is already installed.
+if [[ "$rc" -ne 4 ]] && [[ "$rc" -ne 0 ]]; then
+    exit "$rc"
+fi
 
 pushd "$BUILD_DIR"
 
