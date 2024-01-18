@@ -221,11 +221,7 @@ impl AutounattendUpdater {
         mut output: xml::EventWriter<W>,
     ) -> Result<usize> {
         let mut matches = 0;
-        let mut next_match_depths = vec![];
-        for _ in &self.rules {
-            next_match_depths.push(0);
-        }
-
+        let mut next_match_depths = vec![0; self.rules.len()];
         for e in input {
             if let Ok(e) = &e {
                 match e {

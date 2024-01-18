@@ -114,7 +114,7 @@ pub fn run_script(
     interactive: bool,
 ) -> anyhow::Result<()> {
     script.print_configuration(Box::new(std::io::stdout()))?;
-    println!("");
+    println!();
 
     let missing = script.check_prerequisites();
     if !missing.errors.is_empty() {
@@ -123,14 +123,14 @@ pub fn run_script(
             println!("  {}", error);
         }
 
-        println!("");
+        println!();
         if !missing.warnings.is_empty() {
             println!("The following warnings were also raised:");
             for warning in missing.warnings.iter() {
                 println!("  {}", warning);
             }
 
-            println!("");
+            println!();
         }
 
         anyhow::bail!("some script prerequisites weren't satisfied");
@@ -140,13 +140,13 @@ pub fn run_script(
             println!("  {}", warning);
         }
 
-        println!("");
+        println!();
     }
 
     if interactive {
         println!("Press Enter to continue or CTRL-C to cancel.");
         std::io::stdout().flush()?;
-        std::io::stdin().read(&mut [0u8])?;
+        std::io::stdin().read_exact(&mut [0u8])?;
     }
 
     let ctx = Context { vars: script.initial_context().clone() };

@@ -77,7 +77,7 @@ impl Script for CreateGuestDiskImageScript {
         )?;
         writeln!(w, "  {}: {}", "Guest bootrom".bold(), args.ovmf_path)?;
 
-        writeln!(w, "")?;
+        writeln!(w)?;
 
         if let Some(index) = sources.unattend_image_index {
             writeln!(
@@ -98,7 +98,7 @@ impl Script for CreateGuestDiskImageScript {
             )?;
         }
 
-        writeln!(w, "")?;
+        writeln!(w)?;
         writeln!(w, "  {}: {}", "Output file".bold(), args.output_image)?;
 
         Ok(())
@@ -114,7 +114,7 @@ impl Script for CreateGuestDiskImageScript {
         ];
 
         // The ISOs and bootrom are strictly required to proceed.
-        errors.extend(check_file_prerequisites(&files).into_iter());
+        errors.extend(check_file_prerequisites(&files));
 
         // The unattend files are generally desirable, but it's possible to run
         // without them. For example:
@@ -131,10 +131,10 @@ impl Script for CreateGuestDiskImageScript {
             files.push(path);
         }
 
-        warnings.extend(check_file_prerequisites(&files).into_iter());
+        warnings.extend(check_file_prerequisites(&files));
 
         // All the relevant executables are required to proceed.
-        errors.extend(check_executable_prerequisites(self.steps()).into_iter());
+        errors.extend(check_executable_prerequisites(self.steps()));
 
         MissingPrerequisites::from_messages(errors, warnings)
     }

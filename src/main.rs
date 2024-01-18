@@ -7,7 +7,7 @@
 use app::App;
 use clap::Parser;
 
-pub const UNATTEND_FILES: &[&'static str] = &[
+pub const UNATTEND_FILES: &[&str] = &[
     "Autounattend.xml",
     "cloudbase-init-unattend.conf",
     "cloudbase-init.conf",
