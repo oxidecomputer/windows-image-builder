@@ -28,7 +28,7 @@ pub struct ScriptStep {
     func: Box<StepFn>,
 
     /// A list of commands that this step expects to launch via
-    /// `[std::process::Command]`. The script runner uses these to check for
+    /// [`std::process::Command`]. The script runner uses these to check for
     /// missing dependencies before running the script.
     prereq_commands: Vec<&'static str>,
 }
@@ -98,7 +98,7 @@ pub trait Script {
     fn check_prerequisites(&self) -> MissingPrerequisites;
 
     /// Yields a `HashMap` that contains key-value pairs that should be inserted
-    /// into the script's `[Context]` prior to running it.
+    /// into the script's [`Context`] prior to running it.
     fn initial_context(&self) -> HashMap<String, String>;
 }
 
@@ -159,7 +159,7 @@ pub fn run_script(
 
 /// A shared script execution context, provided to each step in a running
 /// script. Each context contains a key-value store that individual steps can
-/// use to pass values to future steps. The `[Script]` trait's `initial_context`
+/// use to pass values to future steps. The [`Script`] trait's `initial_context`
 /// function allows each script to populate the store before the script
 /// executes.
 pub struct Context {
