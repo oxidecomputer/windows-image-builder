@@ -56,9 +56,6 @@ rc=0;
 if [[ "$rc" -ne 4 ]] && [[ "$rc" -ne 0 ]]; then
     exit "$rc"
 fi
-# We also want qemu-img in the next pass so just copy it over
-# we're going from one helios box to another so it's prolly fine...
-cp "$(which qemu-img)" "$OUTPUT_DIR"
 
 pushd "$BUILD_DIR"
 
