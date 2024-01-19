@@ -72,7 +72,6 @@
             <ImageInstall>
                 <OSImage>
                     <InstallFrom>
-                        <Path>\\?\Volume{A94E24F7-92C9-405C-82AA-9A1B45BA180C}\install.wim</Path>
                         <MetaData wcm:action="add">
                             <!-- Windows Server 2022 Standard Evaluation (Desktop Experience) -->
                             <Key>/IMAGE/INDEX</Key>
@@ -96,7 +95,22 @@
             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <DriverPaths>
                 <PathAndCredentials wcm:action="add" wcm:keyValue="1">
-                    <Path>\\?\Volume{569CBD84-352D-44D9-B92D-BF25B852925B}\virtio-drivers\</Path>
+                    <Path>D:\NetKVM\2k22\amd64</Path>
+                </PathAndCredentials>
+                <PathAndCredentials wcm:action="add" wcm:keyValue="2">
+                    <Path>D:\viostor\2k22\amd64</Path>
+                </PathAndCredentials>
+                <PathAndCredentials wcm:action="add" wcm:keyValue="3">
+                    <Path>E:\NetKVM\2k22\amd64</Path>
+                </PathAndCredentials>
+                <PathAndCredentials wcm:action="add" wcm:keyValue="4">
+                    <Path>E:\viostor\2k22\amd64</Path>
+                </PathAndCredentials>
+                <PathAndCredentials wcm:action="add" wcm:keyValue="5">
+                    <Path>F:\NetKVM\2k22\amd64</Path>
+                </PathAndCredentials>
+                <PathAndCredentials wcm:action="add" wcm:keyValue="6">
+                    <Path>F:\viostor\2k22\amd64</Path>
                 </PathAndCredentials>
             </DriverPaths>
         </component>
@@ -116,7 +130,7 @@
                 <RunSynchronousCommand wcm:action="add">
                     <Description>Prepare Oxide base image</Description>
                     <Order>1</Order>
-                    <Path>cmd /c "mode COM1 BAUD=115200 PARITY=n DATA=8 & (Powershell -ExecutionPolicy ByPass \\?\Volume`{569CBD84-352D-44D9-B92D-BF25B852925B`}\OxidePrepBaseImage.ps1 >\\.\COM1) & pause"</Path>
+                    <Path>cmd /c "FOR %i IN (D E F) DO IF EXIST %i:\prep.cmd cmd.exe /c %i:\prep.cmd %i"</Path>
                     <WillReboot>OnRequest</WillReboot>
                 </RunSynchronousCommand>
             </RunSynchronous>
