@@ -50,7 +50,7 @@ if [[ ! -d "$OUTPUT_DIR" ]]; then
 fi
 
 # Install required packages.
-pkgs="pkg:/system/kvm pkg:/ooce/system/file-system/ntfs-3g pkg:/ooce/driver/fuse pkg:/compress/p7zip"
+pkgs="pkg:/system/kvm pkg:/ooce/system/file-system/ntfs-3g pkg:/ooce/driver/fuse pkg:/compress/p7zip pkg:/ooce/system/gptfdisk"
 rc=0;
 { pfexec pkg install -v $pkgs || rc=$?; }
 # $rc is 4 if the package is already installed.
@@ -58,34 +58,12 @@ if [[ "$rc" -ne 4 ]] && [[ "$rc" -ne 0 ]]; then
     exit "$rc"
 fi
 
+# Build propolis-standalone separately.
 pushd "$BUILD_DIR"
-
-# Build popt (dependency of sgdisk)
-wget https://mirrors.omnios.org/popt/popt-1.14.tar.gz
-tar xf popt-1.14.tar.gz
-rm popt-1.14.tar.gz
-pushd popt-1.14
-REMOVE_DIRS+=("$(pwd)")
-./configure --disable-shared
-gmake -j
-popd # popt-1.14
-
-# Build sgdisk
-wget https://download.sourceforge.net/project/gptfdisk/gptfdisk/1.0.9/gptfdisk-1.0.9.tar.gz
-tar xf gptfdisk-1.0.9.tar.gz
-rm gptfdisk-1.0.9.tar.gz
-pushd gptfdisk-1.0.9
-REMOVE_DIRS+=("$(pwd)")
-CXXFLAGS="-I../popt-1.14 -D_UUID_UUID_H" gmake sgdisk LDFLAGS="-L/lib -luuid -L../popt-1.14/.libs" -j
-mv sgdisk "$OUTPUT_DIR"
-popd # gptfdisk-1.0.9
-
-# Build propolis
 git clone https://github.com/oxidecomputer/propolis.git
 pushd propolis
 REMOVE_DIRS+=("$(pwd)")
 cargo build --release --bin propolis-standalone
 mv target/release/propolis-standalone "$OUTPUT_DIR"
 popd # propolis
-
 popd # /work/tmp
