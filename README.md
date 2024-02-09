@@ -2,29 +2,29 @@
 
 This repo contains the `wimsy` command-line tool for constructing generic
 Windows Server images that can be imported into an Oxide rack and used to
-create new Windows-based instances.
+create new Windows-based instances. This tool sets up Windows in a VM running
+on your computer, automatically customizes that installation using scripts that
+you supply, and minimizes the size of the installation disk once setup is
+complete. You can then upload the installation disk to an Oxide rack and attach
+it to a VM or use it as the source disk for a new disk image.
 
-`wimsy` runs on Linux (tested on Ubuntu 20.04) and illumos systems. It works by
-running a VM to which it attaches Windows installation media and other disks
-containing scripts that tell Windows Setup how to operate and drivers that
-Windows should install.
+`wimsy` runs on Linux (tested on Ubuntu 20.04) and illumos systems and supports
+creating Windows Server 2019 and Windows Server 2022 images. Windows Server
+2016 is not yet fully supported (but it's on the roadmap). Earlier versions of
+Windows Server and client editions of Windows are not supported. It may be
+possible to use `wimsy` to generate images for these versions, but Oxide has
+not tested them, so your mileage may vary.
 
 # Usage
-
-## Supported Windows versions
-
-`wimsy` can set up images for Windows Server 2019 and Windows Server 2022
-guests. Windows Server 2016 is not yet supported. Earlier versions of Windows
-Server and client editions of Windows are also not supported.
 
 ## Prerequisites
 
 ### Host machine configuration
 
-When using Oxide's default setup scripts, the guest VM must be able to reach the
-Internet to download guest software, so a networked host is required. See
-[Default image configuration](#default-image-configuration) for more information
-about what these scripts install.
+When using the repo's default setup scripts, the guest VM must be able to reach
+the Internet to download guest software, so the host must have a network
+connection. See the [default image configuration](#default-image-configuration)
+for more information about what these scripts install.
 
 ### Tools
 
@@ -55,10 +55,24 @@ from the OVMF project can generally be found in `/usr/share/OVMF/OVMF_CODE.fd`.
 
 ### Setup scripts
 
-`wimsy` supplies Windows Setup with scripts that allow it to run unattended.
-Oxide tests images using lightly modified version of the scripts in the
-`unattend` directory in this repo. These scripts must all reside in a single
-directory.
+`wimsy` uses a number of scripts to run an unattended Windows Setup process and
+customize an image's software and settings. Oxide tests images using lightly
+modified version of the scripts in the `unattend` directory in this repo, but
+you can modify these or provide custom scripts. At a minimum, an
+`Autounattend.xml` answer file is required to run Windows Setup unattended. See
+Microsoft's documentation of the [Windows Setup
+process](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-setup-installation-process?view=windows-11)
+and the [Unattended Windows Setup
+Reference](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/)
+for details.
+
+`wimsy` expects all the unattend scripts it will inject to reside in a single
+flat directory. The `unattend` directory included in the project's release
+archives has this property, but the directory checked into the repo does not
+(there are some differences in the illumos and Linux VMMs that slightly change
+how the scripts work for each OS). The `make_unattend.sh` script in the repo
+will create a directory at `out/unattend` that contains the repo's unattend
+files with the correct OS-specific versions.
 
 ## Running `wimsy`
 
@@ -68,9 +82,9 @@ Unpack the tarball and install the prerequisite tools, then run `wimsy`,
 substituting the appropriate paths to your input ISOs and output disk image:
 
 ```bash
-install_prerequisites.sh
+./install_prerequisites.sh
 
-wimsy \
+./wimsy \
 --work-dir /tmp \
 --output-image $OUTPUT_IMAGE_PATH \
 create-guest-disk-image \
@@ -81,7 +95,7 @@ create-guest-disk-image \
 ```
 
 For more information, run `wimsy --help` or `wimsy create-guest-disk-image
---help`. 
+--help`.
 
 ### Building from source
 
@@ -92,13 +106,11 @@ cargo build --release
 target/release/wimsy create-guest-disk-image --help
 ```
 
-If you are using the default unattend scripts from this repo, ensure they are in
-a single flat directory before proceeding. The `unattend` directory in the repo
-has some generic and some OS-specific scripts; to create a flat directory from
-it with the appropriate scripts for your host OS, run
+If you are using the default unattend scripts from this repo, pack them into
+a single flat directory:
 
 ```bash
-make_unattend.sh
+./make_unattend.sh
 ```
 
 Then invoke `wimsy` with your desired arguments, e.g.:
@@ -106,10 +118,10 @@ Then invoke `wimsy` with your desired arguments, e.g.:
 ```bash
 target/release/wimsy \
 --work-dir /tmp \
---output-image ./wimsy-ws2022.img \
+--output-image $OUTPUT_IMAGE_PATH \
 create-guest-disk-image \
---windows-iso ./WS2022_SERVER_EVAL_x64FRE_en-us.iso \
---virtio-iso ./virtio-win-0.1.240.iso \
+--windows-iso $WINDOWS_SETUP_ISO_PATH \
+--virtio-iso $VIRTIO_DRIVER_ISO_PATH \
 --unattend-dir ./out/unattend \
 --ovmf-path /usr/share/OVMF/OVMF_CODE.fd \
 ```
@@ -155,8 +167,9 @@ images contain the following drivers, software, and settings:
 - **In-guest agents**: The scripts install an Oxide-compatible
   [fork](https://github.com/luqmana/cloudbase-init/tree/oxide) of
   [cloudbase-init](https://cloudbase-init.readthedocs.io/en/latest/) that
-  initializes new VMs when they are run for the first time. `cloudbase-init` is
-  configured with the following settings and plugins:
+  initializes new VMs when they are run for the first time. This operation
+  requires Internet access. `cloudbase-init` is configured with the following
+  settings and plugins:
   - Instance metadata will be read from the no-cloud configuration drive the
     Oxide control plane attaches to each running instance.
   - The instance's computer name will be set to its Oxide instance hostname on
