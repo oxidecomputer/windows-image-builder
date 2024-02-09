@@ -98,7 +98,7 @@ case $(uname -s) in
         install_linux_prerequisites
         ;;
     *)
-        echo "unrecognized host OS $(uname -s)"
+        echo "unsupported host OS $(uname -s)"
         exit 1
         ;;
 esac
