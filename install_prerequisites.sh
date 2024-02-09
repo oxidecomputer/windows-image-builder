@@ -9,6 +9,7 @@ install_linux_prerequisites() {
     'libguestfs-tools'
     'ovmf'
     'qemu-system-x86'
+    'qemu-system-gui'
     'qemu-utils'
     )
 
