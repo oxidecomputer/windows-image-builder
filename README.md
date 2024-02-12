@@ -67,12 +67,9 @@ Reference](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/
 for details.
 
 `wimsy` expects all the unattend scripts it will inject to reside in a single
-flat directory. The `unattend` directory included in the project's release
-archives has this property, but the directory checked into the repo does not
-(there are some differences in the illumos and Linux VMMs that slightly change
-how the scripts work for each OS). The `make_unattend.sh` script in the repo
-will create a directory at `out/unattend` that contains the repo's unattend
-files with the correct OS-specific versions.
+flat directory. The `unattend` directory in this repo contains a set of scripts
+that apply the [default image configuration](#default-image-configuration)
+described below.
 
 ## Running `wimsy`
 
@@ -106,13 +103,6 @@ cargo build --release
 target/release/wimsy create-guest-disk-image --help
 ```
 
-If you are using the default unattend scripts from this repo, pack them into
-a single flat directory:
-
-```bash
-./make_unattend.sh
-```
-
 Then invoke `wimsy` with your desired arguments, e.g.:
 
 ```bash
@@ -122,9 +112,19 @@ target/release/wimsy \
 create-guest-disk-image \
 --windows-iso $WINDOWS_SETUP_ISO_PATH \
 --virtio-iso $VIRTIO_DRIVER_ISO_PATH \
---unattend-dir ./out/unattend \
+--unattend-dir ./unattend \
 --ovmf-path /usr/share/OVMF/OVMF_CODE.fd \
 ```
+
+### Running on illumos
+
+Running on illumos requires some extra configuration:
+
+- If you are using the setup scripts in the `unattend` directory, copy them to
+  another directory, then replace `Autounattend.xml` and `prep.cmd` with
+  `illumos/Autounattend.xml` and `illumos/prep.cmd` from the repo.
+- You'll need to run `wimsy build-installation-disk` before running `wimsy
+  create-guest-disk-image`. See the command-line help for more information.
 
 ## Additional options
 
