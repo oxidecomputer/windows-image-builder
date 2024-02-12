@@ -1,0 +1,49 @@
+#
+# Configuration for GitHub-based CI, based on the default GitHub Rust config.
+#
+
+name: Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-style:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report cargo version
+        run: cargo --version
+      - name: Report rustfmt version
+        run: cargo fmt -- --version
+      - name: Check style
+        run: cargo fmt -- --check
+
+  clippy-lint:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report cargo version
+        run: cargo --version
+      - name: Report clippy version
+        run: cargo clippy -- --version
+      - name: Run clippy
+        run: cargo clippy --all-targets -- --deny warnings --allow clippy::style
+
+  build-and-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report cargo version
+        run: cargo --version
+      - name: Report rustc version
+        run: rustc --version
+      - name: Build
+        run: cargo build --all-features --locked --all-targets --verbose
+      - name: Run tests
+        run: cargo test --all-features --locked --verbose
+        env:
+          RUST_BACKTRACE: 1
