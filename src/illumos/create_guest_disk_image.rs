@@ -5,7 +5,8 @@
 use std::{os::unix::net::UnixStream, process::Command, str::FromStr};
 
 use crate::{
-    runner::{Context, MissingPrerequisites, Script, ScriptStep, Ui},
+    runner::{Context, MissingPrerequisites, Script, ScriptStep},
+    ui::Ui,
     util::{
         check_executable_prerequisites, check_file_prerequisites,
         run_command_check_status,
@@ -171,11 +172,12 @@ fn run_propolis_standalone(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
         "setting working directory before launching propolis-standalone",
     )?;
 
+    let executable = "propolis-standalone";
     let mut propolis = Command::new("pfexec");
     propolis
-        .args(["propolis-standalone", ctx.get_var("vm_toml_path").unwrap()])
-        .stdout(ui.stdout_target())
-        .stderr(ui.stdout_target());
+        .args([executable, ctx.get_var("vm_toml_path").unwrap()])
+        .stdout::<std::fs::File>(ui.child_stdout(executable)?.into())
+        .stderr::<std::fs::File>(ui.child_stderr(executable)?.into());
 
     ui.set_substep(&format!("Launching propolis-standalone: {:?}", propolis));
     let mut propolis =

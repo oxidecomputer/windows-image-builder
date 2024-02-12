@@ -15,8 +15,9 @@ use itertools::iproduct;
 
 use crate::{
     app::ImageSources,
-    runner::{Context, MissingPrerequisites, Script, ScriptStep, Ui},
+    runner::{Context, MissingPrerequisites, Script, ScriptStep},
     steps::get_gpt_partition_information,
+    ui::Ui,
     util::{
         check_executable_prerequisites, check_file_prerequisites,
         run_command_check_status,
@@ -307,14 +308,12 @@ fn extract_setup_to_winpe_partition(
     ui: &dyn Ui,
 ) -> Result<()> {
     run_command_check_status(
-        Command::new("7z")
-            .args([
-                "x",
-                "-x!sources/install.wim",
-                ctx.get_var("windows_iso").unwrap(),
-                &format!("-o{}", &ctx.get_var("setup_mount").unwrap()),
-            ])
-            .stdout(ui.stdout_target()),
+        Command::new("7z").args([
+            "x",
+            "-x!sources/install.wim",
+            ctx.get_var("windows_iso").unwrap(),
+            &format!("-o{}", &ctx.get_var("setup_mount").unwrap()),
+        ]),
         ui,
     )
     .map(|_| ())
@@ -443,17 +442,15 @@ fn copy_virtio_to_winpe_partition(
     for (driver, ext) in iproduct!(["viostor", "NetKVM"], ["cat", "inf", "sys"])
     {
         run_command_check_status(
-            Command::new("7z")
-                .args([
-                    "e",
-                    ctx.get_var("virtio_iso").unwrap(),
-                    &format!("-o{}/virtio-drivers/", setup_mount),
-                    &format!(
-                        "{driver}/{}/amd64/*.{ext}",
-                        ctx.get_var("windows_version").unwrap()
-                    ),
-                ])
-                .stdout(ui.stdout_target()),
+            Command::new("7z").args([
+                "e",
+                ctx.get_var("virtio_iso").unwrap(),
+                &format!("-o{}/virtio-drivers/", setup_mount),
+                &format!(
+                    "{driver}/{}/amd64/*.{ext}",
+                    ctx.get_var("windows_version").unwrap()
+                ),
+            ]),
             ui,
         )?;
     }
@@ -534,14 +531,12 @@ fn mount_wim_partition(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
 
 fn copy_install_wim(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     run_command_check_status(
-        Command::new("7z")
-            .args([
-                "e",
-                "-i!sources/install.wim",
-                ctx.get_var("windows_iso").unwrap(),
-                &format!("-o{}", ctx.get_var("image_mount").unwrap()),
-            ])
-            .stdout(ui.stdout_target()),
+        Command::new("7z").args([
+            "e",
+            "-i!sources/install.wim",
+            ctx.get_var("windows_iso").unwrap(),
+            &format!("-o{}", ctx.get_var("image_mount").unwrap()),
+        ]),
         ui,
     )
     .map(|_| ())
