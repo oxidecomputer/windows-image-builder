@@ -5,7 +5,8 @@
 use std::{os::unix::net::UnixStream, process::Command, str::FromStr};
 
 use crate::{
-    runner::{Context, MissingPrerequisites, Script, ScriptStep, Ui},
+    runner::{Context, MissingPrerequisites, Script, ScriptStep},
+    ui::Ui,
     util::{
         check_executable_prerequisites, check_file_prerequisites,
         run_command_check_status,
@@ -57,7 +58,7 @@ impl Script for CreateGuestDiskImageScript {
         writeln!(w, "  {}: {}", "Guest bootrom".bold(), args.propolis_bootrom)?;
         writeln!(w, "  {}: {}", "VNIC physical link".bold(), args.vnic_link)?;
         writeln!(w, "  {}: {}", "VNIC name".bold(), VNIC_NAME)?;
-        writeln!(w, "")?;
+        writeln!(w)?;
         writeln!(w, "  {}: {}", "Output file".bold(), args.output_image)?;
 
         Ok(())
@@ -70,8 +71,8 @@ impl Script for CreateGuestDiskImageScript {
             self.args.propolis_bootrom.clone(),
         ];
 
-        errors.extend(check_file_prerequisites(&files).into_iter());
-        errors.extend(check_executable_prerequisites(self.steps()).into_iter());
+        errors.extend(check_file_prerequisites(&files));
+        errors.extend(check_executable_prerequisites(self.steps()));
 
         MissingPrerequisites::from_messages(errors, vec![])
     }
@@ -171,11 +172,12 @@ fn run_propolis_standalone(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
         "setting working directory before launching propolis-standalone",
     )?;
 
+    let executable = "propolis-standalone";
     let mut propolis = Command::new("pfexec");
     propolis
-        .args(["propolis-standalone", ctx.get_var("vm_toml_path").unwrap()])
-        .stdout(ui.stdout_target())
-        .stderr(ui.stdout_target());
+        .args([executable, ctx.get_var("vm_toml_path").unwrap()])
+        .stdout::<std::fs::File>(ui.child_stdout(executable)?)
+        .stderr::<std::fs::File>(ui.child_stderr(executable)?);
 
     ui.set_substep(&format!("Launching propolis-standalone: {:?}", propolis));
     let mut propolis =

@@ -7,7 +7,7 @@
 use std::process::Command;
 
 use crate::{
-    runner::Ui,
+    ui::Ui,
     util::{grep_command_for_row_and_column, run_command_check_status},
 };
 

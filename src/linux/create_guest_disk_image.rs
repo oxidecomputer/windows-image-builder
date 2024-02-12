@@ -5,16 +5,12 @@
 //! Defines a script for building a Windows guest image on a Linux system using
 //! QEMU.
 
-use std::{
-    collections::HashMap,
-    io::Write,
-    process::{Command, Stdio},
-    str::FromStr,
-};
+use std::{collections::HashMap, io::Write, process::Command, str::FromStr};
 
 use crate::{
     app::ImageSources,
-    runner::{Context, MissingPrerequisites, Script, ScriptStep, Ui},
+    runner::{Context, MissingPrerequisites, Script, ScriptStep},
+    ui::Ui,
     util::{
         check_executable_prerequisites, check_file_prerequisites,
         run_command_check_status,
@@ -330,10 +326,11 @@ fn install_via_qemu(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
         args.extend_from_slice(&["-display", "none"]);
     }
 
-    let qemu = Command::new("qemu-system-x86_64")
+    let qemu = "qemu-system-x86_64";
+    let qemu = Command::new(qemu)
         .args(&args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout::<std::fs::File>(ui.child_stdout(qemu)?)
+        .stderr::<std::fs::File>(ui.child_stderr(qemu)?)
         .spawn()?;
 
     ui.set_substep("connecting to QEMU's telnet control interface");

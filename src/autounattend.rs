@@ -312,9 +312,9 @@ mod test {
     use super::*;
 
     const ILLUMOS_UNATTEND: &'static str =
-        include_str!("../illumos/unattend/Autounattend.xml");
+        include_str!("../illumos/Autounattend.xml");
     const LINUX_UNATTEND: &'static str =
-        include_str!("../linux/unattend/Autounattend.xml");
+        include_str!("../unattend/Autounattend.xml");
 
     #[test]
     fn replace_illumos_unattend() {

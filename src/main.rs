@@ -33,6 +33,7 @@ pub mod app;
 pub mod autounattend;
 pub mod runner;
 pub mod steps;
+pub mod ui;
 pub mod util;
 
 fn main() -> anyhow::Result<()> {
@@ -43,5 +44,5 @@ fn main() -> anyhow::Result<()> {
     };
 
     let script = get_script(&app);
-    runner::run_script(script, interactive)
+    runner::run_script(script, interactive, &app.work_dir)
 }
