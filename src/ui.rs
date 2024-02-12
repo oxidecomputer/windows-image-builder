@@ -158,15 +158,13 @@ pub fn run_script(
     };
 
     let substep_handlers: Box<dyn Iterator<Item = StepHandler>> = match &bars {
-        Some(bars) => {
-            Box::new(bars.iter().map(|b| StepHandler::ProgressBar(b)))
-        }
+        Some(bars) => Box::new(bars.iter().map(StepHandler::ProgressBar)),
         None => Box::new(std::iter::repeat(StepHandler::Stdout)),
     };
 
-    let mut step_number = 0;
-    for (step, handler) in script.steps().iter().zip(substep_handlers) {
-        step_number += 1;
+    for (step_number, (step, handler)) in
+        script.steps().iter().zip(substep_handlers).enumerate()
+    {
         let ui = PerStepUi {
             step_id: step_number,
             step,
@@ -181,9 +179,7 @@ pub fn run_script(
 
         let result = step.run(&mut ctx, &ui);
         ui.step_handler.apply_result(step, &result);
-        if result.is_err() {
-            return result;
-        }
+        result?;
     }
 
     Ok(())

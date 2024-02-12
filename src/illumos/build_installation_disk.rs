@@ -73,7 +73,7 @@ impl Script for BuildInstallationDiskScript {
             sources.unattend_dir
         )?;
 
-        writeln!(w, "")?;
+        writeln!(w)?;
 
         if let Some(index) = sources.unattend_image_index {
             writeln!(
@@ -91,7 +91,7 @@ impl Script for BuildInstallationDiskScript {
             writeln!(w, "  Windows version defaulted to Server 2022")?;
         }
 
-        writeln!(w, "")?;
+        writeln!(w)?;
         writeln!(w, "  {}: {}", "Output file".bold(), args.output_image)?;
 
         Ok(())
@@ -105,7 +105,7 @@ impl Script for BuildInstallationDiskScript {
             self.args.sources.virtio_iso.clone(),
         ];
 
-        errors.extend(check_file_prerequisites(&files).into_iter());
+        errors.extend(check_file_prerequisites(&files));
 
         files.clear();
         for file in UNATTEND_FILES {
@@ -114,8 +114,8 @@ impl Script for BuildInstallationDiskScript {
             files.push(path);
         }
 
-        warnings.extend(check_file_prerequisites(&files).into_iter());
-        errors.extend(check_executable_prerequisites(self.steps()).into_iter());
+        warnings.extend(check_file_prerequisites(&files));
+        errors.extend(check_executable_prerequisites(self.steps()));
 
         MissingPrerequisites::from_messages(errors, warnings)
     }

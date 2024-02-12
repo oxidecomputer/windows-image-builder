@@ -329,8 +329,8 @@ fn install_via_qemu(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     let qemu = "qemu-system-x86_64";
     let qemu = Command::new(qemu)
         .args(&args)
-        .stdout::<std::fs::File>(ui.child_stdout(qemu)?.into())
-        .stderr::<std::fs::File>(ui.child_stderr(qemu)?.into())
+        .stdout::<std::fs::File>(ui.child_stdout(qemu)?)
+        .stderr::<std::fs::File>(ui.child_stderr(qemu)?)
         .spawn()?;
 
     ui.set_substep("connecting to QEMU's telnet control interface");
