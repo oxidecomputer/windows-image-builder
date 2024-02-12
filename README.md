@@ -2,20 +2,36 @@
 
 This repo contains the `wimsy` command-line tool for constructing generic
 Windows Server images that can be imported into an Oxide rack and used to
-create new Windows-based instances.
+create new Windows-based instances. This tool sets up Windows in a VM running
+on your computer, automatically customizes that installation using scripts that
+you supply, and minimizes the size of the installation disk once setup is
+complete. You can then upload the installation disk to an Oxide rack and attach
+it to a VM or use it as the source disk for a new disk image.
+
+`wimsy` runs on Linux (tested on Ubuntu 20.04) and illumos systems and supports
+creating Windows Server 2019 and Windows Server 2022 images. Windows Server
+2016 is not yet fully supported (but it's on the roadmap). Earlier versions of
+Windows Server and client editions of Windows are not supported. It may be
+possible to use `wimsy` to generate images for these versions, but Oxide has
+not tested them, so your mileage may vary.
 
 # Usage
 
-`wimsy` runs on Linux (tested on Ubuntu 20.04) and illumos systems. It works by
-running a VM to which it attaches Windows installation media and other disks
-containing scripts that tell Windows Setup how to operate and drivers that
-Windows should install.
+## Prerequisites
 
-## Install prerequisite binaries
+### Host machine configuration
 
-On Linux distros with Debian (aptitude-based) package managers, run
-`linux/install_prerequisites.sh` to ensure the necessary tools and packages are
-installed. The following packages and tools are required:
+When using the repo's default setup scripts, the guest VM must be able to reach
+the Internet to download guest software, so the host must have a network
+connection. See the [default image configuration](#default-image-configuration)
+for more information about what these scripts install.
+
+### Tools
+
+Run `install_prerequisites.sh` from the repo or release tarball to install the
+tools `wimsy` invokes to create disks and run VMs. On Linux hosts, a Debian
+(aptitude-based) package manager is required. Linux systems use the following
+tools and packages:
 
 * `qemu` and `ovmf` to run the Windows installer in a virtual machine
 * `qemu-img` and `libguestfs-tools` to create and manage virtual disks and their
@@ -23,22 +39,62 @@ installed. The following packages and tools are required:
 * `sgdisk` to modify virtual disks' GUID partition tables
 * `genisoimage` to create an ISO containing the unattended setup scripts
 
-## Obtain installation media and virtio drivers
+### Installation media & drivers
 
-`wimsy` requires the locations of a few files:
+`wimsy` requires an ISO disk image containing Windows installation media, an ISO
+disk image containing signed virtio drivers, and a UEFI guest firmware image to
+use when running the setup VM.
 
-- An ISO disk image containing Windows installation media
-- An ISO disk image containing appropriately signed virtio drivers, arranged in
-  the directory structure used in the [driver images](https://github.com/virtio-win/virtio-win-pkg-scripts/blob/master/README.md) created by the Fedora Project
-- A UEFI guest firmware image; on a Linux system with virtualization tools
-  installed, this is typically found in `/usr/share/OVMF/OVMF_CODE.fd`
+Oxide tests Windows guests using the [driver
+images](https://github.com/virtio-win/virtio-win-pkg-scripts/blob/master/README.md)
+created by the Fedora Project. If you use another driver ISO, the drivers must
+be arranged in the same directory structure used by this project.
 
-`wimsy` also requires a set of Windows Setup answer files and accompanying
-scripts to pass to the setup process. The answer files and scripts Oxide uses
-for its internal test images are in this repository in the `linux/unattend`
-directory.
+On a Linux system with virtualization tools installed, a guest firmware image
+from the OVMF project can generally be found in `/usr/share/OVMF/OVMF_CODE.fd`.
 
-## Run `wimsy`
+### Setup scripts
+
+`wimsy` uses a number of scripts to run an unattended Windows Setup process and
+customize an image's software and settings. Oxide tests images using lightly
+modified version of the scripts in the `unattend` directory in this repo, but
+you can modify these or provide custom scripts. At a minimum, an
+`Autounattend.xml` answer file is required to run Windows Setup unattended. See
+Microsoft's documentation of the [Windows Setup
+process](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-setup-installation-process?view=windows-11)
+and the [Unattended Windows Setup
+Reference](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/)
+for details.
+
+`wimsy` expects all the unattend scripts it will inject to reside in a single
+flat directory. The `unattend` directory in this repo contains a set of scripts
+that apply the [default image configuration](#default-image-configuration)
+described below.
+
+## Running `wimsy`
+
+### From a release tarball
+
+Unpack the tarball and install the prerequisite tools, then run `wimsy`,
+substituting the appropriate paths to your input ISOs and output disk image:
+
+```bash
+./install_prerequisites.sh
+
+./wimsy \
+--work-dir /tmp \
+--output-image $OUTPUT_IMAGE_PATH \
+create-guest-disk-image \
+--windows-iso $WINDOWS_SETUP_ISO_PATH \
+--virtio-iso $VIRTIO_DRIVER_ISO_PATH \
+--unattend-dir unattend \
+--ovmf-path /usr/share/OVMF/OVMF_CODE.fd \
+```
+
+For more information, run `wimsy --help` or `wimsy create-guest-disk-image
+--help`.
+
+### Building from source
 
 Build with `cargo` and view the command-line help as follows:
 
@@ -47,23 +103,35 @@ cargo build --release
 target/release/wimsy create-guest-disk-image --help
 ```
 
-An example invocation might be
+Then invoke `wimsy` with your desired arguments, e.g.:
 
 ```bash
 target/release/wimsy \
 --work-dir /tmp \
---output-image ./wimsy-ws2022.img \
+--output-image $OUTPUT_IMAGE_PATH \
 create-guest-disk-image \
---windows-iso ./WS2022_SERVER_EVAL_x64FRE_en-us.iso \
---virtio-iso ./virtio-win-0.1.217.iso \
---unattend-dir ./linux/unattend \
+--windows-iso $WINDOWS_SETUP_ISO_PATH \
+--virtio-iso $VIRTIO_DRIVER_ISO_PATH \
+--unattend-dir ./unattend \
 --ovmf-path /usr/share/OVMF/OVMF_CODE.fd \
 ```
 
-The installation is driven using the files and scripts in the directory passed
-to `--unattend-dir`. You can modify these files directly to customize your
-image, but `wimsy` provides some command line switches to apply common
-modifications:
+### Running on illumos
+
+Running on illumos requires some extra configuration:
+
+- If you are using the setup scripts in the `unattend` directory, copy them to
+  another directory, then replace `Autounattend.xml` and `prep.cmd` with
+  `illumos/Autounattend.xml` and `illumos/prep.cmd` from the repo.
+- You'll need to run `wimsy build-installation-disk` before running `wimsy
+  create-guest-disk-image`. See the command-line help for more information.
+
+## Additional options
+
+`wimsy` runs an unattended Windows Setup session driven by the files and scripts
+in the directory passed to `--unattend-dir`. You can modify these files directly
+to customize your image, but `wimsy` provides some command line switches to
+apply common modifications:
 
 - The `--unattend-image-index` switch changes the image index specified in
   `Autounattend.xml`, which changes the Windows edition Setup will attempt to
@@ -76,78 +144,39 @@ When running on Linux, adding the `--vga-console` switch directs QEMU to run
 with a VGA console attached to the guest so that you can watch and interact with
 Windows Setup visually.
 
-## Other OSes
+# Default image configuration
 
-While the `wimsy` executable is only supported on Linux and illumos systems, the
-installation method used by the Linux executable can be used in other
-environments by creating a VM with the following attached devices and
-configuration settings:
+`wimsy` and the unattend scripts in this repo create
+[generalized](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/sysprep--generalize--a-windows-installation?view=windows-11)
+images that can be uploaded to the rack and used to create multiple VMs. These
+images contain the following drivers, software, and settings:
 
-- A blank installation disk (at least 30 GiB)
-- The following ISOs, attached as virtual CD-ROM drives or other removable
-  media:
-  - A Windows installation ISO
-  - A virtio driver ISO
-  - An ISO containing the contents of the `linux/unattend` directory
-- A virtual network adapter
-- UEFI-based guest firmware (e.g. a Hyper-V Generation 2 VM)
-
-# Image configuration
-
-Windows guests running on an Oxide rack work best with the following software
-and settings:
-
-- **Drivers**: The Oxide stack uses virtio network and block device drivers for
-  its virtual network adapter and the cloud-init volumes it attaches to guests.
-  Windows guests will need drivers for both of these devices.
-- **Remote access**: Windows guests can be accessed via the Windows Emergency
-  Management Services console (EMS) running over a virtual serial port, via
-  Remote Desktop, or via SSH.
-  - **EMS**: The EMS console must be explicitly
-    [configured](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/boot-parameters-to-enable-ems-redirection)
-    to run over COM1.
-  - **SSH**: To access an instance over SSH, the guest must have a running
-    [SSH
-    service](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse?tabs=gui),
-    and the relevant user(s) must have valid passwords or SSH keys.
-  - **Remote Desktop (RDP)**: To access an instance over RDP:
-    - The guest's firewall rules must accept incoming TCP and UDP connections on
-      port 3389.
-    - The Oxide instance's firewall rules must also accept TCP and UDP
-      connections on port 3389.
-    - Remote Desktop sessions must be [enabled in the
-      registry](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-terminalservices-localsessionmanager-fdenytsconnections). 
-
-The scripts in this repo configure images as follows:
-
-- The scripts install virtio network and block device drivers.
-- The built-in administrator account is disabled, and an `oxide` account in the
-  administrators group is added in its place. This account has a random password
-  that must be re-set before the account can be accessed; generally this is done
-  by supplying SSH keys at instance creation time, connecting over SSH, and
-  using the `net user` command to change the `oxide` account password.
-- The scripts configure the following settings:
-  - The EMS console is enabled and can be accessed using the Oxide serial
-    console API.
-  - The guest firewall is configured to allow ping and Remote Desktop access.
-  - The `fDenyTSConnections` registry value is set to 0 to allow incoming RDP
-    connections.
-- The scripts install OpenSSH and configure the SSH server service to start
-  automatically on system startup.
-- The scripts install a lightly modified
+- **Drivers**: `virtio-net` and `virtio-block` device drivers will be installed.
+- **Remote access**:
+  - The [Emergency Management Services
+    console](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/boot-parameters-to-enable-ems-redirection)
+    is enabled and accessible over COM1. This console will be accessible through
+    the Oxide web console and CLI.
+  - [OpenSSH for
+    Windows](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse?tabs=powershell)
+    is installed via PowerShell cmdlet. This operation requires Internet access.
+  - The guest is configured to allow Remote Desktop connections, and the guest
+    firewall is configured to accept connections on port 3389. **Note:** VMs
+    using these images must also have their firewall rules set to accept
+    connections on this port for RDP to be accessible.
+- **In-guest agents**: The scripts install an Oxide-compatible
   [fork](https://github.com/luqmana/cloudbase-init/tree/oxide) of
-  [cloudbase-init](https://cloudbase-init.readthedocs.io/en/latest/) that is
-  configured to read `cloud-init` metadata from an attached VFAT-formatted disk.
-  See cloudbase-init's documentation on [no-cloud configuration
-  drives](https://cloudbase-init.readthedocs.io/en/latest/services.html#nocloud-configuration-drive)
-  and [cloud config
-  userdata](https://cloudbase-init.readthedocs.io/en/latest/userdata.html#cloud-config)
-  for more information. The first time a disk based on one of these images is
-  booted, the cloudbase-init config directs cloudbase-init to do the following:
-  - The guest OS's hostname is set to the instance's hostname.
-  - The `oxide` account's `authorized_keys` are set to the SSH keys specified
-    when the instance was created.
-  - The main OS installation volume is automatically extended to consume any
-    unused data on the boot disk.
-- Images produced by these scripts are generalized and can be used to create
-  multiple distinct instances/boot disks.
+  [cloudbase-init](https://cloudbase-init.readthedocs.io/en/latest/) that
+  initializes new VMs when they are run for the first time. This operation
+  requires Internet access. `cloudbase-init` is configured with the following
+  settings and plugins:
+  - Instance metadata will be read from the no-cloud configuration drive the
+    Oxide control plane attaches to each running instance.
+  - The instance's computer name will be set to its Oxide instance hostname on
+    first boot.
+  - The built-in administrator account is disabled. An `oxide` account is
+    in the Local Administrators group is created in its place. Any SSH keys
+    provided in the instance's metadata will be added to this user's
+    `authorized_keys`.
+  - The OS installation volume is automatically extended to include the entire
+    boot disk, even if it is larger than the original image.

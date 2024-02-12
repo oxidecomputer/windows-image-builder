@@ -1,6 +1,9 @@
-$ErrorActionPreference = 'stop'
+param (
+    [Parameter(Mandatory=$True)]
+    [string]$ConfigDir
+)
 
-$setupDrive = "\\?\Volume{569CBD84-352D-44D9-B92D-BF25B852925B}\"
+$ErrorActionPreference = 'stop'
 
 #region Enable serial console
 Write-Host "Enabling Serial Console"
@@ -49,12 +52,12 @@ del C:\Windows\Temp\CloudbaseInitSetup.msi
 
 # Copy cloudbase-init configuration appropriate for Oxide rack
 $confPath = "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf\"
-Copy-Item -LiteralPath "$setupDrive\cloudbase-init\cloudbase-init.conf" -Destination "$confPath\cloudbase-init.conf"
-Copy-Item -LiteralPath "$setupDrive\cloudbase-init\cloudbase-init-unattend.conf" -Destination "$confPath\cloudbase-init-unattend.conf"
-Remove-Item "$confPath\Unattend.xml" # We'll use our own instead (specialize-unattend.xml)
+Copy-Item "$ConfigDir\cloudbase-init.conf" -Destination "$confPath\cloudbase-init.conf"
+Copy-Item "$ConfigDir\cloudbase-init-unattend.conf" -Destination "$confPath\cloudbase-init-unattend.conf"
+Remove-Item "$confPath\Unattend.xml"
 
 # Disable the service so it doesn't run on first boot and contend with the unattend first pass.
-# We re-enable it during the specialize phase. See specialize-unattend.xml.
+# We re-enable it during the specialize phase. See cloudbase-unattend.xml.
 Set-Service -Name cloudbase-init -StartupType Disabled
 #endregion
 
@@ -78,5 +81,5 @@ if ($newSz -lt $maxSz) { Resize-Partition -DriveLetter C -Size $newSz; Write-Hos
 
 #region Generalize image
 Write-Host "Generalizing image"
-C:\Windows\System32\Sysprep\sysprep.exe /generalize /oobe /shutdown /unattend:"$setupDrive\specialize-unattend.xml"
+C:\Windows\System32\Sysprep\sysprep.exe /generalize /oobe /shutdown /unattend:"$ConfigDir\specialize-unattend.xml"
 #endregion
