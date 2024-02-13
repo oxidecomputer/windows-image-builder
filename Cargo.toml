@@ -2,6 +2,7 @@
 name = "wimsy"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/oxidecomputer/windows-image-builder"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -15,3 +16,23 @@ indicatif = "0.17.7"
 itertools = "0.12.0"
 which = "5.0.0"
 xml-rs = "0.8.19"
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+# Config for 'cargo dist'
+[workspace.metadata.dist]
+# The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.10.0"
+# CI backends to support
+ci = ["github"]
+# The installers to generate for each app
+installers = []
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["x86_64-unknown-linux-gnu"]
+# Publish jobs to run in CI
+pr-run-mode = "plan"
+# Add the unattend directory to release archives.
+include = ["./unattend/", "./install_prerequisites.sh"]
