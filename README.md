@@ -152,6 +152,12 @@ images that can be uploaded to the rack and used to create multiple VMs. These
 images contain the following drivers, software, and settings:
 
 - **Drivers**: `virtio-net` and `virtio-block` device drivers will be installed.
+- **User accounts**: The local administrator account is disabled. An account
+  with username `oxide` will be created and added to the Local Administrators
+  group. Any SSH keys that are associated with an instance when that instance is
+  created will be added to the `oxide` user's authorized keys. By default, this
+  account has no password; to set a password, access the machine via SSH and use
+  `net user oxide *`.
 - **Remote access**:
   - The [Emergency Management Services
     console](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/boot-parameters-to-enable-ems-redirection)
