@@ -292,11 +292,11 @@ fn install_via_qemu(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
         "virtio-net-pci,netdev=net0",
         "-device",
         "nvme,drive=drivec,serial=01de01de,physical_block_size=512,\
-                logical_block_size=512,discard_granularity=512",
+                logical_block_size=512,discard_granularity=512,bootindex=1",
         "-drive",
         &install_disk_arg,
         "-device",
-        "ide-cd,drive=win-disk,id=cd-disk0,unit=0,bus=ide.0",
+        "ide-cd,drive=win-disk,id=cd-disk0,unit=0,bus=ide.0,bootindex=2",
         "-drive",
         &windows_iso_arg,
         "-device",
