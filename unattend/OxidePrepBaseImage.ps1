@@ -5,6 +5,35 @@ param (
 
 $ErrorActionPreference = 'stop'
 
+function DownloadLatestSshArchive {
+    param (
+        $ArchivePath
+    )
+
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $url = 'https://github.com/PowerShell/Win32-OpenSSH/releases/latest/'
+    $request = [System.Net.WebRequest]::Create($url)
+    $request.AllowAutoRedirect=$false
+    $response = $request.GetResponse()
+    $downloadPath = $([String]$response.GetResponseHeader("Location")).Replace('tag','download') + '/OpenSSH-Win64.zip'
+    Write-Host "Downloading OpenSSH release from" $downloadPath
+    Invoke-WebRequest -Uri $downloadPath -OutFile $ArchivePath | Out-Null
+}
+
+function InstallSshFromArchive {
+    param (
+        $ArchivePath
+    )
+
+    # The installation instructions on the Win32 OpenSSH wiki specify that
+    # OpenSSH should live in "C:\Program Files\OpenSSH", so make sure it's
+    # there and not in "OpenSSH-Win64".
+    Expand-Archive -Path $ArchivePath -DestinationPath "C:\Program Files"
+    Rename-Item -Path "C:\Program Files\OpenSSH-Win64" -NewName "C:\Program Files\OpenSSH"
+    & "C:\Program Files\OpenSSH\install-sshd.ps1"
+    New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22
+}
+
 #region Enable serial console
 Write-Host "Enabling Serial Console"
 bcdedit /ems on
@@ -36,7 +65,27 @@ do {
 
 #region Enable SSH
 Write-Host "Enabling SSH"
-Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+
+# The easiest way to install OpenSSH is to install the relevant Windows
+# capability, but this only exists in-box on Windows Server 2019 and later.
+# Server 2016 recognizes the capability name, but enabling it doesn't actually
+# install the sshd service. Try to detect both of these cases.
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction SilentlyContinue
+if ($?) {
+    $sshCap = Get-Service -Name sshd -ErrorAction SilentlyContinue
+}
+
+# If either of the last two commands produced an error, fall back to trying to
+# pull the latest release down from GitHub and trying to install it manually.
+if ($?) {
+    Write-Host "SSH service installed via Add-WindowsCapability"
+} else {
+    Write-Host "SSH capability not present in image, will download from GitHub"
+    $sshPath = "C:\Windows\Temp\OpenSSH-Win64.zip"
+    DownloadLatestSshArchive -ArchivePath $sshPath
+    InstallSshFromArchive -ArchivePath $sshPath
+}
+
 Set-Service -Name sshd -StartupType Automatic
 Start-Service sshd
 
