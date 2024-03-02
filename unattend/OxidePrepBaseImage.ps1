@@ -5,12 +5,53 @@ param (
 
 $ErrorActionPreference = 'stop'
 
+function RetryWithBackoff {
+    param (
+        [Parameter(Mandatory=$True)]
+        [scriptblock]$ScriptBlock,
+
+        [Parameter(Mandatory=$False)]
+        [int]$MaxAttempts = 5,
+
+        [Parameter(Mandatory=$False)]
+        [int]$InitialBackoffDelayMs = 1000,
+
+        [Parameter(Mandatory=$False)]
+        [int]$MaxBackoffDelayMs = 30000
+    )
+
+    $cmd = $ScriptBlock.ToString()
+    $cnt = 0
+    $delay = $InitialBackoffDelayMs
+    do {
+        $cnt++
+        try {
+            Invoke-Command -Command $ScriptBlock
+            return
+        } catch {
+            Write-Host "Command $cmd failed, will retry after $delay ms; error: " $_.Exception.InnerException.Message
+            Start-Sleep -Milliseconds $delay
+            $delay = [math]::Min($delay * 2, $MaxBackoffDelayMs)
+        }
+    } while ($cnt -lt $MaxAttempts)
+
+    $cmd = $ScriptBlock.ToString()
+    Write-Error -Message "Command $cmd failed after $MaxAttempts attempts" -ErrorAction Stop
+}
+
 function DownloadLatestSshArchive {
     param (
         $ArchivePath
     )
 
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    # GitHub requires clients to use at least TLS 1.2. Offer TLS 1.3 as well if
+    # this version of Windows supports it.
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls13, [Net.SecurityProtocolType]::Tls12
+    } catch {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    }
+
     $url = 'https://github.com/PowerShell/Win32-OpenSSH/releases/latest/'
     $request = [System.Net.WebRequest]::Create($url)
     $request.AllowAutoRedirect=$false
@@ -82,6 +123,7 @@ if ($?) {
 } else {
     Write-Host "SSH capability not present in image, will download from GitHub"
     $sshPath = "C:\Windows\Temp\OpenSSH-Win64.zip"
+    RetryWithBackoff -ScriptBlock { DownloadLatestSshArchive -ArchivePath $sshPath }
     DownloadLatestSshArchive -ArchivePath $sshPath
     InstallSshFromArchive -ArchivePath $sshPath
 }
@@ -95,7 +137,7 @@ $content = [System.IO.File]::ReadAllText("C:\ProgramData\ssh\sshd_config").Repla
 
 #region Install Cloudbase-init (built from https://github.com/luqmana/cloudbase-init/tree/oxide w/ https://github.com/luqmana/cloudbase-init-installer/tree/oxide)
 Write-Host "Installing cloudbase-init"
-Invoke-WebRequest -Uri https://oxide-omicron-build.s3.amazonaws.com/CloudbaseInitSetup.msi -OutFile C:\Windows\Temp\CloudbaseInitSetup.msi | Out-Null
+RetryWithBackoff -ScriptBlock { Invoke-WebRequest -Uri https://oxide-omicron-build.s3.amazonaws.com/CloudbaseInitSetup.msi -OutFile C:\Windows\Temp\CloudbaseInitSetup.msi | Out-Null }
 Start-Process msiexec.exe -ArgumentList "/i C:\Windows\Temp\CloudbaseInitSetup.msi /qn /norestart RUN_SERVICE_AS_LOCAL_SYSTEM=1" -Wait
 del C:\Windows\Temp\CloudbaseInitSetup.msi
 
