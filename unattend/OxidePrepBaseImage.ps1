@@ -124,7 +124,6 @@ if ($?) {
     Write-Host "SSH capability not present in image, will download from GitHub"
     $sshPath = "C:\Windows\Temp\OpenSSH-Win64.zip"
     RetryWithBackoff -ScriptBlock { DownloadLatestSshArchive -ArchivePath $sshPath }
-    DownloadLatestSshArchive -ArchivePath $sshPath
     InstallSshFromArchive -ArchivePath $sshPath
 }
 
