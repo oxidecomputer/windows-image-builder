@@ -1,6 +1,6 @@
 [package]
 name = "wimsy"
-version = "0.1.0-beta.1"
+version = "0.1.0"
 edition = "2021"
 repository = "https://github.com/oxidecomputer/windows-image-builder"
 
