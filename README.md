@@ -165,7 +165,10 @@ images contain the following drivers, software, and settings:
     the Oxide web console and CLI.
   - [OpenSSH for
     Windows](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse?tabs=powershell)
-    is installed via PowerShell cmdlet. This operation requires Internet access.
+    is installed via PowerShell cmdlet (Windows Server 2019 and 2022) or by
+    downloading the latest
+    [release](https://github.com/PowerShell/Win32-OpenSSH/releases/) from
+    GitHub. This operation requires the guest to have Internet access.
   - The guest is configured to allow Remote Desktop connections, and the guest
     firewall is configured to accept connections on port 3389. **Note:** VMs
     using these images must also have their firewall rules set to accept
