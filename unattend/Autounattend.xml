@@ -86,8 +86,9 @@
             </ImageInstall>
             <UserData>
                 <AcceptEula>true</AcceptEula>
+                <!-- Update and uncomment Product Key if applicable -->
                 <ProductKey>
-                    <Key>12345-12345-12345-12345-12345</Key>
+                    <!--<Key>12345-12345-12345-12345-12345</Key>-->
                     <WillShowUI>Never</WillShowUI>
                 </ProductKey>
             </UserData>
