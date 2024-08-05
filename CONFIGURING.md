@@ -29,7 +29,7 @@ further details, see the following documentation:
 
 # Common customizations
 
-## Selecting the correct drivers for the target Windows version
+## Install drivers for the target Windows version
 
 `wimsy` requires you to supply an ISO that contains virtio-net and virtio-block
 drivers for your version of Windows. The Windows Setup answer file,
@@ -68,7 +68,7 @@ You can also manually edit the driver paths in `Autounattend.xml` under the
 Note that the driver ISO may be mounted with any of the drive letters D, E, or
 F, so you should duplicate your driver paths to include all these drive letters.
 
-## Selecting a Windows edition to install
+## Select a Windows edition to install
 
 Some Windows installation disks allow you to select an edition of Windows to
 install, e.g. Server Standard or Server Datacenter with the Desktop Experience
@@ -153,7 +153,7 @@ tags exist, and the edition they specify conflicts with the one specified by the
 product key, Windows Setup will stop and wait for user input instead of
 proceeding unattended.
 
-## Supplying a product key to activate Windows after installing
+## Supply a product key to activate Windows after installing
 
 You can direct `sysprep` to prepare an image to activate with a specific product
 key when it is first used by editing `specialize-unattend.xml`:
