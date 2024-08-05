@@ -26,8 +26,8 @@ To set up a host machine to use `wimsy`:
 * Ensure the host has a copy of your [installation media and of a driver
   ISO](#installation-media-and-drivers).
 * Ensure the host has a network connection that allows VM guests to access the
-  public Internet. See the [default image
-  configuration](#default-image-configuration) for more details.
+  public Internet. This is needed to download software into the guest after
+  Windows Setup runs. See [CONFIGURING.md](CONFIGURING.md) for more details.
 
 ### Required tools
 
