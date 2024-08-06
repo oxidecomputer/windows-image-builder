@@ -105,23 +105,11 @@ pub fn get_output_image_partition_size(
         .map(|info| (info.sector_size, info.last_sector))
 }
 
-/// Most versions of qemu-img (since 2.11) support the `--shrink` flag when
-/// resizing disks. Relatively modern versions (since mid-2020) require this
-/// flag when shrinking a disk, but it is possible to use an older version of
-/// the tool that doesn't support it, so [`shrink_output_image`] allows its
-/// callers to decide whether to pass the flag.
-#[derive(PartialEq, Eq)]
-pub enum QemuShrinkFlag {
-    Supported,
-    Unsupported,
-}
-
 /// Given an installed Windows image at `image_path` whose sector size is
 /// `sector_size` and where the last sector of the last partition on the disk is
 /// `last_sector`, trims unused sectors from the image, leaving just enough
 /// space at the end to fit a new secondary GUID partition table.
 pub fn shrink_output_image(
-    qemu_shrink_flag: QemuShrinkFlag,
     image_path: &str,
     sector_size: &str,
     last_sector: &str,
@@ -141,12 +129,31 @@ pub fn shrink_output_image(
     // recreate it, e.g. using `sgdisk -e`.
     let new_disk_size = os_partition_size + (34 * sector_size);
     let new_disk_size = new_disk_size.to_string();
-    let mut args = vec!["resize"];
-    if qemu_shrink_flag == QemuShrinkFlag::Supported {
-        args.push("--shrink");
-    }
-    args.extend_from_slice(&["-f", "raw", image_path, &new_disk_size]);
 
+    // QEMU 5.10 and later require callers to pass the `--shrink` flag when
+    // shrinking an image with `qemu-img resize`. This flag was added in QEMU
+    // 2.11, so it's been around for a while, but it's not impossible for a
+    // sufficiently old host not to have it (Debian 9's online manpages, for
+    // example, don't include the flag, and the illumos /system/kvm package
+    // installs a qemu-img binary that excludes it).
+    //
+    // To try to maximize compatibility, optimistically pass the `--shrink` flag
+    // to start with. If that fails, fall back to running without `--shrink` to
+    // see if that resolves the problem.
+    let mut args =
+        vec!["resize", "--shrink", "-f", "raw", image_path, &new_disk_size];
+    if run_command_check_status(Command::new("qemu-img").args(&args), ui)
+        .is_ok()
+    {
+        return Ok(());
+    }
+
+    // This will overwrite the log file output from the previous invocation, but
+    // if this step fails, it's probably going to be for the same reason the
+    // previous invocation did (i.e. something else is probably wrong that
+    // isn't related to whether `--shrink` was used).
+    let _arg = args.remove(1);
+    assert_eq!(_arg, "--shrink");
     run_command_check_status(Command::new("qemu-img").args(&args), ui)
         .map(|_| ())
 }
