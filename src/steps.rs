@@ -152,7 +152,7 @@ pub fn shrink_output_image(
     // if this step fails, it's probably going to be for the same reason the
     // previous invocation did (i.e. something else is probably wrong that
     // isn't related to whether `--shrink` was used).
-assert_eq!(args.remove(1), "--shrink");
+    assert_eq!(args.remove(1), "--shrink");
     run_command_check_status(Command::new("qemu-img").args(&args), ui)
         .map(|_| ())
 }
