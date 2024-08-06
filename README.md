@@ -208,12 +208,13 @@ images `wimsy` produces.
 
 # Troubleshooting
 
-## `wimsy` launches QEMU, but never finishes setting up the image
+## `wimsy` gets stuck at "waiting for guest to complete installation"
 
-When running on Linux, add the `--vga-console` switch to `wimsy
-create-guest-disk-image` to direct QEMU to attach a VGA console to the guest.
-This is the easiest way to see what Windows Setup is up to when installation
-doesn't seem to be making progress.
+Usually, this means either that Windows Setup failed to install Windows or that
+the image prep script, `OxidePrepBaseImage.ps1`, did not run to completion.
+
+When using a Linux host, you can determine where the setup process has stopped
+by adding the `--vga-console` switch to `wimsy create-guest-disk-image`.
 
 ## Windows Setup is waiting for someone to select an edition to install
 
