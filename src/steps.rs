@@ -128,17 +128,33 @@ pub fn shrink_output_image(
     // that this GPT won't exist in the truncated disk; the caller needs to
     // recreate it, e.g. using `sgdisk -e`.
     let new_disk_size = os_partition_size + (34 * sector_size);
-    run_command_check_status(
-        Command::new("qemu-img").args([
-            "resize",
-            "-f",
-            "raw",
-            image_path,
-            &new_disk_size.to_string(),
-        ]),
-        ui,
-    )
-    .map(|_| ())
+    let new_disk_size = new_disk_size.to_string();
+
+    // QEMU 5.10 and later require callers to pass the `--shrink` flag when
+    // shrinking an image with `qemu-img resize`. This flag was added in QEMU
+    // 2.11, so it's been around for a while, but it's not impossible for a
+    // sufficiently old host not to have it (Debian 9's online manpages, for
+    // example, don't include the flag, and the illumos /system/kvm package
+    // installs a qemu-img binary that excludes it).
+    //
+    // To try to maximize compatibility, optimistically pass the `--shrink` flag
+    // to start with. If that fails, fall back to running without `--shrink` to
+    // see if that resolves the problem.
+    let mut args =
+        vec!["resize", "--shrink", "-f", "raw", image_path, &new_disk_size];
+    if run_command_check_status(Command::new("qemu-img").args(&args), ui)
+        .is_ok()
+    {
+        return Ok(());
+    }
+
+    // This will overwrite the log file output from the previous invocation, but
+    // if this step fails, it's probably going to be for the same reason the
+    // previous invocation did (i.e. something else is probably wrong that
+    // isn't related to whether `--shrink` was used).
+    assert_eq!(args.remove(1), "--shrink");
+    run_command_check_status(Command::new("qemu-img").args(&args), ui)
+        .map(|_| ())
 }
 
 pub fn repair_secondary_gpt(image_path: &str, ui: &dyn Ui) -> Result<()> {
