@@ -105,11 +105,23 @@ pub fn get_output_image_partition_size(
         .map(|info| (info.sector_size, info.last_sector))
 }
 
+/// Most versions of qemu-img (since 2.11) support the `--shrink` flag when
+/// resizing disks. Relatively modern versions (since mid-2020) require this
+/// flag when shrinking a disk, but it is possible to use an older version of
+/// the tool that doesn't support it, so [`shrink_output_image`] allows its
+/// callers to decide whether to pass the flag.
+#[derive(PartialEq, Eq)]
+pub enum QemuShrinkFlag {
+    Supported,
+    Unsupported,
+}
+
 /// Given an installed Windows image at `image_path` whose sector size is
 /// `sector_size` and where the last sector of the last partition on the disk is
 /// `last_sector`, trims unused sectors from the image, leaving just enough
 /// space at the end to fit a new secondary GUID partition table.
 pub fn shrink_output_image(
+    qemu_shrink_flag: QemuShrinkFlag,
     image_path: &str,
     sector_size: &str,
     last_sector: &str,
@@ -128,17 +140,15 @@ pub fn shrink_output_image(
     // that this GPT won't exist in the truncated disk; the caller needs to
     // recreate it, e.g. using `sgdisk -e`.
     let new_disk_size = os_partition_size + (34 * sector_size);
-    run_command_check_status(
-        Command::new("qemu-img").args([
-            "resize",
-            "-f",
-            "raw",
-            image_path,
-            &new_disk_size.to_string(),
-        ]),
-        ui,
-    )
-    .map(|_| ())
+    let new_disk_size = new_disk_size.to_string();
+    let mut args = vec!["resize"];
+    if qemu_shrink_flag == QemuShrinkFlag::Supported {
+        args.push("--shrink");
+    }
+    args.extend_from_slice(&["-f", "raw", image_path, &new_disk_size]);
+
+    run_command_check_status(Command::new("qemu-img").args(&args), ui)
+        .map(|_| ())
 }
 
 pub fn repair_secondary_gpt(image_path: &str, ui: &dyn Ui) -> Result<()> {

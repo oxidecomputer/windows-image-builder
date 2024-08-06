@@ -6,6 +6,7 @@ use std::{os::unix::net::UnixStream, process::Command, str::FromStr};
 
 use crate::{
     runner::{Context, MissingPrerequisites, Script, ScriptStep},
+    steps::QemuShrinkFlag,
     ui::Ui,
     util::{
         check_executable_prerequisites, check_file_prerequisites,
@@ -243,6 +244,7 @@ fn get_partition_size(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
 
 fn shrink_output_image(ctx: &mut Context, ui: &dyn Ui) -> Result<()> {
     crate::steps::shrink_output_image(
+        QemuShrinkFlag::Unsupported,
         ctx.get_var("output_image").unwrap(),
         ctx.get_var("sector_size").unwrap(),
         ctx.get_var("last_sector").unwrap(),
