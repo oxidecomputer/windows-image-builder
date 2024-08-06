@@ -4,8 +4,8 @@
 automate the Windows setup process and some post-installation tasks.
 
 The `--unattend-dir` parameter points `wimsy` to the configuration files and
-scripts it should inject into the guest VM. The configuration files in the
-`unattend` directory include the following:
+scripts it should inject into the guest VM. The `unattend` directory in the
+repo includes these files:
 
 * **Autounattend.xml** and **specialize-unattend.xml** provide unattended setup
   instructions to Windows Setup and the Windows sysprep utility.
@@ -164,14 +164,15 @@ key when it is first used by editing `specialize-unattend.xml`:
       <ProductKey>XXXXX-XXXXX-XXXXX-XXXXX-XXXXX</ProductKey>
 ```
 
-Note that the resulting generalized image will try to activate with this product
-key every time it is used as the base image for a new VM.
+Note that if you upload the resulting generalized image to an Oxide rack and
+create multiple VMs with it, Windows will try to activate each new VM with this
+product key.
 
 # Default image configuration
 
-The scripts in the repo's `unattend` directory installs the Server Standard
-edition of Windows Server 2022 and includes the Desktop Experience Pack. The
-scripts further customize the resulting image as follows:
+The scripts in the repo's `unattend` directory install the Server Standard
+edition of Windows Server 2022 with the Desktop Experience Pack. The scripts
+further customize the resulting image as follows:
 
 - **Drivers**: `virtio-net` and `virtio-block` device drivers will be installed.
 - **User accounts**: The local administrator account is disabled. An account
