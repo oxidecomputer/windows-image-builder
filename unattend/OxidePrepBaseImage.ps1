@@ -95,14 +95,26 @@ Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 #region Wait for internet access
 $timeout = New-TimeSpan -Seconds 30
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$connected = $false
+
 do {
-    $ping = Test-NetConnection -Comp "www.oxide.computer" -Port 443
-    if ($stopwatch.elapsed -gt $timeout) {
-        Write-Host "No internet connectivity"
-        exit 1
+    $ping = Test-NetConnection -ComputerName "www.oxide.computer" -Port 443
+    if ($ping.TcpTestSucceeded) {
+        $connected = $true
+        break
     }
-} while (-not $ping)
+
+    Start-Sleep -Seconds 1
+} while ($stopwatch.Elapsed -lt $timeout)
+
+if (-not $connected) {
+    Write-Host "No internet connectivity"
+    exit 1
+} else {
+    Write-Host "Internet connection established"
+}
 #endregion
+
 
 #region Enable SSH
 Write-Host "Enabling SSH"
