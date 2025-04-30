@@ -96,7 +96,7 @@ Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 $timeout = New-TimeSpan -Seconds 30
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 do {
-    $ping = test-connection -Comp 1.1.1.1 -Count 1 -Quiet
+    $ping = Test-NetConnection -Comp "www.oxide.computer" -Port 443
     if ($stopwatch.elapsed -gt $timeout) {
         Write-Host "No internet connectivity"
         exit 1

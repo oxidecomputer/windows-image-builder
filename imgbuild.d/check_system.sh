@@ -59,16 +59,16 @@ if (( ${#missing_pkgs[@]} )); then
 fi
 
 # Ensure iptables MASQUERADE rule exists
-if ! sudo iptables -t nat -C POSTROUTING -s 10.0.0.0/8 -j MASQUERADE 2>/dev/null; then
-    echo "⚠️  Adding MASQUERADE rule for 10.0.0.0/8..."
-    sudo iptables -t nat -A POSTROUTING -s 10.0.0.0/8 -j MASQUERADE
-fi
+#if ! sudo iptables -t nat -C POSTROUTING -s 10.0.0.0/8 -j MASQUERADE 2>/dev/null; then
+    #echo "⚠️  Adding MASQUERADE rule for 10.0.0.0/8..."
+    #sudo iptables -t nat -A POSTROUTING -s 10.0.0.0/8 -j MASQUERADE
+#fi
 
 # Ensure IP forwarding is enabled
-if [[ "$(sysctl -n net.ipv4.ip_forward)" -ne 1 ]]; then
-    echo "⚠️  Enabling IP forwarding..."
-    sudo sysctl -w net.ipv4.ip_forward=1
-fi
+#if [[ "$(sysctl -n net.ipv4.ip_forward)" -ne 1 ]]; then
+    #echo "⚠️  Enabling IP forwarding..."
+    #sudo sysctl -w net.ipv4.ip_forward=1
+#fi
 
 # Report results
 if (( ${#errors[@]} )); then
