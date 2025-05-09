@@ -188,19 +188,19 @@ Running on illumos requires some extra configuration:
      `authorized_keys`.
    - The OS installation volume is automatically extended to include the entire
      boot disk, even if it is larger than the original image.
-+
-+# Determining the `/IMAGE/INDEX` for your Windows version
-+
-+The index used for a given Windows version will vary by iso file.
-+You can use the `wimtools` package to find the versions available on your image:
-+
-+```sh
-+# On a debian-based Linux host
-+$ sudo apt-get install wimtools 7zip
-+$ 7z e '-ir!install.wim' <WIN_ISO>
-+$ wiminfo sources/install.wim
-+```
-+++++++ Contents of side #2
+
+# Determining the `/IMAGE/INDEX` for your Windows version
+
+The index used for a given Windows version will vary by iso file.
+You can use the `wimtools` package to find the versions available on your image:
+
+```sh
+# On a debian-based Linux host
+$ sudo apt-get install wimtools 7zip
+$ 7z e '-ir!install.wim' <WIN_ISO>
+$ wiminfo sources/install.wim
+```
+
 # Configuring the output image
 
 See [CONFIGURING.md](CONFIGURING.md) to learn more about how to customize the
