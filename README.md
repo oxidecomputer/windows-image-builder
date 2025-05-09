@@ -125,69 +125,69 @@ Running on illumos requires some extra configuration:
 - You'll need to run `wimsy build-installation-disk` before running `wimsy
   create-guest-disk-image`. See the command-line help for more information.
 
- ## Additional options
- 
- `wimsy` runs an unattended Windows Setup session driven by the files and scripts
- in the directory passed to `--unattend-dir`. You can modify these files directly
- to customize your image, but `wimsy` provides some command line switches to
- apply common modifications:
- 
- - The `--unattend-image-index` switch changes the image index specified in
-   `Autounattend.xml`, which changes the Windows edition Setup will attempt to
-   install (e.g. selecting between Server Standard and Server Datacenter with or
-   without a Desktop Experience Pack).
- - The `--windows-version` switch rewrites the driver paths in `Autounattend.xml`
-   to install virtio drivers corresponding to a specific Windows version.
- 
- When running on Linux, adding the `--vga-console` switch directs QEMU to run
- with a VGA console attached to the guest so that you can watch and interact with
- Windows Setup visually.
- 
- # Default image configuration
- 
- `wimsy` and the unattend scripts in this repo create
- [generalized](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/sysprep--generalize--a-windows-installation?view=windows-11)
- images that can be uploaded to the rack and used to create multiple VMs. These
- images contain the following drivers, software, and settings:
- 
- - **Drivers**: `virtio-net` and `virtio-block` device drivers will be installed.
- - **User accounts**: The local administrator account is disabled. An account
-   with username `oxide` will be created and added to the Local Administrators
-   group. Any SSH keys that are associated with an instance when that instance is
-   created will be added to the `oxide` user's authorized keys. By default, this
-   account has no password; to set a password, access the machine via SSH and use
-   `net user oxide *`.
- - **Remote access**:
-   - The [Emergency Management Services
-     console](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/boot-parameters-to-enable-ems-redirection)
-     is enabled and accessible over COM1. This console will be accessible through
-     the Oxide web console and CLI.
-   - [OpenSSH for
-     Windows](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse?tabs=powershell)
-     is installed via PowerShell cmdlet (Windows Server 2019 and 2022) or by
-     downloading the latest
-     [release](https://github.com/PowerShell/Win32-OpenSSH/releases/) from
-     GitHub. This operation requires the guest to have Internet access.
-   - The guest is configured to allow Remote Desktop connections, and the guest
-     firewall is configured to accept connections on port 3389. **Note:** VMs
-     using these images must also have their firewall rules set to accept
-     connections on this port for RDP to be accessible.
- - **In-guest agents**: The scripts install an Oxide-compatible
-   [fork](https://github.com/luqmana/cloudbase-init/tree/oxide) of
-   [cloudbase-init](https://cloudbase-init.readthedocs.io/en/latest/) that
-   initializes new VMs when they are run for the first time. This operation
-   requires Internet access. `cloudbase-init` is configured with the following
-   settings and plugins:
-   - Instance metadata will be read from the no-cloud configuration drive the
-     Oxide control plane attaches to each running instance.
-   - The instance's computer name will be set to its Oxide instance hostname on
-     first boot.
-   - The built-in administrator account is disabled. An `oxide` account is
-     in the Local Administrators group is created in its place. Any SSH keys
-     provided in the instance's metadata will be added to this user's
-     `authorized_keys`.
-   - The OS installation volume is automatically extended to include the entire
-     boot disk, even if it is larger than the original image.
+## Additional options
+
+`wimsy` runs an unattended Windows Setup session driven by the files and scripts
+in the directory passed to `--unattend-dir`. You can modify these files directly
+to customize your image, but `wimsy` provides some command line switches to
+apply common modifications:
+
+- The `--unattend-image-index` switch changes the image index specified in
+  `Autounattend.xml`, which changes the Windows edition Setup will attempt to
+  install (e.g. selecting between Server Standard and Server Datacenter with or
+  without a Desktop Experience Pack).
+- The `--windows-version` switch rewrites the driver paths in `Autounattend.xml`
+  to install virtio drivers corresponding to a specific Windows version.
+
+When running on Linux, adding the `--vga-console` switch directs QEMU to run
+with a VGA console attached to the guest so that you can watch and interact with
+Windows Setup visually.
+
+# Default image configuration
+
+`wimsy` and the unattend scripts in this repo create
+[generalized](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/sysprep--generalize--a-windows-installation?view=windows-11)
+images that can be uploaded to the rack and used to create multiple VMs. These
+images contain the following drivers, software, and settings:
+
+- **Drivers**: `virtio-net` and `virtio-block` device drivers will be installed.
+- **User accounts**: The local administrator account is disabled. An account
+  with username `oxide` will be created and added to the Local Administrators
+  group. Any SSH keys that are associated with an instance when that instance is
+  created will be added to the `oxide` user's authorized keys. By default, this
+  account has no password; to set a password, access the machine via SSH and use
+  `net user oxide *`.
+- **Remote access**:
+  - The [Emergency Management Services
+    console](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/boot-parameters-to-enable-ems-redirection)
+    is enabled and accessible over COM1. This console will be accessible through
+    the Oxide web console and CLI.
+  - [OpenSSH for
+    Windows](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse?tabs=powershell)
+    is installed via PowerShell cmdlet (Windows Server 2019 and 2022) or by
+    downloading the latest
+    [release](https://github.com/PowerShell/Win32-OpenSSH/releases/) from
+    GitHub. This operation requires the guest to have Internet access.
+  - The guest is configured to allow Remote Desktop connections, and the guest
+    firewall is configured to accept connections on port 3389. **Note:** VMs
+    using these images must also have their firewall rules set to accept
+    connections on this port for RDP to be accessible.
+- **In-guest agents**: The scripts install an Oxide-compatible
+  [fork](https://github.com/luqmana/cloudbase-init/tree/oxide) of
+  [cloudbase-init](https://cloudbase-init.readthedocs.io/en/latest/) that
+  initializes new VMs when they are run for the first time. This operation
+  requires Internet access. `cloudbase-init` is configured with the following
+  settings and plugins:
+  - Instance metadata will be read from the no-cloud configuration drive the
+    Oxide control plane attaches to each running instance.
+  - The instance's computer name will be set to its Oxide instance hostname on
+    first boot.
+  - The built-in administrator account is disabled. An `oxide` account is
+    in the Local Administrators group is created in its place. Any SSH keys
+    provided in the instance's metadata will be added to this user's
+    `authorized_keys`.
+  - The OS installation volume is automatically extended to include the entire
+    boot disk, even if it is larger than the original image.
 
 # Determining the `/IMAGE/INDEX` for your Windows version
 
