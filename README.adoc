@@ -1,0 +1,286 @@
+:showtitle:
+:toc: left
+:toclevels: 2
+:icons: font
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :information_source:
+:important-caption: :heavy_exclamation_mark:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+
+= Windows Image Builder
+
+image:https://img.shields.io/badge/platform-linux-green.svg[Linux]
+image:https://img.shields.io/badge/status-active-blue.svg[Status]
+
+This repository provides tooling and automation for building customized Windows Server disk images on modern Linux hosts, designed for upload and use with the Oxide platform.
+
+This project has been designed to handle both Illumos and Linux as build platforms, however this README is focused on the Linux build process. The illumos build process is documented in a separate README.
+
+The imgbuild.sh script is the main entry point for building Windows images on Linux. It orchestrates the entire process, from validating inputs to creating the final image.
+
+toc::[]
+
+== Requirements
+
+To build images successfully on Linux, the following prerequisites must be met:
+
+- **Operating System:** Ubuntu 20.04+ or related distributions (others may work but are not tested).
+- **Nested Virtualization:** Required. Your system must support `vmx` (Intel) or `svm` (AMD). On cloud VMs (e.g. AWS/GCP), this usually requires special instance types that expose nested virtualization.
+- **Privileges:** Depending on how your system is configured, scripts may require `sudo` access to create VMs and configure bridges. The script tries to check for this and will prompt if needed.
+- **Tools:** See `install_prerequisites.sh` to install:
+  - `qemu-kvm`, `virt-install`, `libvirt-daemon`, `libguestfs-tools`, `genisoimage`, `virtio-win`, etc.
+- **Internet Access:** Required to download updates and dependencies during install.
+
+== Quickstart
+
+=== 1. Install Dependencies
+
+Run:
+
+```bash
+./install_prerequisites.sh
+```
+
+=== 2. Configure Build Environment
+
+Create and edit the environment file - these variables must be set in your `imgbuild.env` file before running the builder. Each controls a key part of the image creation process. A sample file is provided for reference and can be copied to start:
+
+```bash
+cp imgbuild.env.sample imgbuild.env
+```
+
+[cols="1,3"]
+|===
+| Variable | Description
+
+| `WORK_DIR`
+| Path to a scratch workspace directory used for temporary files, log output, and intermediate image artifacts.
+
+| `OUTPUT_IMAGE`
+| Full path to the resulting raw disk image (`.img` or `.raw`) that will be produced by the build.
+
+| `WINDOWS_ISO`
+| Path to the Windows Server installation ISO (2019 or 2022 recommended).
+
+| `VIRTIO_ISO`
+| Path to the VirtIO driver ISO, used to inject storage and network drivers during Windows setup.
+
+| `UNATTEND_DIR`
+| Directory containing your `Autounattend.xml` file, which automates the Windows installation process.
+
+| `OVMF_PATH`
+| Path to the OVMF firmware file (e.g. `OVMF_CODE.fd`), used for UEFI boot with `qemu`. Common location: `/var/lib/libvirt/images/OVMF_CODE.fd`.
+
+|===
+
+NOTE: All paths must be absolute. Relative paths may not resolve correctly within virtualized builds.
+
+=== 3. Build the Image
+
+```bash
+./imgbuild.sh
+```
+
+This drives the full flow using modular scripts in `imgbuild.d/`.
+
+== Submodule Breakdown
+
+Each stage in the `imgbuild.d/` directory is responsible for a key phase of the build:
+
+[cols="1,3"]
+|===
+| Script | Description
+
+| `run-all`
+| Virtual module that runs all of the submodules in order.
+| `check_system.sh`
+| Verifies all required tools are present and working (`qemu`, `genisoimage`, `libguestfs`).
+
+| `validate_inputs.sh`
+| Ensures `imgbuild.env` is loaded, validates ISO paths, product keys, and environment assumptions.
+
+| `build_app.sh`
+| Compiles the Rust-based `wimsy` CLI tool, which assists with image metadata and preparation.
+
+| `build_image.sh`
+| The main action:
+  - Spins up a temporary VM using `virt-install`.
+  - Mounts the VirtIO ISO and the Windows ISO.
+  - Injects the provided `Autounattend.xml`.
+  - Waits for installation to complete.
+  - Converts and shrinks the resulting disk image.
+|===
+
+To run a specific phase individually:
+
+```bash
+./imgbuild.d/build_image.sh phase
+```
+
+(Ensure your environment is sourced beforehand.)
+
+== Output Format
+
+This process produces a `.raw` file in **raw disk image format**.
+
+IMPORTANT: The **Oxide rack only accepts raw disk images** for upload. Other formats like VMDK or QCOW2 will not work.
+
+Your output will be something like:
+
+```bash
+output/windows-2022.raw
+```
+
+IMPORTANT: This image will be fairly large, roughly 13-15GB for most basic installations.
+
+== Download Links
+
+=== Official Windows ISOs
+
+- https://www.microsoft.com/en-us/evalcenter/evaluate-windows-server-2022
+- https://www.microsoft.com/en-us/evalcenter/evaluate-windows-server-2019
+
+Use the **ISO for installation and evaluation**; this is what we use for testing. Licensing is the responsibility of the user.
+
+=== VirtIO Driver ISO
+
+- https://github.com/virtio-win/virtio-win-pkg-scripts/blob/master/README.md
+
+Ensure this is accessible at the path defined in your `.env` file.
+
+== Unattended Windows Installation
+
+To fully automate Windows installation, this project uses Microsoft's Autounattend.xml system.
+
+Example configuration lives in:
+
+```bash
+unattend/Autounattend.xml
+```
+
+To customize:
+
+- Set timezone, locale, keyboard, disk layout.
+- Add user credentials.
+- Configure product key injection.
+
+Resources for learning and modifying:
+
+- Microsoft Docs: https://docs.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/
+- Answer file generator: https://www.windowsafg.com
+
+
+== Additional Image Customization Options
+
+The wimsy tool runs an unattended Windows Setup session using the files found in the directory specified by the `--unattend-dir` argument. These files can be modified directly, or you can pass flags to alter behavior dynamically
+
+`--unattend-image-index`: Overrides the ImageIndex in the Autounattend.xml. This allows you to choose a specific Windows edition (e.g., Standard vs. Datacenter, with or without Desktop Experience).
+
+`--windows-version`: Rewrites driver paths in Autounattend.xml to match a specific Windows version, ensuring the correct VirtIO drivers are used.
+
+`--vga-console`: (Linux only) Starts QEMU with VGA output so you can watch or interact with the Windows installation via console.
+
+WARNING: You need to have a DISPLAY configured to use the VGA console option. This will silently fail if you set it and do not have a DISPLAY.
+
+NOTE: If you are using the `ingbuild.sh` script you will need to adjust the `build-image.sh` module. This module is responsible for calling wimsy and passing the correct arguments.
+
+== Default Image Configuration
+
+The images created by wimsy and this build system are fully generalized:
+https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/sysprep--generalize--a-windows-installation?view=windows-11[What is Generalization?]
+
+They can be reused across multiple VMs. The default image includes:
+
+Drivers:
+
+- virtio-net for networking support
+- virtio-block for disk support
+
+User Accounts:
+
+- The default Administrator account is disabled.
+- A local user named oxide is created and added to the Administrators group.
+- SSH keys from Oxide instance metadata are injected into oxide's authorized_keys.
+- No password is set by default. You can assign one later using:
+
+```cmd
+net user oxide *
+```
+
+Remote Access:
+
+- EMS (Emergency Management Services) is enabled on COM1. Accessible via the Oxide console (Web or CLI).
+- OpenSSH is installed via PowerShell (Add-WindowsCapability) or from GitHub if needed.
+- RDP is enabled and firewall rules are pre-configured to allow port 3389.
+
+NOTE: Instance-level firewall rules must also allow access to port 3389 for RDP to function externally.
+
+In-Guest Agents: Installs an Oxide-compatible fork of https://cloudbase-init.readthedocs.io/en/latest/[Cloudbase-Init]:
+
+- Metadata is read from the NoCloud config drive.
+- Hostname is set automatically to match the Oxide instance name.
+- SSH key injection is configured for the oxide user.
+- The system drive is auto-expanded to match the VM disk size at boot.
+
+== Finding the Correct Windows Image Index
+
+Each Windows ISO may contain multiple editions (e.g., Standard, Datacenter, Core). You must set the correct image index in Autounattend.xml.
+
+To inspect available indexes:
+
+```bash
+# On a Debian/Ubuntu-based host
+sudo apt-get install wimtools p7zip-full
+7z e '-ir!install.wim' /path/to/windows.iso
+wiminfo install.wim
+```
+
+Use the /IMAGE/INDEX that corresponds to your desired edition.
+
+== Uploading to Oxide
+
+Once the .raw file is generated, it can be uploaded to your Oxide silo as a custom image.
+
+=== Upload via CLI
+
+```bash
+oxide disk import \
+--project yourproject \
+--path yourimage.raw \
+--disk disk-name \
+--disk-block-size 512 \
+--description "Windows on Oxide" \
+--snapshot win-2022 \
+--image win-2022 \
+--image-description "Windows with Oxide"
+--image-os windows --image-version 2022
+```
+
+CLI docs: https://oxide.computer/docs/cli/oxide_disk_import
+
+=== Upload via Web UI
+
+1. Visit your Oxide console.
+2. Navigate to the "Images" section.
+3. Click "Import Disk".
+4. Provide a name, description, os type, and version. Then add your .raw file and import the image.
+5. Now you can deploy an instance using this image.
+
+More information: https://oxide.computer/docs/ui/image-import
+
+== illumos Support
+
+While this project has pivoted toward a Linux-first experience, full support for illumos-based systems continues.
+
+If you're using an illumos host (such as SmartOS or OmniOS), please refer to the dedicated documentation:
+
+→ link:README.illumos.md[README.illumos.md – Illumos Instructions]
+
+== Roadmap
+
+- Integration with Oxide CLI for direct uploads
+- Add support for Windows 2016
+- Support for external app layer injection (e.g., Chocolatey or WinRM)
