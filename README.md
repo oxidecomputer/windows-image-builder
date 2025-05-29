@@ -17,21 +17,23 @@ not tested them, so your mileage may vary.
 
 # Usage
 
-## Prerequisites
+## Pre-flight checklist
 
-### Host machine configuration
+To set up a host machine to use `wimsy`:
 
-When using the repo's default setup scripts, the guest VM must be able to reach
-the Internet to download guest software, so the host must have a network
-connection. See the [default image configuration](#default-image-configuration)
-for more information about what these scripts install.
+* Run `install_prerequisites.sh` from the repo or release tarball to install
+  [required tools and packages](#required-tools).
+* Ensure the host has a copy of your [installation media and of a driver
+  ISO](#installation-media-and-drivers).
+* Ensure the host has a network connection that allows VM guests to access the
+  public Internet. This is needed to download software into the guest after
+  Windows Setup runs. See [CONFIGURING.md](CONFIGURING.md) for more details.
 
-### Tools
+### Required tools
 
-Run `install_prerequisites.sh` from the repo or release tarball to install the
-tools `wimsy` invokes to create disks and run VMs. On Linux hosts, a Debian
-(aptitude-based) package manager is required. Linux systems use the following
-tools and packages:
+The `install_prerequisites.sh` script installs the tools `wimsy` uses to create
+disks and run VMs. On Linux hosts, a Debian (aptitude-based) package manager is
+required. Linux systems use the following tools and packages:
 
 * `qemu` and `ovmf` to run the Windows installer in a virtual machine
 * `qemu-img` and `libguestfs-tools` to create and manage virtual disks and their
@@ -39,7 +41,7 @@ tools and packages:
 * `sgdisk` to modify virtual disks' GUID partition tables
 * `genisoimage` to create an ISO containing the unattended setup scripts
 
-### Installation media & drivers
+### Installation media and drivers
 
 `wimsy` requires an ISO disk image containing Windows installation media, an ISO
 disk image containing signed virtio drivers, and a UEFI guest firmware image to
@@ -90,9 +92,6 @@ create-guest-disk-image \
 --unattend-dir unattend \
 --ovmf-path /usr/share/OVMF/OVMF_CODE.fd \
 ```
-
-For more information, run `wimsy --help` or `wimsy create-guest-disk-image
---help`.
 
 ### Building from source
 
@@ -201,3 +200,45 @@ $ sudo apt-get install wimtools 7zip
 $ 7z e '-ir!install.wim' <WIN_ISO>
 $ wiminfo sources/install.wim
 ```
+
+# Configuring the output image
+
+See [CONFIGURING.md](CONFIGURING.md) to learn more about how to customize the
+images `wimsy` produces.
+
+# Troubleshooting
+
+## `wimsy` gets stuck at "waiting for guest to complete installation"
+
+Usually, this means either that Windows Setup failed to install Windows or that
+the image prep script, `OxidePrepBaseImage.ps1`, did not run to completion.
+
+When using a Linux host, you can determine where the setup process has stopped
+by adding the `--vga-console` switch to `wimsy create-guest-disk-image`.
+
+## Windows Setup is waiting for someone to select an edition to install
+
+This can occur if the edition chosen in `Autounattend.xml` or on the command
+line is invalid, or if it conflicts with other settings in `Autounattend.xml`.
+See [CONFIGURING.md](CONFIGURING.md) for information about selecting an edition
+to install.
+
+## Setup is displaying a command prompt with "Press any key to continue..."
+
+This usually indicates there was a problem running the `OxidePrepBaseImage.ps1`
+setup script after installing Windows. This script's last step shuts down the
+guest; if the script fails early, this won't happen, and `prep.cmd` will not
+exit.
+
+To investigate, look in the directory you passed to `wimsy --work-dir` for the
+output from `qemu-system-x86_64`:
+
+```sh
+$ ls *qemu-system-x86_64.stdio.log
+4.qemu-system-x86_64.stdio.log
+```
+
+By default, when `prep.cmd` runs `OxidePrepBaseImage.ps1` in the guest, it
+redirects the script's output to a guest serial port, and `wimsy` asks QEMU to
+write this output to QEMU's stdout. You can use the script outputs in this file
+to determine where the script failed.
