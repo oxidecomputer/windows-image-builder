@@ -255,7 +255,7 @@ oxide disk import \
 --description "Windows on Oxide" \
 --snapshot win-2022 \
 --image win-2022 \
---image-description "Windows with Oxide"
+--image-description "Windows with Oxide" \
 --image-os windows --image-version 2022
 ```
 
