@@ -145,7 +145,7 @@ IMPORTANT: This image will be fairly large, roughly 13-15GB for most basic insta
 
 Use the **ISO for installation and evaluation**; this is what we use for testing. Licensing is the responsibility of the user.
 
-IMPORTANT: You must ensure you have a **bootable Operating System installer** ISO. Microsoft provides supplemental ISOs such as Features on Demand (FOD) or Language Packs (LP). These look similar but cannot be used to build a Windows image.
+IMPORTANT: Ensure you have a complete installation ISO. Microsoft provides supplemental ISOs such as Features on Demand (FOD) or Language Packs (LP), which cannot be used to build a Windows image for Oxide.
 
 To validate your Windows ISO, check the `VolumeId` using `7z`:
 
