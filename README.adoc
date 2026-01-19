@@ -145,6 +145,16 @@ IMPORTANT: This image will be fairly large, roughly 13-15GB for most basic insta
 
 Use the **ISO for installation and evaluation**; this is what we use for testing. Licensing is the responsibility of the user.
 
+IMPORTANT: You must ensure you have a **bootable Operating System installer** ISO. Microsoft provides supplemental ISOs such as Features on Demand (FOD) or Language Packs (LP). These look similar but cannot be used to build a Windows image.
+
+To validate your Windows ISO, check the `VolumeId` using `7z`:
+
+```bash
+7z l your-windows.iso | grep "VolumeId:"
+```
+
+If you see `FOD` or `LP` in the `VolumeId`, it means you downloaded the wrong ISO. This is not bootable and image build script will fail.
+
 === VirtIO Driver ISO
 
 - https://github.com/virtio-win/virtio-win-pkg-scripts/blob/master/README.md
