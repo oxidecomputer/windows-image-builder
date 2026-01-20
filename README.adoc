@@ -147,18 +147,19 @@ Use the **ISO for installation and evaluation**; this is what we use for testing
 
 IMPORTANT: Ensure you have a complete installation ISO. Microsoft provides supplemental ISOs such as Features on Demand (FOD) or Language Packs (LP), which cannot be used to build a Windows image for Oxide.
 
-To validate your Windows ISO, check the `LogicalVolumeId` using `7z`:
+A complete installation ISO contains both `sources/boot.wim` (the installer environment) and either `sources/install.wim` or `sources/install.esd` (the Windows image). Supplemental ISOs like FOD or LP only contain `.cab` files.
+
+Use `7z` to validate whether your Windows ISO is compatible with the Windows image builder.
 
 ```bash
-# Correct!
-$ 7z l windows.iso | grep LogicalVolumeId
-    LogicalVolumeId: SSS_X64FREE_EN-US_DV9
+# Bootable installation ISO (correct).
+$ 7z l windows.iso | grep -E 'sources/(boot|install)\.(wim|esd)'
+sources/boot.wim
+sources/install.wim
 
-# Incorrect.
-$ 7z l windows.iso | grep LogicalVolumeId
-    LogicalVolumeId: SERVER_FOD_LP_X64FRE_MULTI_DV9
-
-A valid ISO usually contains `FRE` as the primary descriptor, and should not contain strings that indicate supplemental content, such as `FOD` or `LP`. If you see `FOD` or `LP` in the `VolumeId`, it means you downloaded the wrong ISO. This is not bootable and image build script will fail.
+# Supplemental ISO (incorrect). These files will be missing.
+$ 7z l windows.iso | grep -E 'sources/(boot|install)\.(wim|esd)'
+```
 
 === VirtIO Driver ISO
 
