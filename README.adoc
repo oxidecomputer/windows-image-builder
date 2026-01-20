@@ -150,10 +150,18 @@ IMPORTANT: Ensure you have a complete installation ISO. Microsoft provides suppl
 To validate your Windows ISO, check the `VolumeId` using `7z`:
 
 ```bash
-7z l your-windows.iso | grep "VolumeId:"
+# Correct!
+$ 7z l windows.iso | grep VolumeId
+  VolumeId: UDF Volume
+    LogicalVolumeId: SSS_X64FREE_EN-US_DV9
+
+# Incorrect.
+$ 7z l win-server-2022.iso | grep VolumeId
+  VolumeId: UDF Volume
+    LogicalVolumeId: SERVER_FOD_LP_X64FRE_MULTI_DV9
 ```
 
-If you see `FOD` or `LP` in the `VolumeId`, it means you downloaded the wrong ISO. This is not bootable and image build script will fail.
+A valid ISO usually contains `FRE` as the primary descriptor, and should not contain strings that indicate supplemental content, such as `FOD` or `LP`. If you see `FOD` or `LP` in the `VolumeId`, it means you downloaded the wrong ISO. This is not bootable and image build script will fail.
 
 === VirtIO Driver ISO
 
