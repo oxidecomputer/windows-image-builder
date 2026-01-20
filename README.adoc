@@ -147,19 +147,16 @@ Use the **ISO for installation and evaluation**; this is what we use for testing
 
 IMPORTANT: Ensure you have a complete installation ISO. Microsoft provides supplemental ISOs such as Features on Demand (FOD) or Language Packs (LP), which cannot be used to build a Windows image for Oxide.
 
-To validate your Windows ISO, check the `VolumeId` using `7z`:
+To validate your Windows ISO, check the `LogicalVolumeId` using `7z`:
 
 ```bash
 # Correct!
-$ 7z l windows.iso | grep VolumeId
-  VolumeId: UDF Volume
+$ 7z l windows.iso | grep LogicalVolumeId
     LogicalVolumeId: SSS_X64FREE_EN-US_DV9
 
 # Incorrect.
-$ 7z l win-server-2022.iso | grep VolumeId
-  VolumeId: UDF Volume
+$ 7z l windows.iso | grep LogicalVolumeId
     LogicalVolumeId: SERVER_FOD_LP_X64FRE_MULTI_DV9
-```
 
 A valid ISO usually contains `FRE` as the primary descriptor, and should not contain strings that indicate supplemental content, such as `FOD` or `LP`. If you see `FOD` or `LP` in the `VolumeId`, it means you downloaded the wrong ISO. This is not bootable and image build script will fail.
 
