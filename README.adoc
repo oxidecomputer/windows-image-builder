@@ -145,6 +145,22 @@ IMPORTANT: This image will be fairly large, roughly 13-15GB for most basic insta
 
 Use the **ISO for installation and evaluation**; this is what we use for testing. Licensing is the responsibility of the user.
 
+IMPORTANT: Ensure you have a complete installation ISO. Microsoft provides supplemental ISOs such as Features on Demand (FOD) or Language Packs (LP), which cannot be used to build a Windows image for Oxide.
+
+A complete installation ISO contains both `sources/boot.wim` (the installer environment) and either `sources/install.wim` or `sources/install.esd` (the Windows image). Supplemental ISOs like FOD or LP only contain `.cab` files.
+
+Use `7z` to validate whether your Windows ISO is compatible with the Windows image builder.
+
+```bash
+# Bootable installation ISO (correct).
+$ 7z l windows.iso | grep -E 'sources/(boot|install)\.(wim|esd)'
+sources/boot.wim
+sources/install.wim
+
+# Supplemental ISO (incorrect). These files will be missing.
+$ 7z l windows.iso | grep -E 'sources/(boot|install)\.(wim|esd)'
+```
+
 === VirtIO Driver ISO
 
 - https://github.com/virtio-win/virtio-win-pkg-scripts/blob/master/README.md
