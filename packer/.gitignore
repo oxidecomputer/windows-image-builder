@@ -1,0 +1,6 @@
+output/
+output-*/
+efivars.fd
+packer_cache/
+crash.log
+*.auto.pkrvars.hcl

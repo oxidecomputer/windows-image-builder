@@ -12,30 +12,6 @@
             <UILanguage>en-US</UILanguage>
             <UserLocale>en-US</UserLocale>
         </component>
-        <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
-            xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"
-            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-            <DriverPaths>
-                <PathAndCredentials wcm:action="add" wcm:keyValue="1">
-                    <Path>D:\viostor\2k22\amd64</Path>
-                </PathAndCredentials>
-                <PathAndCredentials wcm:action="add" wcm:keyValue="2">
-                    <Path>E:\viostor\2k22\amd64</Path>
-                </PathAndCredentials>
-                <PathAndCredentials wcm:action="add" wcm:keyValue="3">
-                    <Path>F:\viostor\2k22\amd64</Path>
-                </PathAndCredentials>
-                <PathAndCredentials wcm:action="add" wcm:keyValue="4">
-                    <Path>D:\NetKVM\2k22\amd64</Path>
-                </PathAndCredentials>
-                <PathAndCredentials wcm:action="add" wcm:keyValue="5">
-                    <Path>E:\NetKVM\2k22\amd64</Path>
-                </PathAndCredentials>
-                <PathAndCredentials wcm:action="add" wcm:keyValue="6">
-                    <Path>F:\NetKVM\2k22\amd64</Path>
-                </PathAndCredentials>
-            </DriverPaths>
-        </component>
         <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
             xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"
             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -97,9 +73,8 @@
                 <OSImage>
                     <InstallFrom>
                         <MetaData wcm:action="add">
-                            <!-- Windows Server 2022 Standard Evaluation (Desktop Experience) -->
                             <Key>/IMAGE/INDEX</Key>
-                            <Value>2</Value>
+                            <Value>${image_index}</Value>
                         </MetaData>
                     </InstallFrom>
                     <InstallTo>
@@ -111,7 +86,6 @@
             <UserData>
                 <AcceptEula>true</AcceptEula>
                 <ProductKey>
-                    <!--<Key>12345-12345-12345-12345-12345</Key>-->
                     <WillShowUI>Never</WillShowUI>
                 </ProductKey>
             </UserData>
@@ -123,22 +97,22 @@
             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <DriverPaths>
                 <PathAndCredentials wcm:action="add" wcm:keyValue="1">
-                    <Path>D:\NetKVM\2k22\amd64</Path>
+                    <Path>D:\NetKVM\${windows_version}\amd64</Path>
                 </PathAndCredentials>
                 <PathAndCredentials wcm:action="add" wcm:keyValue="2">
-                    <Path>D:\viostor\2k22\amd64</Path>
+                    <Path>D:\viostor\${windows_version}\amd64</Path>
                 </PathAndCredentials>
                 <PathAndCredentials wcm:action="add" wcm:keyValue="3">
-                    <Path>E:\NetKVM\2k22\amd64</Path>
+                    <Path>E:\NetKVM\${windows_version}\amd64</Path>
                 </PathAndCredentials>
                 <PathAndCredentials wcm:action="add" wcm:keyValue="4">
-                    <Path>E:\viostor\2k22\amd64</Path>
+                    <Path>E:\viostor\${windows_version}\amd64</Path>
                 </PathAndCredentials>
                 <PathAndCredentials wcm:action="add" wcm:keyValue="5">
-                    <Path>F:\NetKVM\2k22\amd64</Path>
+                    <Path>F:\NetKVM\${windows_version}\amd64</Path>
                 </PathAndCredentials>
                 <PathAndCredentials wcm:action="add" wcm:keyValue="6">
-                    <Path>F:\viostor\2k22\amd64</Path>
+                    <Path>F:\viostor\${windows_version}\amd64</Path>
                 </PathAndCredentials>
             </DriverPaths>
         </component>
@@ -172,38 +146,24 @@
             </OOBE>
             <UserAccounts>
                 <AdministratorPassword>
-                    <Value>Packer!build0</Value>
+                    <Value>${admin_password}</Value>
                     <PlainText>true</PlainText>
                 </AdministratorPassword>
             </UserAccounts>
             <AutoLogon>
                 <Password>
-                    <Value>Packer!build0</Value>
+                    <Value>${admin_password}</Value>
                     <PlainText>true</PlainText>
                 </Password>
                 <Enabled>true</Enabled>
+                <LogonCount>1</LogonCount>
                 <Username>Administrator</Username>
             </AutoLogon>
             <FirstLogonCommands>
                 <SynchronousCommand wcm:action="add">
-                    <CommandLine>cmd /c winrm quickconfig -quiet</CommandLine>
+                    <CommandLine>cmd /c powershell.exe -NoProfile -ExecutionPolicy Bypass -File A:\setup-winrm.ps1</CommandLine>
                     <Order>1</Order>
-                    <Description>Enable WinRM</Description>
-                </SynchronousCommand>
-                <SynchronousCommand wcm:action="add">
-                    <CommandLine>cmd /c winrm set winrm/config/service @{AllowUnencrypted="true"}</CommandLine>
-                    <Order>2</Order>
-                    <Description>Allow unencrypted WinRM</Description>
-                </SynchronousCommand>
-                <SynchronousCommand wcm:action="add">
-                    <CommandLine>cmd /c winrm set winrm/config/service/auth @{Basic="true"}</CommandLine>
-                    <Order>3</Order>
-                    <Description>Enable basic auth for WinRM</Description>
-                </SynchronousCommand>
-                <SynchronousCommand wcm:action="add">
-                    <CommandLine>cmd /c netsh advfirewall firewall add rule name="WinRM HTTP" dir=in action=allow protocol=TCP localport=5985</CommandLine>
-                    <Order>4</Order>
-                    <Description>Open WinRM firewall port</Description>
+                    <Description>Configure WinRM for Packer provisioning</Description>
                 </SynchronousCommand>
             </FirstLogonCommands>
         </component>

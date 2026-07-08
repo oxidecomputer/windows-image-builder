@@ -8,6 +8,12 @@ you supply, and minimizes the size of the installation disk once setup is
 complete. You can then upload the installation disk to an Oxide rack and attach
 it to a VM or use it as the source disk for a new disk image.
 
+> [!NOTE]
+> On Linux hosts, this repository also provides a [Packer
+> template](packer/README.md) that reproduces the `wimsy` build flow using
+> HashiCorp Packer. Building images on illumos hosts is still done with
+> `wimsy`.
+
 `wimsy` runs on Linux (tested on Ubuntu 20.04) and illumos systems and supports
 creating Windows Server 2019 and Windows Server 2022 images. Windows Server
 2016 is not yet fully supported (but it's on the roadmap). Earlier versions of
