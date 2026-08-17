@@ -1,0 +1,16 @@
+[package]
+name = "oxwin-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "oxwin"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+oxwin-core.workspace = true
+anyhow.workspace = true

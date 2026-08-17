@@ -1,0 +1,19 @@
+[package]
+name = "oxwin-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "oxide-windows"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+oxwin-core.workspace = true
+anyhow.workspace = true
+eframe = "0.36.1"
+egui = "0.36.1"
+rfd = "0.17.2"

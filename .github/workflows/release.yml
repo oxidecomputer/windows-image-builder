@@ -1,266 +1,226 @@
-# Copyright 2022-2023, axodotdev
-# SPDX-License-Identifier: MIT or Apache-2.0
+# Build and publish binaries for a version tag.
 #
-# CI that:
+# The payload is fetched once, on Linux, and published as an artifact that every platform
+# build then embeds. Two reasons: `fetch-payload.sh` is bash and needs bsdtar, which is
+# awkward on a Windows runner; and fetching once means all three artifacts embed the same
+# bytes by construction rather than by three independent downloads agreeing. The
+# fingerprint check at the end proves it.
 #
-# * checks for a Git Tag that looks like a release
-# * builds artifacts with cargo-dist (archives, installers, hashes)
-# * uploads those artifacts to temporary workflow zip
-# * on success, uploads the artifacts to a Github Release
-#
-# Note that the Github Release will be created with a generated
-# title/body based on your changelogs.
+# Not run on merges to develop. Releases happen when a tag is pushed, so the version in
+# the tag is a deliberate act.
 
 name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # So the whole path can be exercised without minting a version.
+  workflow_dispatch:
 
 permissions:
   contents: write
 
-# This task will run whenever you push a git tag that looks like a version
-# like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
-# Various formats will be parsed into a VERSION and an optional PACKAGE_NAME, where
-# PACKAGE_NAME must be the name of a Cargo package in your workspace, and VERSION
-# must be a Cargo-style SemVer Version (must have at least major.minor.patch).
-#
-# If PACKAGE_NAME is specified, then the announcement will be for that
-# package (erroring out if it doesn't have the given version or isn't cargo-dist-able).
-#
-# If PACKAGE_NAME isn't specified, then the announcement will be for all
-# (cargo-dist-able) packages in the workspace with that version (this mode is
-# intended for workspaces with only one dist-able package, or with all dist-able
-# packages versioned/released in lockstep).
-#
-# If you push multiple tags at once, separate instances of this workflow will
-# spin up, creating an independent announcement for each one. However Github
-# will hard limit this to 3 tags per commit, as it will assume more tags is a
-# mistake.
-#
-# If there's a prerelease-style suffix to the version, then the release(s)
-# will be marked as a prerelease.
-on:
-  push:
-    tags:
-      - '**[0-9]+.[0-9]+.[0-9]+*'
-  pull_request:
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Never ship a binary that quietly embedded nothing.
+  OXWIN_REQUIRE_PAYLOAD: "1"
 
 jobs:
-  # Run 'cargo dist plan' (or host) to determine what tasks we need to do
-  plan:
-    runs-on: ubuntu-latest
-    outputs:
-      val: ${{ steps.plan.outputs.manifest }}
-      tag: ${{ !github.event.pull_request && github.ref_name || '' }}
-      tag-flag: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
-      publishing: ${{ !github.event.pull_request }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  payload:
+    name: fetch the payload
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # Keyed on fetch-payload.sh, which holds every pinned version and SHA-256.
+      - uses: actions/cache@v4
         with:
-          submodules: recursive
-      - name: Install cargo-dist
-        # we specify bash to get pipefail; it guards against the `curl` command
-        # failing. otherwise `sh` won't catch that `curl` returned non-0
-        shell: bash
-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.11.1/cargo-dist-installer.sh | sh"
-      # sure would be cool if github gave us proper conditionals...
-      # so here's a doubly-nested ternary-via-truthiness to try to provide the best possible
-      # functionality based on whether this is a pull_request, and whether it's from a fork.
-      # (PRs run on the *source* but secrets are usually on the *target* -- that's *good*
-      # but also really annoying to build CI around when it needs secrets to work right.)
-      - id: plan
+          path: .cache
+          key: payload-${{ hashFiles('tools/fetch-payload.sh') }}
+      - run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+      - run: ./tools/fetch-payload.sh
+      - name: Summarise what was fetched
         run: |
-          cargo dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
-          echo "cargo dist ran successfully"
-          cat plan-dist-manifest.json
-          echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
-      - name: "Upload dist-manifest.json"
-        uses: actions/upload-artifact@v4
+          echo "payload files: $(find assets -type f | wc -l)"
+          du -sh assets
+      - uses: actions/upload-artifact@v4
         with:
-          name: artifacts-plan-dist-manifest
-          path: plan-dist-manifest.json
+          name: payload
+          path: assets/
+          retention-days: 1
+          # The payload is binary and already compressed; recompressing costs minutes.
+          compression-level: 0
 
-  # Build and packages all the platform-specific things
-  build-local-artifacts:
-    name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
-    # Let the initial task tell us to not run (currently very blunt)
-    needs:
-      - plan
-    if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
+  build:
+    name: ${{ matrix.name }}
+    needs: payload
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      # Target platforms/runners are computed by cargo-dist in create-release.
-      # Each member of the matrix has the following arguments:
-      #
-      # - runner: the github runner
-      # - dist-args: cli flags to pass to cargo dist
-      # - install-dist: expression to run to install cargo-dist on the runner
-      #
-      # Typically there will be:
-      # - 1 "global" task that builds universal installers
-      # - N "local" tasks that build each platform's binaries and platform-specific installers
-      matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
-    runs-on: ${{ matrix.runner }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
+      matrix:
+        include:
+          - name: macos-universal
+            os: macos-15
+            # Two slices, lipo'd. Intel Macs are 2019 and earlier, so when dropping
+            # them is acceptable, delete the x86_64 target from this line and the
+            # `lipo` step below collapses to a copy.
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+            archive: tar.gz
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            targets: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - name: windows-x86_64
+            os: windows-2025
+            targets: x86_64-pc-windows-msvc
+            archive: zip
     steps:
       - uses: actions/checkout@v4
+      - run: rustup show
+      - name: Add targets
+        shell: bash
+        run: for t in ${{ matrix.targets }}; do rustup target add "$t"; done
+      - uses: actions/download-artifact@v4
         with:
-          submodules: recursive
-      - uses: swatinem/rust-cache@v2
-      - name: Install cargo-dist
-        run: ${{ matrix.install_dist }}
-      # Get the dist-manifest
-      - name: Fetch local artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: artifacts-*
-          path: target/distrib/
-          merge-multiple: true
-      - name: Install dependencies
+          name: payload
+          path: assets/
+      - name: Linux GUI dependencies
+        if: runner.os == 'Linux'
         run: |
-          ${{ matrix.packages_install }}
-      - name: Build artifacts
-        run: |
-          # Actually do builds and make zips and whatnot
-          cargo dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
-          echo "cargo dist ran successfully"
-      - id: cargo-dist
-        name: Post-build
-        # We force bash here just because github makes it really hard to get values up
-        # to "real" actions without writing to env-vars, and writing to env-vars has
-        # inconsistent syntax between shell and powershell.
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Build
         shell: bash
         run: |
-          # Parse out what we just built and upload it to scratch storage
-          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
-          jq --raw-output ".artifacts[]?.path | select( . != null )" dist-manifest.json >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          for t in ${{ matrix.targets }}; do
+            cargo build --release --locked --target "$t" \
+              -p oxwin-gui -p oxwin-cli
+          done
 
-          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
-      - name: "Upload artifacts"
-        uses: actions/upload-artifact@v4
+      # A universal binary is two complete Mach-O slices, so the embedded payload appears
+      # in both. That is inherent: lipo concatenates whole objects and cannot share data
+      # between them.
+      - name: Combine or collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ext=""
+          if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; fi
+          for bin in oxide-windows oxwin; do
+            read -ra targets <<< "${{ matrix.targets }}"
+            if [ "${#targets[@]}" -gt 1 ]; then
+              paths=()
+              for t in "${targets[@]}"; do
+                paths+=("target/$t/release/$bin")
+              done
+              lipo -create -output "dist/$bin" "${paths[@]}"
+              lipo -info "dist/$bin"
+            else
+              cp "target/${targets[0]}/release/${bin}${ext}" "dist/${bin}${ext}"
+            fi
+          done
+          cp README.md LICENSE dist/
+          ls -lh dist
+
+      # Runs the binary that was just built, so "it embedded a real payload" is checked
+      # on the artifact rather than inferred from the build succeeding. Every artifact
+      # here is native to its runner.
+      - name: Verify the artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          ext=""
+          if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; fi
+          "./dist/oxwin${ext}" doctor | tee doctor.txt
+          # doctor exits non-zero on failure, so reaching here means the payload is
+          # present; pull the fingerprint out for the cross-platform comparison.
+          grep -o 'fingerprint [0-9a-f]*' doctor.txt | awk '{print $2}' \
+            > "fingerprint-${{ matrix.name }}.txt"
+          cat "fingerprint-${{ matrix.name }}.txt"
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: artifacts-build-local-${{ join(matrix.targets, '_') }}
-          path: |
-            ${{ steps.cargo-dist.outputs.paths }}
-            ${{ env.BUILD_MANIFEST_NAME }}
+          name: fingerprint-${{ matrix.name }}
+          path: fingerprint-${{ matrix.name }}.txt
 
-  # Build and package all the platform-agnostic(ish) things
-  build-global-artifacts:
-    needs:
-      - plan
-      - build-local-artifacts
-    runs-on: "ubuntu-20.04"
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="oxide-windows-image-builder-${{ matrix.name }}"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            (cd dist && 7z a "../${name}.zip" .)
+          else
+            tar -czf "${name}.tar.gz" -C dist .
+          fi
+          ls -lh "${name}."*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: oxide-windows-image-builder-${{ matrix.name }}.*
+
+  fingerprints:
+    name: the artifacts carry the same payload
+    needs: build
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          submodules: recursive
-      - name: Install cargo-dist
-        shell: bash
-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.11.1/cargo-dist-installer.sh | sh"
-      # Get all the local artifacts for the global tasks to use (for e.g. checksums)
-      - name: Fetch local artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: artifacts-*
-          path: target/distrib/
+          pattern: fingerprint-*
           merge-multiple: true
-      - id: cargo-dist
-        shell: bash
+      - name: Compare
         run: |
-          cargo dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
-          echo "cargo dist ran successfully"
+          set -euo pipefail
+          cat fingerprint-*.txt
+          count=$(sort -u fingerprint-*.txt | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "the platform artifacts embedded different payloads" >&2
+            exit 1
+          fi
+          echo "all artifacts embed payload $(sort -u fingerprint-*.txt)"
 
-          # Parse out what we just built and upload it to scratch storage
-          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
-          jq --raw-output ".artifacts[]?.path | select( . != null )" dist-manifest.json >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-
-          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
-      - name: "Upload artifacts"
-        uses: actions/upload-artifact@v4
-        with:
-          name: artifacts-build-global
-          path: |
-            ${{ steps.cargo-dist.outputs.paths }}
-            ${{ env.BUILD_MANIFEST_NAME }}
-  # Determines if we should publish/announce
-  host:
-    needs:
-      - plan
-      - build-local-artifacts
-      - build-global-artifacts
-    # Only run if we're "publishing", and only if local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    runs-on: "ubuntu-20.04"
-    outputs:
-      val: ${{ steps.host.outputs.manifest }}
+  publish:
+    name: publish the release
+    needs: [build, fingerprints]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          submodules: recursive
-      - name: Install cargo-dist
-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.11.1/cargo-dist-installer.sh | sh"
-      # Fetch artifacts from scratch-storage
-      - name: Fetch artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: artifacts-*
-          path: target/distrib/
+          pattern: "*-x86_64"
           merge-multiple: true
-      # This is a harmless no-op for Github Releases, hosting for that happens in "announce"
-      - id: host
-        shell: bash
-        run: |
-          cargo dist host ${{ needs.plan.outputs.tag-flag }} --steps=upload --steps=release --output-format=json > dist-manifest.json
-          echo "artifacts uploaded and released successfully"
-          cat dist-manifest.json
-          echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
-      - name: "Upload dist-manifest.json"
-        uses: actions/upload-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          # Overwrite the previous copy
-          name: artifacts-dist-manifest
-          path: dist-manifest.json
+          name: macos-universal
+      - run: ls -lh
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Via the environment rather than interpolated into the command, so a tag name
+          # cannot become part of the shell.
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          notes=$(cat <<'EOF'
+          Unsigned builds. On macOS, Gatekeeper will refuse to open a downloaded binary
+          until its quarantine attribute is cleared:
 
-  # Create a Github Release while uploading all files to it
-  announce:
-    needs:
-      - plan
-      - host
-    # use "always() && ..." to allow us to wait for all publish jobs while
-    # still allowing individual publish jobs to skip themselves (for prereleases).
-    # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' }}
-    runs-on: "ubuntu-20.04"
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: "Download Github Artifacts"
-        uses: actions/download-artifact@v4
-        with:
-          pattern: artifacts-*
-          path: artifacts
-          merge-multiple: true
-      - name: Cleanup
-        run: |
-          # Remove the granular manifests
-          rm -f artifacts/*-dist-manifest.json
-      - name: Create Github Release
-        uses: ncipollo/release-action@v1
-        with:
-          tag: ${{ needs.plan.outputs.tag }}
-          name: ${{ fromJson(needs.host.outputs.val).announcement_title }}
-          body: ${{ fromJson(needs.host.outputs.val).announcement_github_body }}
-          prerelease: ${{ fromJson(needs.host.outputs.val).announcement_is_prerelease }}
-          artifacts: "artifacts/*"
+              xattr -d com.apple.quarantine oxide-windows oxwin
+
+          Each archive holds the desktop app (`oxide-windows`) and the CLI (`oxwin`).
+          The virtio drivers, OpenSSH and EFI binaries the media carries are compiled in,
+          so nothing else needs downloading. Run `oxwin doctor` to confirm.
+          EOF
+          )
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --title "$TAG" \
+            --notes "$notes" \
+            --verify-tag \
+            oxide-windows-image-builder-*.tar.gz \
+            oxide-windows-image-builder-*.zip

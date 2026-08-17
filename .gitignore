@@ -1,1 +1,17 @@
 /target
+
+# Third-party payload. Fetched by tools/fetch-payload.sh, never committed — CI runs
+# that script before packaging. Versions are pinned and checksummed there, so the
+# build stays reproducible without carrying binaries in git.
+/assets/drivers/
+/assets/openssh/
+/assets/efi/
+/assets/payload-manifest.json
+
+# Built answer disks and installer images — multi-GB, always regenerable.
+*.img
+
+# Per-machine Claude Code permission grants, not project config.
+.claude/settings.local.json
+
+.DS_Store
