@@ -8,6 +8,10 @@
 /assets/efi/
 /assets/payload-manifest.json
 
+# Download cache for tools/fetch-payload.sh: the virtio-win ISO alone is ~750 MB.
+# Checksummed on every run, so deleting it costs a download and nothing else.
+/.cache/
+
 # Built answer disks and installer images — multi-GB, always regenerable.
 *.img
 

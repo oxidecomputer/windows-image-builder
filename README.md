@@ -1,4 +1,4 @@
-# Windows on Oxide
+# Windows Image Builder
 
 Get Windows Server running on an Oxide rack, from your laptop.
 
@@ -13,20 +13,22 @@ the rack and its normal operating mode.
 
 ## What you need before you start
 
-- **A Windows Server 2022 ISO.** Microsoft's evaluation ISO works fine, and needs no
-  product key. It is the only release the app offers today — see
-  [Which Windows versions work](#which-windows-versions-work).
+- **A Windows ISO.** Server 2019, 2022 or 2025, or Windows 10 or 11. Microsoft's
+  evaluation ISOs work fine and need no product key. The app reads the ISO to find out
+  which release it is, so there is nothing to select — see
+  [Which Windows versions work](#which-windows-versions-work) for what has been verified.
+  Arm64 media is refused.
+- **Around 20 GB of free disk space.** The image it builds is roughly the size of your
+  ISO, and it has to be written somewhere before it is uploaded.
 - **An SSH public key** is optional. If you have used SSH before you already have one,
   at `~/.ssh/id_ed25519.pub`. It makes SSH passwordless, but it does not replace the
   password — see below.
-- **Around 20 GB of free disk space.** The image it builds is roughly the size of your
-  ISO, and it has to be written somewhere before it is uploaded.
+
 
 > **Running it today:** this is an early version, so you start it from source rather
 > than double-clicking an app. You need [Rust](https://rustup.rs), then:
 >
 > ```
-> cd rust
 > cargo run --release -p oxwin-gui
 > ```
 >
@@ -114,7 +116,10 @@ using the names you chose. Work down it in order.
 Worth knowing, because otherwise the middle of the install looks broken.
 
 You end up with **two disks**: the installer image you just built, and a blank disk for
-Windows to install onto. The instance boots from the installer first.
+Windows to install onto. The instance boots from the installer first. Windows installer
+does not output information over serial, the system will look like nothing is happening
+after loading the boot loader. Windows desktop editions (10 and 11) will never output
+anything over serial.
 
 From there it runs by itself. It partitions the blank disk, installs Windows, sets up
 your account, installs the network drivers and the SSH server, and turns on Remote
@@ -175,13 +180,19 @@ a payload directory instead of rebuilding, set `OXWIN_ASSETS` to it.
 | Version | Status |
 | --- | --- |
 | Windows Server 2022 | **Verified** — installed on real Oxide hardware, with networking, SSH and RDP confirmed working |
-| Windows Server 2025 | Not offered yet |
-| Windows 11 | Not offered yet |
+| Windows Server 2019 | **Verified** — installed on real Oxide hardware, with networking, SSH and RDP confirmed working |
+| Windows Server 2025 | Builds — [existing issue](https://github.com/oxidecomputer/propolis/pull/1199) will cause the install to fail |
+| Windows 10 | **Verified** — installed on real Oxide hardware, with networking, SSH and RDP confirmed working |
+| Windows 11 | Builds — same as Server 2025, [existing issue](https://github.com/oxidecomputer/propolis/pull/1199) will cause the install to fail |
+| Any Arm64 release | Refused, with a message saying why. The drivers and answer file are amd64 only |
 
-The app only offers Server 2022 for now. The other releases are wired up internally but
-nobody has booted them on a rack, and offering an untested release as an equal choice
-would just invite someone to hit problems no one has seen. They appear in the picker as
-each one is verified.
+**You do not tell the app which Windows you have — it reads the ISO and works it out.**
+That is deliberate: a version picker is a claim nobody checks, and choosing wrongly used
+to produce an image that built cleanly and then installed a machine with no network. If
+the release you selected disagrees with the media, the media wins and the log says so.
+
+Windows versions come with many different versions of media, see [TESTED-MEDIA.md](TESTED-MEDIA.md) for exactly what has
+been tested on each.
 
 ---
 
@@ -192,3 +203,4 @@ each one is verified.
 - `assets/` — third-party payload, downloaded by `tools/fetch-payload.sh`, not committed
 - `DEVELOPMENT.md` — how it works inside, and how to work on it
 - `PLAN.md` — what is built, and what is coming
+- `TESTED-MEDIA.md` — which Windows ISOs this has actually been run against

@@ -34,6 +34,12 @@ pub const HEADER_BYTES: usize = 208;
 const XML_RESOURCE_OFFSET: usize = 72;
 
 /// One image in the WIM.
+///
+/// The last four fields are what let the media identify itself rather than be asserted
+/// by whoever picked the ISO. They are per-image on the wire, and on every ISO read so
+/// far every image agrees, but nothing in the format promises that — so they stay per
+/// image here and a caller that wants one answer for the media has to say what it does
+/// when they disagree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Image {
     pub index: u32,
@@ -42,7 +48,23 @@ pub struct Image {
     /// Stable across retail, evaluation and OEM media, where `name` is not.
     pub edition_id: String,
     pub flags: String,
+    /// `PROCESSOR_ARCHITECTURE`: 9 is amd64, 12 is arm64. `None` when absent.
+    pub arch: Option<u32>,
+    /// The *base* build, not the patch level: media whose filename says 19045 reports
+    /// 19041. Never match the number a filename implies.
+    pub build: Option<u32>,
+    /// `ServerNT` or `WinNT` — the only structural server/client signal. Empty when
+    /// absent.
+    pub product_type: String,
+    /// `Server`, `Server Core` or `Client`. Empty when absent.
+    pub installation_type: String,
 }
+
+/// `ARCH` for amd64, the only architecture anything in this workspace supports.
+pub const ARCH_AMD64: u32 = 9;
+/// `ARCH` for arm64. Present on real media, and refused: the drivers are amd64 and the
+/// answer file hardcodes `processorArchitecture="amd64"`.
+pub const ARCH_ARM64: u32 = 12;
 
 /// Where the XML resource lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +130,12 @@ pub fn parse_xml(bytes: &[u8]) -> Result<Vec<Image>> {
                 description: element(body, "DESCRIPTION"),
                 edition_id: element(body, "EDITIONID"),
                 flags: element(body, "FLAGS"),
+                arch: number(body, "ARCH"),
+                // `<BUILD>` is nested in `<VERSION>`, alongside `<SPBUILD>`. The scan
+                // matches the literal `<BUILD>`, which `<SPBUILD>` does not contain.
+                build: number(body, "BUILD"),
+                product_type: element(body, "PRODUCTTYPE"),
+                installation_type: element(body, "INSTALLATIONTYPE"),
             });
         }
         rest = &body_start[body_end + "</IMAGE>".len()..];
@@ -137,6 +165,13 @@ fn element(body: &str, tag: &str) -> String {
     body[from..from + end].trim().to_string()
 }
 
+/// The first `<TAG>…</TAG>` as a number. `None` covers absent, empty and unparseable
+/// alike: all three mean "the media did not tell us", and there is no numeric value that
+/// could stand in for that — build 0 and architecture 0 are both nonsense.
+fn number(body: &str, tag: &str) -> Option<u32> {
+    element(body, tag).parse().ok()
+}
+
 /// Read the image list through a caller-supplied reader, so this works over a file, a
 /// UDF reader, or anything else without depending on any of them.
 pub fn read_images(
@@ -152,18 +187,36 @@ pub fn read_images(
 
 /// Whether this image is a Server Core image rather than Desktop Experience.
 ///
-/// Server media marks the Core images with a `CORE` suffix and gives the Desktop
-/// Experience images no marker at all:
+/// `INSTALLATIONTYPE` says so outright — `Server`, `Server Core` or `Client` — so that is
+/// what this reads. It used to test whether `flags` ended in `core`, which is true of
+/// server media:
 ///
 /// ```text
 ///   [3] Windows Server 2022 SERVERDATACENTERCORE   flags ServerDataCenterEvalCore
 ///   [4] Windows Server 2022 SERVERDATACENTER       flags ServerDataCenterEval
 /// ```
 ///
-/// `flags` is checked first because it stays stable across retail, evaluation and OEM
-/// media where `name` does not.
+/// and meaningless on client media, where **Windows 11 Home is `EDITIONID=Core`,
+/// `FLAGS=Core`** and classified as Server Core by that test, while `Home N` (`CoreN`) is
+/// not. Nothing had noticed because no client release was offered yet.
+///
+/// The string test survives only as the fallback for media omitting the tag, and there it
+/// checks `flags` before `name` because `flags` stays stable across retail, evaluation and
+/// OEM media where `name` does not.
 pub fn is_core_image(image: &Image) -> bool {
-    ends_with_core(&image.flags) || ends_with_core(&image.name)
+    match image.installation_type.as_str() {
+        "" => ends_with_core(&image.flags) || ends_with_core(&image.name),
+        tag => tag.eq_ignore_ascii_case("server core"),
+    }
+}
+
+/// Whether this image is a client release (Windows 10/11) rather than a server one.
+///
+/// `PRODUCTTYPE` is the only structural signal. Do not sniff for "Server" in an edition
+/// name: it is a marketing string, translated on localised media.
+pub fn is_client_image(image: &Image) -> bool {
+    image.product_type.eq_ignore_ascii_case("WinNT")
+        || image.installation_type.eq_ignore_ascii_case("client")
 }
 
 fn ends_with_core(s: &str) -> bool {
@@ -219,7 +272,11 @@ pub fn select_image<'a>(images: &'a [Image], hint: &str) -> Option<&'a Image> {
 mod tests {
     use super::*;
 
-    /// The real image list from Server 2022 evaluation media.
+    /// The real image list from Server 2022 evaluation media, `INSTALLATIONTYPE` and all.
+    ///
+    /// Note the casing split between `EDITIONID` and `FLAGS` — `ServerDatacenterEval`
+    /// against `ServerDataCenterEvalCore`. That is verbatim from the media, identically on
+    /// 2019, 2022 and 2025, and it is why every comparison here lowercases first.
     fn server_2022() -> Vec<Image> {
         [
             (
@@ -227,28 +284,65 @@ mod tests {
                 "SERVERSTANDARDCORE",
                 "ServerStandardEval",
                 "ServerStandardEvalCore",
+                "Server Core",
             ),
-            (2, "SERVERSTANDARD", "ServerStandardEval", "ServerStandardEval"),
+            (
+                2,
+                "SERVERSTANDARD",
+                "ServerStandardEval",
+                "ServerStandardEval",
+                "Server",
+            ),
             (
                 3,
                 "SERVERDATACENTERCORE",
                 "ServerDatacenterEval",
                 "ServerDataCenterEvalCore",
+                "Server Core",
             ),
             (
                 4,
                 "SERVERDATACENTER",
                 "ServerDatacenterEval",
                 "ServerDataCenterEval",
+                "Server",
             ),
         ]
         .iter()
-        .map(|(index, name, edition, flags)| Image {
+        .map(|(index, name, edition, flags, install)| Image {
             index: *index,
             name: format!("Windows Server 2022 {name}"),
             description: String::new(),
             edition_id: edition.to_string(),
             flags: flags.to_string(),
+            arch: Some(ARCH_AMD64),
+            build: Some(20348),
+            product_type: "ServerNT".into(),
+            installation_type: install.to_string(),
+        })
+        .collect()
+    }
+
+    /// Windows 11 22H2 retail, the four images that matter here. Home really is
+    /// `EDITIONID=Core`/`FLAGS=Core` on the wire.
+    fn windows_11() -> Vec<Image> {
+        [
+            (1, "Windows 11 Home", "Core", "Core"),
+            (2, "Windows 11 Home N", "CoreN", "CoreN"),
+            (5, "Windows 11 Pro", "Professional", "Professional"),
+            (9, "Windows 11 Education", "Education", "Education"),
+        ]
+        .iter()
+        .map(|(index, name, edition, flags)| Image {
+            index: *index,
+            name: name.to_string(),
+            description: name.to_string(),
+            edition_id: edition.to_string(),
+            flags: flags.to_string(),
+            arch: Some(ARCH_AMD64),
+            build: Some(22621),
+            product_type: "WinNT".into(),
+            installation_type: "Client".into(),
         })
         .collect()
     }
@@ -310,20 +404,76 @@ mod tests {
         assert!(select_image(&server_2022(), "enterprise").is_none());
     }
 
+    /// `INSTALLATIONTYPE` decides Core-ness, so an image whose strings all say "core" is
+    /// still Desktop Experience when the media says `Server`. Server media does not
+    /// actually contradict itself this way; the point is which field wins.
     #[test]
-    fn core_detection_uses_flags_before_name() {
-        // Localised media where NAME is translated but FLAGS is not.
+    fn core_detection_reads_installationtype_not_the_strings() {
+        let list = server_2022();
+        assert!(is_core_image(&list[0]) && is_core_image(&list[2]));
+        assert!(!is_core_image(&list[1]) && !is_core_image(&list[3]));
+
+        let lying =
+            Image { installation_type: "Server".into(), ..list[2].clone() };
+        assert!(!is_core_image(&lying), "the strings beat INSTALLATIONTYPE");
+    }
+
+    /// The bug this fixes. Windows 11 Home is `EDITIONID=Core`, `FLAGS=Core`, so the old
+    /// `flags`-ends-in-`core` test called it Server Core — while `Home N` (`CoreN`) came
+    /// out Desktop. Nothing on client media is a Core image.
+    #[test]
+    fn windows_11_home_is_not_a_server_core_image() {
+        for image in windows_11() {
+            assert!(
+                !is_core_image(&image),
+                "{} classified as Server Core",
+                image.name
+            );
+            assert!(is_client_image(&image), "{} is not client", image.name);
+        }
+        // The old heuristic, kept here so the regression is visible rather than implied.
+        let home = &windows_11()[0];
+        assert!(ends_with_core(&home.flags), "FLAGS really is `Core`");
+
+        for image in server_2022() {
+            assert!(!is_client_image(&image), "{} is not client", image.name);
+        }
+    }
+
+    /// Media omitting `INSTALLATIONTYPE` falls back to the string test, which is the only
+    /// thing such media offers. Localised media translates `NAME` but not `FLAGS`, so
+    /// `flags` is checked first.
+    #[test]
+    fn core_detection_falls_back_to_flags_when_the_tag_is_absent() {
         let image = Image {
             index: 1,
             name: "Windows Server 2022 Datacenter (Kern)".into(),
             description: String::new(),
             edition_id: "ServerDatacenter".into(),
             flags: "ServerDataCenterCore".into(),
+            arch: Some(ARCH_AMD64),
+            build: Some(20348),
+            product_type: "ServerNT".into(),
+            installation_type: String::new(),
         };
         assert!(is_core_image(&image));
         // And "core" anywhere other than the end does not count.
         let image = Image { flags: "CoreServer".into(), ..image };
         assert!(!is_core_image(&image));
+        // Without the tag, a server image is still not mistaken for a client one.
+        assert!(!is_client_image(&image));
+    }
+
+    /// A client hint on client media must not be filtered out by the Core preference.
+    /// `select_image` partitions on `is_core_image`, and Home used to land in the wrong
+    /// half of that partition.
+    #[test]
+    fn a_client_edition_is_selectable_by_name_and_by_edition_id() {
+        let list = windows_11();
+        assert_eq!(select_image(&list, "Core").unwrap().index, 1);
+        assert_eq!(select_image(&list, "pro").unwrap().index, 5);
+        assert_eq!(select_image(&list, "Windows 11 Home").unwrap().index, 1);
+        assert_eq!(select_image(&list, "CoreN").unwrap().index, 2);
     }
 
     #[test]
@@ -363,7 +513,12 @@ mod tests {
         let xml = "\u{feff}<WIM><TOTALBYTES>1</TOTALBYTES>\
             <IMAGE INDEX=\"1\"><NAME>Server Core</NAME>\
             <DESCRIPTION>no desktop</DESCRIPTION>\
-            <WINDOWS><EDITIONID>ServerStandardEval</EDITIONID></WINDOWS>\
+            <WINDOWS><ARCH>9</ARCH><PRODUCTNAME>Windows Server</PRODUCTNAME>\
+            <EDITIONID>ServerStandardEval</EDITIONID>\
+            <INSTALLATIONTYPE>Server Core</INSTALLATIONTYPE>\
+            <PRODUCTTYPE>ServerNT</PRODUCTTYPE>\
+            <VERSION><MAJOR>10</MAJOR><MINOR>0</MINOR>\
+            <BUILD>20348</BUILD><SPBUILD>169</SPBUILD></VERSION></WINDOWS>\
             <FLAGS>ServerStandardEvalCore</FLAGS></IMAGE>\
             <IMAGE INDEX=\"2\"><NAME>Server Desktop</NAME>\
             <FLAGS>ServerStandardEval</FLAGS></IMAGE></WIM>";
@@ -374,10 +529,31 @@ mod tests {
         assert_eq!(images[0].description, "no desktop");
         // EDITIONID is nested inside WINDOWS; the scan does not care about depth.
         assert_eq!(images[0].edition_id, "ServerStandardEval");
-        // A missing element reads as empty rather than failing.
+        assert_eq!(images[0].arch, Some(ARCH_AMD64));
+        assert_eq!(images[0].product_type, "ServerNT");
+        assert_eq!(images[0].installation_type, "Server Core");
+        // `<BUILD>` sits next to `<SPBUILD>` inside `<VERSION>`: 20348, not 169. And
+        // `<NAME>` must not be answered by the `<PRODUCTNAME>` two elements earlier.
+        assert_eq!(images[0].build, Some(20348));
+        // A missing element reads as empty, or as None where it is numeric, rather than
+        // failing: the second image here carries none of the identity tags.
         assert_eq!(images[1].description, "");
+        assert_eq!(images[1].arch, None);
+        assert_eq!(images[1].build, None);
+        assert_eq!(images[1].product_type, "");
+        assert_eq!(images[1].installation_type, "");
         assert!(is_core_image(&images[0]));
         assert!(!is_core_image(&images[1]));
+    }
+
+    /// Nothing usable comes back as `None`, not as a zero that reads like a real answer.
+    #[test]
+    fn an_unparseable_number_is_absent_rather_than_zero() {
+        let xml =
+            "<IMAGE INDEX=\"1\"><ARCH></ARCH><BUILD>26100.1742</BUILD></IMAGE>";
+        let images = parse_xml(&utf16le(xml)).unwrap();
+        assert_eq!(images[0].arch, None);
+        assert_eq!(images[0].build, None);
     }
 
     #[test]
@@ -408,13 +584,60 @@ mod tests {
         };
         let images = read_images(&mut read).unwrap();
         assert!(!images.is_empty(), "no editions found");
-        // Every image on real media names an edition and a set of flags.
+        // Every image on real media names an edition and a set of flags, and carries all
+        // four identity fields. Real media has never omitted one; the fallbacks exist for
+        // media nobody has handed us yet, so if this fires on an ISO the fallbacks are
+        // suddenly load-bearing and want checking rather than trusting.
         for image in &images {
             assert!(!image.name.is_empty(), "{image:?}");
             assert!(!image.edition_id.is_empty(), "{image:?}");
+            assert!(
+                matches!(image.arch, Some(ARCH_AMD64 | ARCH_ARM64)),
+                "unknown ARCH: {image:?}"
+            );
+            assert!(image.build.unwrap_or(0) > 7600, "{image:?}");
+            assert!(
+                matches!(image.product_type.as_str(), "ServerNT" | "WinNT"),
+                "unknown PRODUCTTYPE: {image:?}"
+            );
+            assert!(
+                matches!(
+                    image.installation_type.as_str(),
+                    "Server" | "Server Core" | "Client"
+                ),
+                "unknown INSTALLATIONTYPE: {image:?}"
+            );
+            // Core-ness and client-ness are mutually exclusive on every real release.
+            assert!(
+                !(is_core_image(image) && is_client_image(image)),
+                "{image:?}"
+            );
         }
-        // And the hint the builder defaults to resolves to a Desktop Experience image.
+
+        // Whatever the media, the fields agree with each other about what it is.
+        let first = &images[0];
+        for image in &images {
+            assert_eq!(image.arch, first.arch, "images disagree on ARCH");
+            assert_eq!(image.build, first.build, "images disagree on BUILD");
+            assert_eq!(
+                image.product_type, first.product_type,
+                "images disagree on PRODUCTTYPE"
+            );
+        }
+
+        if is_client_image(first) {
+            // Client media carries no Core images at all — the check that would have
+            // caught the Windows 11 Home misclassification against the real ISO.
+            assert!(
+                !images.iter().any(is_core_image),
+                "client media reported a Server Core image"
+            );
+            return;
+        }
+        // On server media, the hint the builder defaults to resolves to Desktop
+        // Experience, and the media really does carry both spellings.
         let chosen = select_image(&images, "datacenter").unwrap();
         assert!(!is_core_image(chosen), "picked Core: {chosen:?}");
+        assert!(images.iter().any(is_core_image), "no Core image found");
     }
 }

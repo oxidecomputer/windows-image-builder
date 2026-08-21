@@ -13,6 +13,7 @@
 
 use crate::stepper::{self, State};
 use crate::theme;
+use oxwin_core::media::MediaInfo;
 use oxwin_core::{
     Cancel, Credentials, Deployment, Engine, Event, Reporter, Settings,
     WindowsRelease,
@@ -49,9 +50,11 @@ impl Stage {
 pub struct Draft {
     pub iso: Option<PathBuf>,
     pub iso_note: String,
+    /// Detected from the media, not chosen. Displayed, never edited.
     pub release: WindowsRelease,
-    pub edition: String,
-    pub experience: oxwin_core::Experience,
+    /// Index of the image picked out of the media's own list. `None` until the media has
+    /// been read, at which point stage 2 selects a sensible default.
+    pub image_index: Option<u32>,
     pub golden: bool,
     pub hostname: String,
     pub username: String,
@@ -72,8 +75,7 @@ impl Default for Draft {
             iso: None,
             iso_note: String::new(),
             release: d.release,
-            edition: d.edition,
-            experience: d.experience,
+            image_index: None,
             golden: true,
             // A real value, not a placeholder. Choosing "one specific machine" should
             // leave you with something that already works and can be typed over.
@@ -105,8 +107,13 @@ impl Draft {
         Settings {
             iso: self.iso.clone().unwrap_or_default(),
             release: self.release,
-            edition: self.edition.clone(),
-            experience: self.experience,
+            // The index is the only unambiguous selector: on server media two images
+            // share `ServerDatacenterEval`, differing only in Core-ness. Before the media
+            // has been read there is no index, and the default hint stands in.
+            edition: match self.image_index {
+                Some(index) => index.to_string(),
+                None => Settings::default().edition,
+            },
             deployment: if self.golden {
                 Deployment::GoldenImage
             } else {
@@ -164,6 +171,13 @@ pub struct App {
     pub build: Build,
     pub engine: Option<Arc<Engine>>,
     pub engine_error: Option<String>,
+    /// What the chosen media says it is. Read once, when the file is picked — about ten
+    /// milliseconds, so there is nothing to background — and then every stage can offer
+    /// real choices instead of asking the user to assert them.
+    pub media: Option<MediaInfo>,
+    /// Why the media could not be read at all. Distinct from `media.problems()`, which
+    /// is media that was read and is unusable.
+    pub media_error: Option<String>,
     /// Where the build was told to write. Kept so a cancelled or failed run can be
     /// cleaned up and a retry can reuse the same destination.
     pub out_path: Option<PathBuf>,
@@ -189,15 +203,10 @@ impl App {
         let engine = Engine::discover();
         let engine_error = engine.assets().problem();
         let engine = Some(Arc::new(engine));
-        let mut draft = Draft::default();
+        let draft = Draft::default();
         // Opening the app on a file, the way any desktop app should behave.
-        if let Some(arg) = std::env::args().nth(1) {
-            let path = PathBuf::from(arg);
-            if path.exists() {
-                draft.iso_note = crate::stages::describe_media(&path);
-                draft.iso = Some(path);
-            }
-        }
+        let opened_with =
+            std::env::args().nth(1).map(PathBuf::from).filter(|p| p.exists());
 
         // Debug builds only: jump straight to a stage so its layout can be reviewed
         // without clicking through. Compiled out of release entirely.
@@ -211,12 +220,14 @@ impl App {
             }
         }
 
-        Self {
+        let mut app = Self {
             stage,
             draft,
             build: Build::Idle,
             engine,
             engine_error,
+            media: None,
+            media_error: None,
             out_path: None,
             saved_to: None,
             log: Vec::new(),
@@ -225,7 +236,21 @@ impl App {
             notice: None,
             project: "my-project".into(),
             disk_name: "windows-install".into(),
+        };
+        // Through `set_iso` rather than by assigning the field, so a file passed on the
+        // command line is inspected exactly like one that was dropped.
+        if let Some(path) = opened_with {
+            app.set_iso(path);
         }
+        app
+    }
+
+    /// Whether the chosen media can be built at all. Arm64 media reaches here looking
+    /// perfectly normal, so this is what stops the user carrying it to stage 2 and only
+    /// finding out when the build refuses.
+    pub fn media_ok(&self) -> bool {
+        self.media_error.is_none()
+            && self.media.as_ref().is_none_or(|m| m.is_buildable())
     }
 
     pub fn push_log(&mut self, line: String) {
@@ -243,9 +268,10 @@ impl App {
             return State::Current;
         }
         let done = match stage {
-            Stage::Image => self.draft.iso.is_some(),
+            Stage::Image => self.draft.iso.is_some() && self.media_ok(),
             Stage::Settings => {
                 self.draft.iso.is_some()
+                    && self.media_ok()
                     && self.draft.to_settings().is_buildable()
             }
             Stage::Processing => self.build.artifact().is_some(),
@@ -264,9 +290,10 @@ impl App {
         }
         match stage {
             Stage::Image => true,
-            Stage::Settings => self.draft.iso.is_some(),
+            Stage::Settings => self.draft.iso.is_some() && self.media_ok(),
             Stage::Processing => {
                 self.draft.iso.is_some()
+                    && self.media_ok()
                     && self.draft.to_settings().is_buildable()
             }
             Stage::Export | Stage::Install => self.build.artifact().is_some(),

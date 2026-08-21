@@ -11,6 +11,7 @@ pub mod engine;
 pub mod exfat;
 pub mod fat32;
 pub mod mbr;
+pub mod media;
 pub mod progress;
 pub mod settings;
 pub mod sparse;
@@ -22,7 +23,7 @@ pub use assets::Assets;
 pub use engine::{Cancel, Engine};
 pub use progress::{Event, Reporter};
 pub use settings::{
-    Credentials, Deployment, Experience, Problem, Settings, WindowsRelease,
+    Credentials, Deployment, Problem, Settings, WindowsRelease,
     generate_password,
 };
 pub use udf::{Entry, UdfImage};

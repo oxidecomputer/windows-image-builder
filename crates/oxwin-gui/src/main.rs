@@ -16,7 +16,7 @@ fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([980.0, 720.0])
         .with_min_inner_size([760.0, 560.0])
-        .with_title("Windows on Oxide");
+        .with_title("Windows Image Builder");
 
     // Pin the window to a known spot when asked, so a screenshot can target this
     // window's rectangle alone. Without it the only option is capturing the whole
@@ -36,7 +36,7 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     let result = eframe::run_native(
-        "Windows on Oxide",
+        "Windows Image Builder",
         options,
         Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
     );

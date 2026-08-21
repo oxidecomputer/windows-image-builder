@@ -96,51 +96,19 @@ pub fn generate_password() -> String {
     String::from_utf8(chars).expect("ascii")
 }
 
-/// Server media ships each edition twice: with a desktop and without one.
+/// Which Windows release.
 ///
-/// This is a real choice, not a detail, and it must be explicit. The image names
-/// mark only the Core variants (`SERVERDATACENTERCORE`) and leave the Desktop
-/// Experience ones unmarked (`SERVERDATACENTER`), so any loose match on
-/// "datacenter" finds Core first and installs a server with no desktop at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Experience {
-    /// The full GUI. What almost everyone means by "Windows Server", and what you
-    /// need if you intend to use Remote Desktop for anything.
-    Desktop,
-    /// No GUI: command line and remote management only.
-    Core,
-}
-
-impl Experience {
-    pub fn label(self) -> &'static str {
-        match self {
-            Experience::Desktop => "Desktop Experience",
-            Experience::Core => "Server Core",
-        }
-    }
-
-    pub fn description(self) -> &'static str {
-        match self {
-            Experience::Desktop => {
-                "Full graphical desktop. Needed for Remote Desktop to be useful."
-            }
-            Experience::Core => {
-                "No desktop. Smaller and patched less often, but managed only from a command line."
-            }
-        }
-    }
-
-    pub const ALL: &'static [Experience] =
-        &[Experience::Desktop, Experience::Core];
-}
-
-/// Which Windows release. Only Server 2022 is verified on real hardware today;
-/// the others are listed so the shape of the enum does not have to change when
-/// they are tested.
+/// Not a preference: the media says which of these it is, and [`crate::media::inspect`]
+/// reads it. A user-asserted release is unchecked by anything, and picking the wrong one
+/// fails the way everything here fails — the build succeeds and the install looks fine,
+/// with the hardware-check bypasses in the wrong state and server edition names on client
+/// media.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WindowsRelease {
+    Server2019,
     Server2022,
     Server2025,
+    Windows10,
     Windows11,
 }
 
@@ -148,16 +116,20 @@ impl WindowsRelease {
     /// The builder's `--windows=` token.
     pub fn token(self) -> &'static str {
         match self {
+            WindowsRelease::Server2019 => "ws2019",
             WindowsRelease::Server2022 => "ws2022",
             WindowsRelease::Server2025 => "ws2025",
+            WindowsRelease::Windows10 => "win10",
             WindowsRelease::Windows11 => "win11",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
+            WindowsRelease::Server2019 => "Windows Server 2019",
             WindowsRelease::Server2022 => "Windows Server 2022",
             WindowsRelease::Server2025 => "Windows Server 2025",
+            WindowsRelease::Windows10 => "Windows 10",
             WindowsRelease::Windows11 => "Windows 11",
         }
     }
@@ -168,11 +140,71 @@ impl WindowsRelease {
         matches!(self, WindowsRelease::Server2022)
     }
 
-    /// What the UI offers. Only Server 2022 for now — the other variants stay
-    /// defined so the plumbing is ready, but offering an untested release as an
-    /// equal choice invites someone to pick it and hit problems nobody has seen.
-    /// Add them here once each has installed on a rack.
-    pub const ALL: &'static [WindowsRelease] = &[WindowsRelease::Server2022];
+    /// Client (Windows 10/11) rather than server.
+    ///
+    /// The media's own signal for this is `PRODUCTTYPE` — `WinNT` against `ServerNT` —
+    /// never a substring of an edition name, which is a marketing string and translated
+    /// on localised media.
+    pub fn is_client(self) -> bool {
+        matches!(self, WindowsRelease::Windows10 | WindowsRelease::Windows11)
+    }
+
+    /// virtio-win's directory name for this release, and the key into the payload
+    /// manifest's `drivers` map.
+    ///
+    /// The one place this mapping lives. It used to exist twice — a `match` in
+    /// `builder.rs` whose `_` arm handed 2k22 drivers to everything that was not Windows
+    /// 11, and a field in `unattend::Target` that nothing read. `tools/fetch-payload.sh`
+    /// fetches exactly these five names, and a test asserts the embedded payload carries
+    /// every one of them.
+    pub fn driver_dir(self) -> &'static str {
+        match self {
+            WindowsRelease::Server2019 => "2k19",
+            WindowsRelease::Server2022 => "2k22",
+            WindowsRelease::Server2025 => "2k25",
+            WindowsRelease::Windows10 => "w10",
+            WindowsRelease::Windows11 => "w11",
+        }
+    }
+
+    /// The `BUILD` values this release's media reports.
+    ///
+    /// These are *base* builds, not patch levels: the Windows 10 media whose filename
+    /// says 19045 reports 19041, so this can never be the number a filename implies.
+    ///
+    /// Windows 11 has several because each annual release bumps it, and 26100 appears
+    /// here *and* under Server 2025 — the same build number ships as both, which is why
+    /// nothing may key on the build alone. `is_client` is what separates them.
+    pub fn base_builds(self) -> &'static [u32] {
+        match self {
+            WindowsRelease::Server2019 => &[17763],
+            WindowsRelease::Server2022 => &[20348],
+            WindowsRelease::Server2025 => &[26100],
+            WindowsRelease::Windows10 => &[10240, 19041],
+            WindowsRelease::Windows11 => &[22000, 22621, 26100, 26200],
+        }
+    }
+
+    /// Every release this workspace knows how to build. Iterate this, never a literal
+    /// list, so adding a variant cannot leave a table half-filled.
+    pub const ALL: &'static [WindowsRelease] = &[
+        WindowsRelease::Server2019,
+        WindowsRelease::Server2022,
+        WindowsRelease::Server2025,
+        WindowsRelease::Windows10,
+        WindowsRelease::Windows11,
+    ];
+
+    /// What a release radio button would offer. Only Server 2022 has installed on a
+    /// rack, and offering an untested release as an equal choice invites someone to pick
+    /// it and hit problems nobody has seen.
+    ///
+    /// This is on its way out: the release is detected from the media, so the honest
+    /// display is "this ISO is Windows Server 2025, which nobody has verified" rather
+    /// than a list of releases to assert. Kept until stage 2 is reshaped around the
+    /// media's own image list.
+    pub const OFFERED: &'static [WindowsRelease] =
+        &[WindowsRelease::Server2022];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,10 +212,11 @@ pub struct Settings {
     /// The `.iso` the user picked. Mounting it is the engine's problem.
     pub iso: PathBuf,
     pub release: WindowsRelease,
-    /// Edition selector passed through to the WIM image chooser, e.g. `datacenter`.
+    /// Which image to install, as an index, an `EDITIONID` or part of a name. Resolved
+    /// against the media's own image list by [`crate::wim::select_image`]. Empty means
+    /// no preference, and [`crate::media::default_image`] chooses — which is the default,
+    /// because `datacenter` is not an edition any client media carries.
     pub edition: String,
-    /// With or without a desktop. Combined with `edition` to pick the WIM image.
-    pub experience: Experience,
     pub deployment: Deployment,
     pub credentials: Credentials,
     pub enable_ssh: bool,
@@ -202,8 +235,7 @@ impl Default for Settings {
         Self {
             iso: PathBuf::new(),
             release: WindowsRelease::Server2022,
-            edition: "datacenter".into(),
-            experience: Experience::Desktop,
+            edition: String::new(),
             deployment: Deployment::GoldenImage,
             credentials: Credentials::default(),
             enable_ssh: true,
@@ -225,25 +257,29 @@ pub struct Problem {
 }
 
 impl Problem {
-    fn block(field: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn block(
+        field: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
         Self { field, message: message.into(), blocking: true }
     }
-    fn warn(field: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn warn(
+        field: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
         Self { field, message: message.into(), blocking: false }
     }
 }
 
 impl Settings {
-    /// The hint the image chooser gets: the edition, with `core` appended when the
-    /// Core variant is wanted. Built here rather than in the engine so the GUI, the
-    /// CLI and the tests cannot disagree about it.
+    /// The hint the image chooser gets.
+    ///
+    /// An image index, an `EDITIONID`, or any substring of a name — whatever the caller
+    /// has. The GUI fills it with the index of the row picked out of the media's own
+    /// image list, which is the only unambiguous selector: two images on server media
+    /// share `ServerDatacenterEval`, differing only in Core-ness.
     pub fn edition_hint(&self) -> String {
-        match self.experience {
-            Experience::Desktop => self.edition.trim().to_lowercase(),
-            Experience::Core => {
-                format!("{}core", self.edition.trim().to_lowercase())
-            }
-        }
+        self.edition.trim().to_lowercase()
     }
 
     /// Everything wrong with these settings. Blocking problems stop the build;
@@ -581,20 +617,25 @@ mod tests {
         }
     }
 
-    /// The bug this guards: "datacenter" is a substring of "SERVERDATACENTERCORE",
-    /// so a loose match finds Core first. One build shipped Server Core to a rack
-    /// because of it. Desktop is the default and must stay unmarked.
+    /// The hint is passed through untouched apart from case and whitespace.
+    ///
+    /// It used to have `core` appended here when a separate Desktop/Core switch was set,
+    /// while `Config::from_settings` appended `-core` for the same fact — two spellings
+    /// of one thing. Core-ness now comes from the image chosen out of the media's own
+    /// list, so there is nothing left to append and nothing left to disagree about.
     #[test]
-    fn desktop_is_the_default_and_core_is_explicit() {
-        let s = base();
-        assert_eq!(s.experience, Experience::Desktop);
-        assert_eq!(s.edition_hint(), "datacenter");
+    fn the_edition_hint_is_the_edition_verbatim() {
+        // Empty by default: no preference, resolved against the media rather than
+        // asserted against a table.
+        assert_eq!(base().edition_hint(), "");
 
-        let core = Settings { experience: Experience::Core, ..base() };
-        assert_eq!(core.edition_hint(), "datacentercore");
-
-        let standard = Settings { edition: "Standard".into(), ..base() };
+        let standard = Settings { edition: "  Standard ".into(), ..base() };
         assert_eq!(standard.edition_hint(), "standard");
+
+        // An index is the selector the GUI actually sends, and it must survive intact:
+        // `wim::select_image` treats an all-digits hint as an image index.
+        let by_index = Settings { edition: "3".into(), ..base() };
+        assert_eq!(by_index.edition_hint(), "3");
     }
 
     #[test]

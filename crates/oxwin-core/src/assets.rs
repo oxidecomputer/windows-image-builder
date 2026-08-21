@@ -219,6 +219,32 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(!data.is_empty(), "{name} is empty");
         }
+
+        // Every release this workspace can build must have drivers in the payload it
+        // shipped with. Without this, a release whose `driver_dir` names a directory
+        // `fetch-payload.sh` does not fetch fails at build time on a user's machine —
+        // and the NetKVM case fails later still, as a guest with no network on a rack.
+        for release in crate::settings::WindowsRelease::ALL {
+            let dir = release.driver_dir();
+            let drivers =
+                manifest["drivers"][dir].as_array().unwrap_or_else(|| {
+                    panic!(
+                        "the payload has no {dir} drivers, which {} needs. \
+                         tools/fetch-payload.sh must fetch every target in \
+                         WindowsRelease::ALL.",
+                        release.label()
+                    )
+                });
+            // NetKVM specifically: it is the network driver, and its absence is the one
+            // failure that looks like a successful install until someone tries to ssh in.
+            assert!(
+                drivers.iter().any(|d| d["driver"]
+                    .as_str()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("NetKVM"))),
+                "{dir} has drivers but no NetKVM, so {} would install with no network",
+                release.label()
+            );
+        }
     }
 
     /// Whether this build embedded a payload or not, `describe` says which — the log has

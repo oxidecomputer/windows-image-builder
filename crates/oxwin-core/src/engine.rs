@@ -16,7 +16,8 @@
 //! output is the code that has installed Windows on a real Oxide rack.
 
 use crate::assets::Assets;
-use crate::builder::{self, Media, Request};
+use crate::builder::{self, Request};
+use crate::media::Media;
 use crate::progress::Reporter;
 use crate::settings::Settings;
 use crate::unattend::Config;
@@ -116,13 +117,14 @@ impl Engine {
         }
         // A directory is accepted so the engine can be pointed at an ISO someone has
         // already mounted, rather than insisting on the image file.
-        let media = if settings.iso.is_dir() {
-            Media::Directory(settings.iso.clone())
-        } else {
-            Media::Iso(settings.iso.clone())
-        };
+        let media = Media::at(settings.iso.clone());
+
         let mut config = Config::from_settings(settings, None);
         config.enable_ssh = settings.enable_ssh;
+        // `config.release` is only a starting point. The builder reads what the media
+        // actually is and overrides it, so a stale radio button cannot produce an image
+        // for the wrong Windows. Detection lives there rather than here because the CLI
+        // calls the builder directly and has to be covered by the same check.
 
         let request = Request {
             media,

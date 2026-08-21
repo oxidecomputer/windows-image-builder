@@ -98,6 +98,10 @@
           <WillShowUI>OnError</WillShowUI>
         </OSImage>
       </ImageInstall>
+      <UpgradeData>
+        <Upgrade>false</Upgrade>
+        <WillShowUI>Never</WillShowUI>
+      </UpgradeData>
       <UserData>
         <AcceptEula>true</AcceptEula>
         <FullName>oxide</FullName>

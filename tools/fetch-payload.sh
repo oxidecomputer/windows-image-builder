@@ -56,13 +56,30 @@ UEFI_NTFS_VERSION="v2.8"
 UEFI_NTFS_SHA256="f04f33833951e7d065a87f0745557436e1e7587f9506576286548c539254bc3c"
 UEFI_NTFS_URL="https://github.com/pbatard/uefi-ntfs/releases/download/${UEFI_NTFS_VERSION}/bootx64.efi"
 
-# virtio-win's directory name for each Windows release we support.
-TARGETS=(2k22 w11)
+# virtio-win's directory name for each Windows release we support. Every one of these
+# must exist in the ISO or this script fails — see the loop below for why.
+TARGETS=(2k19 2k22 2k25 w10 w11)
 
 # Drivers worth carrying. NetKVM is the one that actually matters (Oxide NICs are
 # virtio-net); viostor/vioscsi are insurance in case guest disks are not NVMe, and
 # the rest are small quality-of-life devices.
-DRIVERS=(NetKVM viostor vioscsi Balloon vioserial viorng)
+#
+# pvpanic and viosock are here because a guest reported exactly two unknown devices in
+# Device Manager — "QEMU PVPanic Device" and "VirtIO Socket Driver" — so those are the
+# two virtio devices an Oxide instance exposes that we were not carrying a driver for.
+# The list is deliberately the devices observed on real hardware rather than everything
+# the virtio ISO offers: it also ships qxl, viogpudo, vioinput, viomem, viofs, smbus and
+# more, and there is no evidence any of those devices exist on an Oxide sled.
+#
+# viosock brings two `*-test.exe` tools along with it. They are left in: the payload
+# filter is an exclusion of `*.pdb` and nothing else, on purpose, because filtering by
+# extension is what silently dropped netkvmp.exe once and left guests with no network.
+DRIVERS=(NetKVM viostor vioscsi Balloon vioserial viorng pvpanic viosock)
+
+# Drivers whose absence is a hard failure rather than a note. A guest with no NetKVM
+# has no network, which is indistinguishable from a dozen other problems and expensive
+# to diagnose after the install.
+REQUIRED_DRIVERS=(NetKVM)
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cache="${repo_root}/.cache"
@@ -143,11 +160,28 @@ echo "extracting drivers"
 # under a second and lands in a temp dir that goes away on exit.
 bsdtar -xf "${cache}/virtio-win-${VIRTIO_VERSION}.iso" -C "$staging"
 
-found=0
+# A requested target that this ISO does not carry is a hard failure, not a note.
+#
+# This used to skip with a log line and fail only if *nothing at all* matched, which
+# meant a typo in TARGETS — or an upstream rename — produced a payload with no drivers
+# for that release, an image that built without complaint, and a guest with no network.
+# Every silent-failure mode in this project looks exactly like that.
+#
+# An individual driver missing from a target that is otherwise present is still only a
+# note: virtio-win genuinely does not ship every device for every release. The ones we
+# cannot do without are listed in REQUIRED_DRIVERS.
 for target in "${TARGETS[@]}"; do
+  target_found=0
   for driver in "${DRIVERS[@]}"; do
     src="${staging}/${driver}/${target}/amd64"
     if [[ ! -d "$src" ]]; then
+      for required in "${REQUIRED_DRIVERS[@]}"; do
+        if [[ "$driver" == "$required" ]]; then
+          echo "virtio-win ${VIRTIO_VERSION} has no ${driver}/${target}/amd64," >&2
+          echo "and ${driver} is required: a guest without it has no network." >&2
+          exit 1
+        fi
+      done
       echo "  skip    ${driver}/${target}/amd64 (not in this virtio-win release)"
       continue
     fi
@@ -157,14 +191,14 @@ for target in "${TARGETS[@]}"; do
     find "$src" -type f ! -iname '*.pdb' -exec cp {} "$dest/" \;
     chmod u+w "$dest"/* 2>/dev/null || true
     echo "  ok      ${driver}/${target}/amd64 -> $(ls -1 "$dest" | wc -l | tr -d ' ') files"
-    found=$((found + 1))
+    target_found=$((target_found + 1))
   done
+  if [[ $target_found -eq 0 ]]; then
+    echo "virtio-win ${VIRTIO_VERSION} carries no drivers at all for target ${target}." >&2
+    echo "Either the target name is wrong or the ISO layout changed; both need a human." >&2
+    exit 1
+  fi
 done
-
-if [[ $found -eq 0 ]]; then
-  echo "no driver directories matched; is the ISO layout what we expect?" >&2
-  exit 1
-fi
 
 # The manifest records which drivers belong to which Windows release, and the size of
 # each file. The build embeds every file under assets/ by walking the tree, and

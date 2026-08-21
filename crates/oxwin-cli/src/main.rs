@@ -16,8 +16,9 @@
 //! This file is allowed to print. `oxwin-core` is not — see DEVELOPMENT.md.
 
 use anyhow::{Context, Result, bail};
-use oxwin_core::builder::{self, Media, Request};
+use oxwin_core::builder::{self, Request};
 use oxwin_core::engine::Cancel;
+use oxwin_core::media::Media;
 use oxwin_core::progress::{Event, Reporter};
 use oxwin_core::settings::WindowsRelease;
 use oxwin_core::unattend::Config;
@@ -48,14 +49,25 @@ usage: oxwin doctor
   --user=<name>          local administrator to create
   --password=<secret>    its password. Required: SAC and RDP have no key auth
   --ssh-key=<a;b>        public keys authorised for SSH, semicolon separated
+  --drivers=0            do not inject virtio drivers (diagnostic control:
+                         isolates a hang in Setup from the drivers)
+  --verbose-serial       extra OXIDE-STAGE markers on COM1, so a hang can be
+                         localised to a pass rather than just observed
+  --log-path=<path>      where Setup writes setupact.log/setuperr.log. Its
+                         default is the WinPE RAM disk, so a stalled install
+                         loses its own explanation on reset
+  --no-ui-on-error       WillShowUI=Never instead of OnError. On a guest with
+                         no console, OnError is an infinite hang
   --ssh=0                do not install OpenSSH in the guest
   --rdp=0                do not enable RDP
-  --windows=<ws2022|win11>
-  --edition=<hint>       datacenter, standard, an index, or an EDITIONID
+  --windows=<ws2019|ws2022|ws2025|win10|win11>
+                         advisory: the media's own release overrides it
+  --edition=<hint>       datacenter, standard, an index, or an EDITIONID;
+                         omitted, the media's own list picks a sensible default
   --edition-hint=<hint>  overrides --edition when reading the WIM's image list
   --target-disk=<n>      disk index Setup installs to
   --product-key=<key>
-  --ei-channel=<Eval|Retail|none>
+  --ei-channel=<Eval|_Default|none>
   --bare                 media only: no answer file, no drivers, no ei.cfg
   --assets=<dir>         a payload directory, instead of the embedded one
   --quiet";
@@ -90,12 +102,12 @@ fn build(args: &[String]) -> Result<()> {
 
     let config = Config {
         release,
-        edition: opt("edition").unwrap_or_else(|| "datacenter".into()),
+        edition: opt("edition").unwrap_or_default(),
         computer_name: opt("name").unwrap_or_else(|| "oxide-win".into()),
         username: opt("user").unwrap_or_else(|| "oxide".into()),
         password,
         enable_rdp: opt("rdp").as_deref() != Some("0"),
-        inject_drivers: true,
+        inject_drivers: opt("drivers").as_deref() != Some("0"),
         enable_serial_console: true,
         target_disk: opt("target-disk")
             .as_deref()
@@ -106,6 +118,9 @@ fn build(args: &[String]) -> Result<()> {
         timezone: "UTC".into(),
         product_key: opt("product-key"),
         auto_logon: false,
+        verbose_serial: flag("verbose-serial"),
+        log_path: opt("log-path"),
+        show_ui_on_error: !flag("no-ui-on-error"),
         image_index: None,
         skip_image_install: opt("image-install").as_deref() == Some("0"),
         install_from: None,

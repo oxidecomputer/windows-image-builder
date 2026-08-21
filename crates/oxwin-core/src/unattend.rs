@@ -26,7 +26,7 @@
 //! * Nothing references the answer disk by drive letter. Letters are not stable across
 //!   passes or guests, so the bootstrap is located by scanning filesystem drives.
 
-use crate::settings::{Deployment, Experience, Settings, WindowsRelease};
+use crate::settings::{Deployment, Settings, WindowsRelease};
 use anyhow::{Result, bail};
 
 /// Label of the volume carrying `autounattend.xml`, `bootstrap.ps1`, drivers and
@@ -64,62 +64,86 @@ pub fn xml_escape(value: &str) -> String {
 
 /// A Windows release and the editions its media carries.
 struct Target {
-    /// virtio-win's directory name for this release.
-    #[allow(dead_code)]
-    driver_dir: &'static str,
     /// Oxide instances expose no vTPM and no UEFI Secure Boot, so stock Windows 11
     /// Setup refuses to install without the LabConfig bypasses.
     bypass_hardware_checks: bool,
-    editions: &'static [Edition],
+    editions: Vec<Edition>,
 }
 
 struct Edition {
-    id: &'static str,
+    id: String,
     /// The `/IMAGE/NAME` value, used only when no image index is known.
-    name: &'static str,
+    name: String,
 }
 
-fn target_for(release: WindowsRelease) -> Result<&'static Target> {
+impl Edition {
+    fn new(id: &str, name: String) -> Self {
+        Self { id: id.to_string(), name }
+    }
+}
+
+/// The editions on server media, which is one vocabulary across every release.
+///
+/// Server 2019, 2022 and 2025 ship the same four images with the same ids, differing only
+/// in the year in the name — so this is parameterised rather than copy-pasted three
+/// times. Copy-pasting is how `datacenter` came to be spelled two ways in one codebase.
+///
+/// The names must keep their exact spelling: `SERVERDATACENTER` is Desktop Experience and
+/// `SERVERDATACENTERCORE` is Core, and a loose match between them installed a server with
+/// no desktop once already.
+fn server_editions(year: u16) -> Vec<Edition> {
+    ["DATACENTER", "STANDARD"]
+        .iter()
+        .flat_map(|which| {
+            let id = which.to_lowercase();
+            [
+                Edition::new(
+                    &id,
+                    format!("Windows Server {year} SERVER{which}"),
+                ),
+                Edition::new(
+                    &format!("{id}-core"),
+                    format!("Windows Server {year} SERVER{which}CORE"),
+                ),
+            ]
+        })
+        .collect()
+}
+
+/// The editions on client media.
+///
+/// Far more than server media carries, and the choice matters beyond the name: **Home has
+/// no RDP host and cannot domain-join**, so it is reachable over SSH and the serial
+/// console and not by Remote Desktop. There is no Core variant — `INSTALLATIONTYPE` is
+/// `Client` on every image, which is also why Windows 11 Home being `FLAGS=Core` fooled
+/// the old Core test.
+fn client_editions(release: &str) -> Vec<Edition> {
+    ["Home", "Pro", "Education", "Enterprise"]
+        .iter()
+        .map(|name| {
+            Edition::new(&name.to_lowercase(), format!("{release} {name}"))
+        })
+        .collect()
+}
+
+fn target_for(release: WindowsRelease) -> Result<Target> {
     // Public KMS client setup keys are deliberately not carried over: nothing here
     // activates Windows, and the only reason the original held them was to stop Setup
     // asking for a key, which omitting <ProductKey> already achieves.
-    const WS2022: Target = Target {
-        driver_dir: "2k22",
-        bypass_hardware_checks: false,
-        editions: &[
-            Edition {
-                id: "datacenter",
-                name: "Windows Server 2022 SERVERDATACENTER",
-            },
-            Edition {
-                id: "datacenter-core",
-                name: "Windows Server 2022 SERVERDATACENTERCORE",
-            },
-            Edition {
-                id: "standard",
-                name: "Windows Server 2022 SERVERSTANDARD",
-            },
-            Edition {
-                id: "standard-core",
-                name: "Windows Server 2022 SERVERSTANDARDCORE",
-            },
-        ],
+    //
+    // The bypasses key off client-ness rather than naming Windows 11, so whatever client
+    // release ships next gets them without anyone remembering to add it. Windows 10 does
+    // not need them and is given them anyway: the keys are inert on firmware that has a
+    // vTPM and on Setup that does not look, whereas a client release that needed them and
+    // did not get them refuses to install at all.
+    let editions = match release {
+        WindowsRelease::Server2019 => server_editions(2019),
+        WindowsRelease::Server2022 => server_editions(2022),
+        WindowsRelease::Server2025 => server_editions(2025),
+        WindowsRelease::Windows10 => client_editions("Windows 10"),
+        WindowsRelease::Windows11 => client_editions("Windows 11"),
     };
-    const WIN11: Target = Target {
-        driver_dir: "w11",
-        bypass_hardware_checks: true,
-        editions: &[
-            Edition { id: "pro", name: "Windows 11 Pro" },
-            Edition { id: "enterprise", name: "Windows 11 Enterprise" },
-        ],
-    };
-    match release {
-        WindowsRelease::Server2022 => Ok(&WS2022),
-        WindowsRelease::Windows11 => Ok(&WIN11),
-        WindowsRelease::Server2025 => {
-            bail!("Windows Server 2025 has no unattend target defined yet")
-        }
-    }
+    Ok(Target { bypass_hardware_checks: release.is_client(), editions })
 }
 
 /// Everything the answer file needs. Deliberately lower level than [`Settings`]: it
@@ -143,6 +167,33 @@ pub struct Config {
     pub product_key: Option<String>,
     /// Console autologon. For debugging installs only.
     pub auto_logon: bool,
+    /// Where Setup writes `setupact.log` and `setuperr.log`.
+    ///
+    /// `None` leaves Setup's default, which during `windowsPE` is the WinPE RAM disk — so
+    /// an install that stalls there takes its own explanation down with it on reset. That
+    /// is why a rack hang has been unreadable. Point this at the installer volume, which
+    /// is writable and survives, and the logs can be read afterwards by attaching that
+    /// disk to a machine that works.
+    ///
+    /// The path has to be a literal, and WinPE drive letters are not stable — the media
+    /// is usually `C:` when the target disk is still unformatted, but nothing guarantees
+    /// it. Diagnostic, not something to depend on.
+    pub log_path: Option<String>,
+    /// `OnError` on every `WillShowUI`, which is the shipped behaviour, or `Never`.
+    ///
+    /// **On an Oxide guest `OnError` means an infinite hang.** There is no console to show
+    /// UI on, so Setup waits forever for a click nobody can make, and from the outside
+    /// that is indistinguishable from a slow install. `Never` makes it fail fast instead —
+    /// worse for a human at a keyboard, far better for a machine nobody is watching.
+    pub show_ui_on_error: bool,
+    /// Emit a serial marker at the end of `windowsPE` and the start of `specialize`, not
+    /// only at the start of `windowsPE`.
+    ///
+    /// Diagnostic, and off by default so the answer file stays byte-identical to the one
+    /// that has installed on a rack. With one marker a hang is only ever "it started";
+    /// with three, the console says which pass it died in — and Setup renders to graphics
+    /// an Oxide instance does not have, so these markers are the only view there is.
+    pub verbose_serial: bool,
     /// Index of the image to install, read from the WIM's own metadata. Preferred over
     /// a name: names vary across retail, evaluation, OEM and localised media, so a
     /// hardcoded name silently matches nothing and Setup shows an empty edition list.
@@ -171,15 +222,13 @@ impl Config {
         settings: &Settings,
         image_index: Option<u32>,
     ) -> Self {
-        let edition = match settings.experience {
-            Experience::Desktop => settings.edition.trim().to_lowercase(),
-            Experience::Core => {
-                format!("{}-core", settings.edition.trim().to_lowercase())
-            }
-        };
         Self {
             release: settings.release,
-            edition,
+            // One convention, not two. This used to append `-core` here while
+            // `Settings::edition_hint` appended `core`, for the same fact — and neither
+            // spelling is needed now that Core-ness is a property of the image the user
+            // picked out of the media's own list rather than a separate switch.
+            edition: settings.edition.trim().to_lowercase(),
             computer_name: match &settings.deployment {
                 Deployment::GoldenImage => "*".to_string(),
                 Deployment::Named { hostname } => hostname.clone(),
@@ -194,6 +243,9 @@ impl Config {
             timezone: "UTC".into(),
             product_key: settings.product_key.clone(),
             auto_logon: false,
+            log_path: None,
+            show_ui_on_error: true,
+            verbose_serial: false,
             image_index,
             skip_image_install: false,
             install_from: None,
@@ -211,24 +263,45 @@ struct Command {
     description: String,
 }
 
+/// `OnError` or `Never` for every `WillShowUI` in the answer file.
+///
+/// One function rather than three literals: the whole point is that they agree, and this
+/// codebase has already been bitten twice by one fact spelled two ways.
+fn will_show_ui(config: &Config) -> &'static str {
+    if config.show_ui_on_error { "OnError" } else { "Never" }
+}
+
 pub fn build(config: &Config) -> Result<String> {
     let target = target_for(config.release)?;
-    let edition =
-        target.editions.iter().find(|e| e.id == config.edition).ok_or_else(
-            || {
-                anyhow::anyhow!(
-                    "unknown {} edition {:?}",
-                    config.release.token(),
-                    config.edition
-                )
-            },
-        )?;
+    // The edition is needed for exactly one thing: the `/IMAGE/NAME` written when no
+    // image index is known. With an index it is dead weight, so an unrecognised one is
+    // only fatal without an index — which is what lets the caller select an image by
+    // number, or by anything else the WIM's own list offers, without also having to name
+    // it in a table here. Requiring it turned a Windows 11 ISO into "unknown win11
+    // edition \"datacenter\"", which describes our table rather than the user's media.
+    let unnamed = Edition::new("", String::new());
+    let found = target.editions.iter().find(|e| e.id == config.edition);
+    let edition = match (found, config.image_index) {
+        (Some(edition), _) => edition,
+        (None, Some(_)) => &unnamed,
+        (None, None) => bail!(
+            "no image index, and {:?} is not a known {} edition — this release has {}",
+            config.edition,
+            config.release.token(),
+            target
+                .editions
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
 
     // Joined with a newline, exactly as the original does — which means a pass that
     // returns an empty string leaves a blank line in the output. Preserved on purpose:
     // the reference file has it, and this is a byte-for-byte port.
     let settings = [
-        windows_pe_pass(config, target, edition)?,
+        windows_pe_pass(config, &target, edition)?,
         offline_servicing_pass(config),
         specialize_pass(config)?,
         oobe_pass(config),
@@ -366,6 +439,14 @@ fn windows_pe_pass(
         });
     }
 
+    if config.verbose_serial {
+        setup_commands.push(Command {
+            path: "cmd.exe /c echo OXIDE-STAGE windowsPE-end>COM1 & exit /b 0"
+                .into(),
+            description: "Serial progress marker: windowsPE-end".into(),
+        });
+    }
+
     let run_sync = if setup_commands.is_empty() {
         String::new()
     } else {
@@ -404,7 +485,7 @@ fn windows_pe_pass(
                  \x20             <Key>/IMAGE/NAME</Key>\n\
                  \x20             <Value>{}</Value>\n\
                  \x20           </MetaData>",
-                xml_escape(edition.name)
+                xml_escape(&edition.name)
             ),
         };
         format!(
@@ -417,10 +498,11 @@ fn windows_pe_pass(
              \x20           <DiskID>{disk}</DiskID>\n\
              \x20           <PartitionID>3</PartitionID>\n\
              \x20         </InstallTo>\n\
-             \x20         <WillShowUI>OnError</WillShowUI>\n\
+             \x20         <WillShowUI>{ui}</WillShowUI>\n\
              \x20       </OSImage>\n\
              \x20     </ImageInstall>\n",
-            disk = config.target_disk
+            disk = config.target_disk,
+            ui = will_show_ui(config)
         )
     };
 
@@ -434,17 +516,18 @@ fn windows_pe_pass(
         Some(key) => format!(
             "        <ProductKey>\n\
              \x20         <Key>{}</Key>\n\
-             \x20         <WillShowUI>OnError</WillShowUI>\n\
+             \x20         <WillShowUI>{ui}</WillShowUI>\n\
              \x20       </ProductKey>\n",
-            xml_escape(key)
+            xml_escape(key),
+            ui = will_show_ui(config)
         ),
         None => String::new(),
     };
 
     components.push(format!(
         "    <component name=\"Microsoft-Windows-Setup\" {ARCH}>\n\
-         {run_sync}      <DiskConfiguration>\n\
-         \x20       <WillShowUI>OnError</WillShowUI>\n\
+         {run_sync}      {log_path}<DiskConfiguration>\n\
+         \x20       <WillShowUI>{ui}</WillShowUI>\n\
          \x20       <Disk wcm:action=\"add\">\n\
          \x20         <DiskID>{disk}</DiskID>\n\
          \x20         <WillWipeDisk>true</WillWipeDisk>\n\
@@ -486,7 +569,11 @@ fn windows_pe_pass(
          \x20         </ModifyPartitions>\n\
          \x20       </Disk>\n\
          \x20     </DiskConfiguration>\n\
-         {image_install}      <UserData>\n\
+         {image_install}      <UpgradeData>\n\
+         \x20       <Upgrade>false</Upgrade>\n\
+         \x20       <WillShowUI>Never</WillShowUI>\n\
+         \x20     </UpgradeData>\n\
+         \x20     <UserData>\n\
          \x20       <AcceptEula>true</AcceptEula>\n\
          \x20       <FullName>{user}</FullName>\n\
          \x20       <Organization>Oxide</Organization>\n\
@@ -494,6 +581,12 @@ fn windows_pe_pass(
          \x20   </component>",
         disk = config.target_disk,
         user = xml_escape(&config.username),
+        ui = will_show_ui(config),
+        log_path = match &config.log_path {
+            Some(path) =>
+                format!("      <LogPath>{}</LogPath>\n", xml_escape(path)),
+            None => String::new(),
+        },
     ));
 
     Ok(format!(
@@ -566,6 +659,17 @@ fn specialize_pass(config: &Config) -> Result<String> {
     }
 
     let mut commands: Vec<Command> = Vec::new();
+
+    if config.verbose_serial {
+        // First thing in specialize, so reaching it proves windowsPE finished, the image
+        // was applied and the guest rebooted into it.
+        commands.push(Command {
+            path:
+                "cmd.exe /c echo OXIDE-STAGE specialize-begin>COM1 & exit /b 0"
+                    .into(),
+            description: "Serial progress marker: specialize-begin".into(),
+        });
+    }
 
     if config.enable_serial_console {
         // An Oxide rack's only out-of-band access to a guest is the serial console, so
@@ -700,6 +804,9 @@ mod tests {
             timezone: "UTC".into(),
             product_key: None,
             auto_logon: false,
+            verbose_serial: false,
+            log_path: None,
+            show_ui_on_error: true,
             image_index: Some(4),
             skip_image_install: false,
             install_from: None,
@@ -815,7 +922,7 @@ mod tests {
     ///   cargo test -p oxwin-core dump_goldens -- --ignored
     ///
     /// The committed goldens came from the JavaScript builder, which is the only answer
-    /// file that has ever installed Windows on Oxide hardware. Running this replaces
+    /// file that has ever installed Windows Image Builder hardware. Running this replaces
     /// that provenance with "whatever the Rust does today", so the diff it produces is
     /// the review — an unexplained hunk here is a bug being blessed, not a test being
     /// updated.
@@ -834,7 +941,7 @@ mod tests {
 
     /// Every branch in the generator, against a committed golden byte for byte. The
     /// goldens were produced by the JavaScript builder, which is the only answer file
-    /// that has installed Windows on Oxide hardware, and every way this file can be
+    /// that has installed Windows Image Builder hardware, and every way this file can be
     /// wrong is silent.
     #[test]
     fn matches_the_goldens() {

@@ -10,7 +10,8 @@
 use crate::app::{App, Build, Stage};
 use crate::theme;
 use egui::{RichText, Ui};
-use oxwin_core::WindowsRelease;
+use oxwin_core::media::{self, Media, MediaInfo};
+use oxwin_core::wim;
 use std::path::{Path, PathBuf};
 
 impl App {
@@ -31,16 +32,35 @@ impl App {
 
     pub fn set_iso(&mut self, path: PathBuf) {
         self.draft.iso_note = describe_media(&path);
-        self.draft.iso = Some(path);
+        self.draft.iso = Some(path.clone());
         // A different source invalidates anything built from the old one.
         self.build = Build::Idle;
         self.saved_to = None;
+
+        // Read the media now rather than at build time. It costs about ten milliseconds
+        // — a UDF walk and two seeks — and it is what lets stage 2 offer the editions
+        // this ISO actually carries instead of a list someone typed into a table.
+        self.media = None;
+        self.media_error = None;
+        self.draft.image_index = None;
+        match media::inspect(&Media::at(path)) {
+            Ok(info) => {
+                if let Some(release) = info.release {
+                    self.draft.release = release;
+                }
+                self.draft.image_index =
+                    media::default_image(&info.images).map(|i| i.index);
+                self.media = Some(info);
+            }
+            Err(e) => self.media_error = Some(format!("{e:#}")),
+        }
     }
 
     // --- stage 1: image selection -----------------------------------------
 
     pub fn ui_image(&mut self, ui: &mut Ui) {
         let chosen = self.draft.iso.is_some();
+        let ready = chosen && self.media_ok();
         let hovering = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
 
         // Optically centre the whole group. An empty stage with one job should not
@@ -111,7 +131,9 @@ impl App {
                 theme::TEXT,
             );
             // The one accent on this stage: a filled dot meaning "this is ready".
-            if chosen && !hovering {
+            // Green means state, so it must not appear beside media that was read and
+            // refused — the file is present, which is not the same as usable.
+            if chosen && !hovering && ready {
                 painter.circle_filled(
                     egui::pos2(title_rect.left() - 13.0, title_rect.center().y),
                     4.0,
@@ -148,10 +170,42 @@ impl App {
             );
         }
 
+        // What the ISO turned out to be. Shown here, on the stage where it was chosen,
+        // so picking the wrong file is caught immediately rather than at stage 2 — and
+        // so media this app refuses says so before anything else is filled in.
+        if let Some(err) = &self.media_error {
+            ui.add_space(16.0);
+            problem_box(
+                ui,
+                theme::DANGER,
+                "This does not look like Windows installation media",
+                err,
+            );
+        } else if let Some(info) = &self.media {
+            ui.add_space(16.0);
+            match info.problems().into_iter().find(|p| p.blocking) {
+                Some(blocking) => problem_box(
+                    ui,
+                    theme::DANGER,
+                    "This media cannot be used",
+                    &blocking.message,
+                ),
+                None => {
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new(describe_detection(info))
+                                .color(theme::PRIMARY)
+                                .size(13.0),
+                        );
+                    });
+                }
+            }
+        }
+
         // No disabled button while the stage is empty. Nothing to continue to yet,
         // and a greyed-out control is just an obstacle between the user and the
         // single thing this stage wants them to do.
-        if chosen {
+        if chosen && self.media_ok() {
             ui.add_space(26.0);
             ui.vertical_centered(|ui| {
                 if primary_button(ui, "Continue to Settings").clicked() {
@@ -159,6 +213,110 @@ impl App {
                 }
             });
         }
+    }
+
+    /// What this media is, and which of its images to install.
+    ///
+    /// Two radio groups used to stand here: the Windows release, and Desktop against
+    /// Core. Both were assertions nothing checked. The release is now read off the ISO
+    /// and only displayed, and Core-ness is a property of the row picked rather than a
+    /// switch beside it — which also means client media, where nothing is Core and there
+    /// are eleven images rather than four, needs no special case.
+    fn ui_edition_picker(&mut self, ui: &mut Ui) {
+        let Some(info) = &self.media else {
+            // Reachable only if the media could not be read at all; stage 1 does not let
+            // an unreadable ISO through, so this is a belt-and-braces case.
+            if let Some(err) = &self.media_error {
+                problem_box(
+                    ui,
+                    theme::DANGER,
+                    "This media cannot be read",
+                    err,
+                );
+            }
+            return;
+        };
+
+        section(ui, "Which edition");
+
+        // A dropdown rather than a list of radios, because the list is as long as the
+        // media says: four on server media, eleven on the Windows 11 22H2 retail ISO,
+        // exactly one on the Windows 10 evaluation. Eleven radios pushed the password
+        // field off the first screen, and this stays one row tall whatever the media.
+        let selected = self
+            .chosen_image()
+            .map(|i| i.name.clone())
+            .unwrap_or_else(|| "Choose an edition".to_string());
+        let mut chosen = self.draft.image_index;
+        if info.images.len() == 1 {
+            // A picker with one option is furniture. Say what will be installed instead.
+            ui.label(RichText::new(&selected).color(theme::TEXT));
+        } else {
+            egui::ComboBox::from_id_salt("edition")
+                .selected_text(&selected)
+                .width(360.0)
+                .show_ui(ui, |ui| {
+                    for image in &info.images {
+                        ui.selectable_value(
+                            &mut chosen,
+                            Some(image.index),
+                            &image.name,
+                        );
+                    }
+                });
+        }
+        self.draft.image_index = chosen;
+
+        // The release is a fact read off the media, so it is stated rather than offered.
+        // It belongs here because this is the one place it changes what gets built.
+        let mut note = format!(
+            "{}, read from the media.",
+            info.release
+                .map(|r| r.label().to_string())
+                .unwrap_or_else(|| "An unrecognised Windows".to_string())
+        );
+        // Said once, under the list, rather than as a tag on every row: on server media
+        // half the images are Core and the distinction is the whole reason the picker is
+        // here, but on client media there is no Core image at all and the note would be
+        // noise.
+        if info.images.iter().any(wim::is_core_image) {
+            note.push_str(
+                " Editions ending in CORE have no graphical desktop — command line and \
+                 remote management only, and Remote Desktop is of little use on one.",
+            );
+        }
+        hint(ui, &note);
+
+        // Everything wrong with this media, and with this choice on it. The release
+        // warning is here rather than beside a picker because there is no picker to put
+        // it beside any more.
+        let mut notes: Vec<String> =
+            info.problems().into_iter().map(|p| p.message).collect();
+        if let Some(image) = self.chosen_image() {
+            notes.extend(
+                media::problems_for_image(image, self.draft.enable_rdp)
+                    .into_iter()
+                    .map(|p| p.message),
+            );
+        }
+        if !self.draft.release.verified_on_hardware() {
+            notes.push(format!(
+                "{} has not been installed on an Oxide rack by anyone yet. It is built \
+                 the same way Server 2022 is, but you would be the first to try it.",
+                self.draft.release.label()
+            ));
+        }
+        for note in notes {
+            ui.add_space(4.0);
+            hint(ui, &note);
+        }
+    }
+
+    /// The image the user picked, resolved against the media.
+    pub(crate) fn chosen_image(&self) -> Option<&wim::Image> {
+        let info = self.media.as_ref()?;
+        let index = self.draft.image_index?;
+        info.images.iter().find(|i| i.index == index)
     }
 
     // --- stage 2: settings -------------------------------------------------
@@ -212,33 +370,11 @@ impl App {
             .auto_shrink([false, false])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
-                // A picker with one option is not a choice, it is furniture. This
-                // reappears on its own once another release has been verified.
-                if WindowsRelease::ALL.len() > 1 {
-                    section(ui, "Windows release");
-                    ui.horizontal_wrapped(|ui| {
-                        for r in WindowsRelease::ALL {
-                            let mut label = RichText::new(r.label());
-                            if !r.verified_on_hardware() {
-                                label = label.color(theme::TEXT_DIM);
-                            }
-                            if ui
-                                .selectable_label(self.draft.release == *r, label)
-                                .clicked()
-                            {
-                                self.draft.release = *r;
-                            }
-                        }
-                    });
-                }
-
-                section(ui, "Which install");
-                for e in oxwin_core::Experience::ALL {
-                    if ui.radio(self.draft.experience == *e, e.label()).clicked() {
-                        self.draft.experience = *e;
-                    }
-                }
-                hint(ui, self.draft.experience.description());
+                // The media's own image list, in place of what used to be two radio
+                // groups the user had to get right unaided: which release this is, and
+                // Desktop against Core. The release is a fact read off the ISO, and
+                // Core-ness is a property of the row picked, not a separate switch.
+                self.ui_edition_picker(ui);
 
                 section(ui, "What is this image for?");
                 if ui
@@ -927,6 +1063,24 @@ fn dirs_ssh() -> Option<PathBuf> {
 
 /// A quick, non-blocking sanity note about the chosen source. Mounting the ISO to
 /// check properly happens at build time; doing it here would freeze the UI.
+/// One line naming what the media turned out to be.
+///
+/// The release is stated as a fact because it was read out of the media, not chosen —
+/// the point of saying it here is that a user who dropped the wrong ISO sees so at once.
+fn describe_detection(info: &MediaInfo) -> String {
+    let release = match (info.release, info.build_recognised) {
+        (Some(r), true) => r.label().to_string(),
+        (Some(r), false) => format!("{} (probably)", r.label()),
+        (None, _) => "an unrecognised Windows".to_string(),
+    };
+    format!(
+        "{release} · {} edition{} · {} media",
+        info.images.len(),
+        if info.images.len() == 1 { "" } else { "s" },
+        if info.is_evaluation() { "evaluation" } else { "retail or volume" },
+    )
+}
+
 pub(crate) fn describe_media(path: &Path) -> String {
     if path.is_dir() {
         let wim = path.join("sources/install.wim");
