@@ -90,20 +90,32 @@ with a message naming Arm64 and leaves no image behind.
 | Server 2022 | **Installed and verified** (the reference ISO) |
 | Server 2022 volume licensing | **Installed and verified** — proves the `_Default` licence channel |
 | Windows 10 22H2 | **Installed and verified** |
-| Server 2025 | Blocked on [propolis#1199](https://github.com/oxidecomputer/propolis/pull/1199) |
-| Windows 11 22H2 | Blocked on [propolis#1199](https://github.com/oxidecomputer/propolis/pull/1199) |
+| Server 2025 | Blocked, on two separate things — see below |
+| Windows 11 22H2 | Blocked, on two separate things — see below |
 
-Server 2025 and Windows 11 could not see any disk on Propolis: two defects in its NVMe
-emulation, unrelated to anything this builder produces. The same images install on KVM and
-under QEMU. See [NVME-SERVER2025-INVESTIGATION.md](NVME-SERVER2025-INVESTIGATION.md).
+Server 2025 and Windows 11 are held up by **two independent problems**, and fixing either
+one alone does not unblock them. Neither is caused by anything this builder produces:
 
-**The four verified installs predate two changes**, so they are not verification of the
-current tree: `pvpanic` and `viosock` were added to the driver payload (which changes the
-media contents of every image), and the answer file gained the `UpgradeData` element. Both
-are believed harmless — the drivers only remove two "unknown device" entries, and
-`UpgradeData` asserts what was already true for those releases — but neither has been
-re-tested on hardware. Re-verify at least Server 2022 before treating the current tree as
-proven.
+1. **Propolis NVMe emulation.** Both releases could see no disk at all — two defects,
+   diagnosed and fixed in
+   [propolis#1199](https://github.com/oxidecomputer/propolis/pull/1199). The same images
+   install on KVM and under QEMU. See
+   [NVME-SERVER2025-INVESTIGATION.md](NVME-SERVER2025-INVESTIGATION.md).
+2. **An NVMe controller fault on the rack itself**, reported 2026-08-27, which crashes
+   Server 2025 and Windows 11. Distinct from the emulation defects above and not yet
+   characterised here. Until it is understood, a green install of these two releases on
+   that rack cannot be distinguished from having got lucky.
+
+Both releases build correctly and are believed correct; what is missing is a rack that can
+run them long enough to prove it.
+
+**Re-verified 2026-08-27:** Server 2022 was installed again from the current tree, after
+`pvpanic` and `viosock` joined the driver payload and the answer file gained `UpgradeData`
+— changes that between them alter the media contents of every image and every answer file.
+Every device in the guest has a driver, so the two "unknown device" entries that prompted
+those drivers are gone. The other three verified rows (2019, 2022 VL, Windows 10) still
+predate those changes, but they share the payload and the answer-file generator with the
+row that was re-tested.
 
 ## Images built for hardware verification
 

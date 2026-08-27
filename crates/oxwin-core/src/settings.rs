@@ -194,17 +194,6 @@ impl WindowsRelease {
         WindowsRelease::Windows10,
         WindowsRelease::Windows11,
     ];
-
-    /// What a release radio button would offer. Only Server 2022 has installed on a
-    /// rack, and offering an untested release as an equal choice invites someone to pick
-    /// it and hit problems nobody has seen.
-    ///
-    /// This is on its way out: the release is detected from the media, so the honest
-    /// display is "this ISO is Windows Server 2025, which nobody has verified" rather
-    /// than a list of releases to assert. Kept until stage 2 is reshaped around the
-    /// media's own image list.
-    pub const OFFERED: &'static [WindowsRelease] =
-        &[WindowsRelease::Server2022];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -181,9 +181,9 @@ a payload directory instead of rebuilding, set `OXWIN_ASSETS` to it.
 | --- | --- |
 | Windows Server 2022 | **Verified** — installed on real Oxide hardware, with networking, SSH and RDP confirmed working |
 | Windows Server 2019 | **Verified** — installed on real Oxide hardware, with networking, SSH and RDP confirmed working |
-| Windows Server 2025 | Builds — [existing issue](https://github.com/oxidecomputer/propolis/pull/1199) will cause the install to fail |
+| Windows Server 2025 | Builds, but does not yet install — see [the two blockers](TESTED-MEDIA.md#hardware-verification-status) |
 | Windows 10 | **Verified** — installed on real Oxide hardware, with networking, SSH and RDP confirmed working |
-| Windows 11 | Builds — same as Server 2025, [existing issue](https://github.com/oxidecomputer/propolis/pull/1199) will cause the install to fail |
+| Windows 11 | Builds, but does not yet install — same two blockers as Server 2025 |
 | Any Arm64 release | Refused, with a message saying why. The drivers and answer file are amd64 only |
 
 **You do not tell the app which Windows you have — it reads the ISO and works it out.**

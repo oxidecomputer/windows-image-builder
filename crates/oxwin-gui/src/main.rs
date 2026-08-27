@@ -8,6 +8,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod icon;
 mod stages;
 mod stepper;
 mod theme;
@@ -16,7 +17,12 @@ fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([980.0, 720.0])
         .with_min_inner_size([760.0, 560.0])
-        .with_title("Windows Image Builder");
+        .with_title("Windows Image Builder")
+        .with_icon(icon::icon())
+        // The reverse-DNS id is what Wayland matches against a `.desktop` file and what
+        // GNOME shows in place of the binary name; without it the window is labelled
+        // `oxwin-gui`, which means nothing to the person running it.
+        .with_app_id("com.oxide.windows-image-builder");
 
     // Pin the window to a known spot when asked, so a screenshot can target this
     // window's rectangle alone. Without it the only option is capturing the whole
