@@ -281,7 +281,7 @@ impl App {
         // noise.
         if info.images.iter().any(wim::is_core_image) {
             note.push_str(
-                " Editions ending in CORE have no graphical desktop — command line and \
+                " Editions ending in CORE have no graphical desktop, command line and \
                  remote management only, and Remote Desktop is of little use on one.",
             );
         }
@@ -398,7 +398,19 @@ impl App {
                 if self.draft.golden {
                     hint(
                         ui,
-                        "Each clone gets its own random computer name, so no two machines collide.",
+                        "The installed machine takes a random computer name rather than \
+                         a fixed one.",
+                    );
+                    hint(
+                        ui,
+                        "Once the install finishes, the machine runs sysprep and shuts \
+                         itself down. That is what makes it cloneable: without it every \
+                         clone would keep this machine's name and SID.",
+                    );
+                    hint(
+                        ui,
+                        "So a golden image ends powered off, on purpose. Take the \
+                         snapshot then. Clones do not sysprep themselves again.",
                     );
                 } else {
                     ui.horizontal(|ui| {
@@ -488,7 +500,7 @@ impl App {
                 if self.draft.enable_rdp {
                     hint(
                         ui,
-                        "RDP also needs a VPC firewall rule allowing tcp/3389 — the default VPC \
+                        "RDP also needs a VPC firewall rule allowing tcp/3389, the default VPC \
                          allows only SSH and ICMP. See the Guided Install stage.",
                     );
                 }
@@ -689,8 +701,9 @@ impl App {
             .show(ui, |ui| {
                 hint(
                     ui,
-                    "Two ways to get this onto a rack. They are alternatives — pick whichever \
-                     suits your environment.",
+                    "Three ways to get this onto a rack, and they are alternatives. Saving the \
+                     file needs no network at all; uploading needs the login you \
+                     already have.",
                 );
 
                 section(ui, "Save the image file");
@@ -727,32 +740,219 @@ impl App {
                 }
 
                 section(ui, "Upload to a rack");
-                hint(
-                    ui,
-                    "In-app upload is not wired up yet. These are the commands that do it — \
-                     they use the login you already have from `oxide auth login`.",
-                );
-                hint(
-                    ui,
-                    "The 512-byte block size is required, not a preference: this image's \
-                     partition table is laid out in 512-byte sectors, and a disk with \
-                     larger blocks will not boot.",
-                );
-                ui.horizontal(|ui| {
-                    ui.label("Project");
-                    ui.add(egui::TextEdit::singleline(&mut self.project).desired_width(180.0));
-                    ui.add_space(12.0);
-                    ui.label("Disk name");
-                    ui.add(egui::TextEdit::singleline(&mut self.disk_name).desired_width(180.0));
-                });
-                let cmd = upload_command(&artifact, &self.project, &self.disk_name);
-                code_block(ui, &cmd);
-                if ui.button("Copy command").clicked() {
-                    ui.ctx().copy_text(cmd);
-                    self.notice = Some("Command copied.".into());
-                }
+                self.ui_upload(ui, &artifact);
                 ui.add_space(12.0);
             });
+    }
+
+    /// The upload path: pick a login, name things, and go.
+    ///
+    /// No disabled button with an unexplained reason — whatever is missing is said next
+    /// to the control, because the reason may otherwise be scrolled out of sight.
+    fn ui_upload(&mut self, ui: &mut Ui, artifact: &Path) {
+        use crate::app::{Upload, UploadGoal};
+
+        if self.profiles.is_empty() {
+            hint(
+                ui,
+                "No Oxide login found on this machine. Run `oxide auth login` and \
+                 restart, or set OXIDE_HOST and OXIDE_TOKEN. The commands below work \
+                 either way.",
+            );
+            self.ui_upload_commands(ui, artifact);
+            return;
+        }
+
+        hint(
+            ui,
+            "Uses the login you already have from `oxide auth login`. The image is \
+             uploaded with a 512-byte block size, which is required rather than \
+             preferred: this image's partition table is laid out in 512-byte sectors.",
+        );
+
+        // A ComboBox rather than radio buttons: the number of logins is data, and a
+        // control sized by data pushes everything below it around.
+        ui.horizontal(|ui| {
+            ui.label("Rack");
+            let selected = self
+                .profiles
+                .get(self.profile)
+                .map(|p| format!("{} — {}", p.name, p.host))
+                .unwrap_or_else(|| "none".into());
+            egui::ComboBox::from_id_salt("profile")
+                .selected_text(selected)
+                .width(360.0)
+                .show_ui(ui, |ui| {
+                    for (i, profile) in self.profiles.iter().enumerate() {
+                        ui.selectable_value(
+                            &mut self.profile,
+                            i,
+                            format!("{} — {}", profile.name, profile.host),
+                        );
+                    }
+                });
+        });
+
+        // An expired token fails as a 401 on the first request, which reads as the rack
+        // being broken rather than as a login having lapsed.
+        if self.profiles.get(self.profile).is_some_and(|p| p.is_expired_now()) {
+            ui.label(
+                RichText::new(
+                    "This login has expired — run `oxide auth login` again.",
+                )
+                .color(theme::WARNING)
+                .size(12.0),
+            );
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Project");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.project)
+                    .desired_width(180.0),
+            );
+            ui.add_space(12.0);
+            ui.label("Disk name");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.disk_name)
+                    .desired_width(180.0),
+            );
+        });
+
+        let mut whole = self.upload_goal == UploadGoal::WholeInstance;
+        if ui
+            .checkbox(&mut whole, "Also create the instance and install")
+            .changed()
+        {
+            self.upload_goal = if whole {
+                UploadGoal::WholeInstance
+            } else {
+                UploadGoal::DiskOnly
+            };
+        }
+        if whole {
+            ui.horizontal(|ui| {
+                ui.label("Instance");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.instance_name)
+                        .desired_width(180.0),
+                );
+                ui.add_space(12.0);
+                ui.label("System disk GiB");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.system_disk_gib)
+                        .desired_width(70.0),
+                );
+            });
+            hint(
+                ui,
+                "The installer is pinned as the boot disk. It is safe to leave \
+                 attached — the media boots the installed Windows once there is one.",
+            );
+        }
+
+        ui.add_space(8.0);
+        match &self.upload {
+            Upload::Running(run) => {
+                let fraction = run.fraction.unwrap_or(0.0);
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .desired_width(420.0)
+                        .text(run.detail.clone()),
+                );
+                if ui.button("Cancel").clicked() {
+                    run.cancel.cancel();
+                }
+                hint(
+                    ui,
+                    "Cancelling stops the import cleanly. Closing the app instead \
+                     leaves the disk mid-import, where it refuses deletion until it is \
+                     stopped and finalized.",
+                );
+            }
+            Upload::Done { outcome, elapsed } => {
+                ui.label(
+                    RichText::new(format!(
+                        "Uploaded {} in {} — {:.2} GiB sent, {:.2} GiB of zeroes \
+                         skipped",
+                        outcome.disk,
+                        fmt_duration(*elapsed),
+                        outcome.sent as f64 / 1073741824.0,
+                        outcome.skipped as f64 / 1073741824.0
+                    ))
+                    .color(theme::PRIMARY)
+                    .size(12.0),
+                );
+                if let Some(instance) = &outcome.instance {
+                    ui.label(
+                        RichText::new(format!(
+                            "Instance {instance} created and starting"
+                        ))
+                        .color(theme::PRIMARY)
+                        .size(12.0),
+                    );
+                }
+                for warning in &outcome.warnings {
+                    ui.label(
+                        RichText::new(warning).color(theme::WARNING).size(11.5),
+                    );
+                }
+            }
+            Upload::Failed(failure) => {
+                ui.label(
+                    RichText::new(&failure.message)
+                        .color(theme::DANGER)
+                        .size(12.0),
+                );
+                if !failure.leftovers.is_empty() {
+                    hint(
+                        ui,
+                        "These were created and have been left in place, so a long \
+                         upload is not thrown away by a later failure:",
+                    );
+                    for command in &failure.leftovers {
+                        code_block(ui, command);
+                    }
+                }
+                if ui.button("Try again").clicked() {
+                    self.start_upload();
+                }
+            }
+            Upload::Idle => {
+                let ready = !self.project.trim().is_empty()
+                    && !self.disk_name.trim().is_empty();
+                if ready {
+                    if ui.button("Upload to the rack").clicked() {
+                        self.start_upload();
+                    }
+                } else {
+                    // Say what is wrong rather than showing a dead button.
+                    ui.label(
+                        RichText::new(
+                            "Name a project and a disk to enable the upload.",
+                        )
+                        .color(theme::TEXT_DIM)
+                        .size(12.0),
+                    );
+                }
+            }
+        }
+
+        ui.add_space(8.0);
+        ui.collapsing("Or run it yourself", |ui| {
+            self.ui_upload_commands(ui, artifact);
+        });
+    }
+
+    /// The copyable commands. Still here, and still complete: an airgapped rack, or
+    /// someone else doing the upload, must not depend on this app reaching a network.
+    fn ui_upload_commands(&mut self, ui: &mut Ui, artifact: &Path) {
+        let cmd = upload_command(artifact, &self.project, &self.disk_name);
+        code_block(ui, &cmd);
+        if ui.button("Copy command").clicked() {
+            ui.ctx().copy_text(cmd);
+            self.notice = Some("Command copied.".into());
+        }
     }
 
     // --- stage 5: guided install ------------------------------------------

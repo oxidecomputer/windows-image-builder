@@ -54,9 +54,14 @@ You can also start the app with a file: `cargo run -p oxwin-gui -- path/to/windo
 **Is this a golden image, or one specific machine?**
 
 - **Golden image** — a template. You install it once, then clone it for every future
-  Windows machine. Each clone gets its own randomly generated computer name, so no two
-  machines end up fighting over the same name on the network. Choose this if you are
-  not sure; it is the more useful thing to have.
+  Windows machine. The installed machine takes a randomly generated computer name rather
+  than a fixed one. Choose this if you are not sure; it is the more useful thing to have.
+
+  **A golden image ends powered off, and that is the point.** Once the install
+  finishes, the machine generalizes itself with sysprep and shuts down. That is what
+  makes it cloneable — without it every clone would keep this machine's name *and* its
+  SID, which is the problem a golden image exists to avoid. Take your snapshot once it
+  has stopped. Clones do not generalize themselves again.
 - **One specific machine** — you type the computer name, and it keeps it. Up to 15
   characters, letters, digits and hyphens.
 
@@ -97,12 +102,27 @@ you are curious or something looks wrong.
 
 ### 4. Export
 
-Two ways to get the image onto a rack. They are alternatives — pick one.
+Three ways to get the image onto a rack. They are alternatives — pick one.
 
 - **Save the image file.** Writes the image wherever you want. Use this if your rack
   is airgapped, or if someone else does uploads. Nothing else is needed from this app.
-- **Upload to a rack.** The app writes out the exact commands and you run them.
-  (Uploading from inside the app is not built yet.)
+- **Upload it as a disk.** The app uploads the image itself, using the login you already
+  have from `oxide auth login`, with a progress bar. Pick which rack if you are logged
+  into more than one.
+- **Upload it and build the instance.** The same upload, and then the blank system disk
+  and the instance, booting from the installer with an external IP so you can reach it.
+  This is the whole of stage 5 done for you.
+
+The equivalent commands are still there under "Or run it yourself". Nothing on this
+screen depends on the app being able to reach your rack.
+
+If you would rather script it, the CLI does the same three things:
+
+```
+oxwin build <iso> out.img --password=… --name=…
+oxwin upload out.img --project=<p> --disk=<name>
+oxwin instance <name> --project=<p> --installer-disk=<name>
+```
 
 ### 5. Guided Install
 

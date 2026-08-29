@@ -114,7 +114,7 @@ fn server_editions(year: u16) -> Vec<Edition> {
 ///
 /// Far more than server media carries, and the choice matters beyond the name: **Home has
 /// no RDP host and cannot domain-join**, so it is reachable over SSH and the serial
-/// console and not by Remote Desktop. There is no Core variant — `INSTALLATIONTYPE` is
+/// console and not by Remote Desktop. There is no Core variant: `INSTALLATIONTYPE` is
 /// `Client` on every image, which is also why Windows 11 Home being `FLAGS=Core` fooled
 /// the old Core test.
 fn client_editions(release: &str) -> Vec<Edition> {
@@ -166,10 +166,22 @@ pub struct Config {
     pub timezone: String,
     pub product_key: Option<String>,
     /// Console autologon. For debugging installs only.
+    ///
+    /// Off in every real path, and deliberately so: it exists to make a hang at the
+    /// logon screen debuggable, not to be part of a build. Nothing that ships needs it,
+    /// in particular [`Config::generalize`] runs from a SYSTEM scheduled task rather
+    /// than `FirstLogonCommands`, precisely so that automating the golden image does not
+    /// drag an autologon back in.
     pub auto_logon: bool,
+    /// Generalize the machine once the install has finished, so its disk can be cloned.
+    ///
+    /// Only meaningful for a golden image. `<ComputerName>*</ComputerName>` alone is not
+    /// enough, it resolves once, during `specialize`, so without `sysprep /generalize`
+    /// every clone keeps one name and one SID.
+    pub generalize: bool,
     /// Where Setup writes `setupact.log` and `setuperr.log`.
     ///
-    /// `None` leaves Setup's default, which during `windowsPE` is the WinPE RAM disk — so
+    /// `None` leaves Setup's default, which during `windowsPE` is the WinPE RAM disk, so
     /// an install that stalls there takes its own explanation down with it on reset. That
     /// is why a rack hang has been unreadable. Point this at the installer volume, which
     /// is writable and survives, and the logs can be read afterwards by attaching that
@@ -183,7 +195,7 @@ pub struct Config {
     ///
     /// **On an Oxide guest `OnError` means an infinite hang.** There is no console to show
     /// UI on, so Setup waits forever for a click nobody can make, and from the outside
-    /// that is indistinguishable from a slow install. `Never` makes it fail fast instead —
+    /// that is indistinguishable from a slow install. `Never` makes it fail fast instead,
     /// worse for a human at a keyboard, far better for a machine nobody is watching.
     pub show_ui_on_error: bool,
     /// Emit a serial marker at the end of `windowsPE` and the start of `specialize`, not
@@ -191,7 +203,7 @@ pub struct Config {
     ///
     /// Diagnostic, and off by default so the answer file stays byte-identical to the one
     /// that has installed on a rack. With one marker a hang is only ever "it started";
-    /// with three, the console says which pass it died in — and Setup renders to graphics
+    /// with three, the console says which pass it died in, and Setup renders to graphics
     /// an Oxide instance does not have, so these markers are the only view there is.
     pub verbose_serial: bool,
     /// Index of the image to install, read from the WIM's own metadata. Preferred over
@@ -207,7 +219,7 @@ pub struct Config {
     /// Volume label to pin to a drive letter with diskpart before Setup looks for
     /// `install.wim`.
     pub install_from_label: Option<String>,
-    /// Public keys authorised for SSH. Read only by the bootstrap script — the answer
+    /// Public keys authorised for SSH. Read only by the bootstrap script, the answer
     /// file has nowhere to put them, since the account does not exist until
     /// `oobeSystem` and sshd is configured in `specialize`.
     pub ssh_keys: Vec<String>,
@@ -225,7 +237,7 @@ impl Config {
         Self {
             release: settings.release,
             // One convention, not two. This used to append `-core` here while
-            // `Settings::edition_hint` appended `core`, for the same fact — and neither
+            // `Settings::edition_hint` appended `core`, for the same fact, and neither
             // spelling is needed now that Core-ness is a property of the image the user
             // picked out of the media's own list rather than a separate switch.
             edition: settings.edition.trim().to_lowercase(),
@@ -243,6 +255,7 @@ impl Config {
             timezone: "UTC".into(),
             product_key: settings.product_key.clone(),
             auto_logon: false,
+            generalize: settings.deployment.is_golden(),
             log_path: None,
             show_ui_on_error: true,
             verbose_serial: false,
@@ -297,14 +310,14 @@ pub fn build(config: &Config) -> Result<String> {
         ),
     };
 
-    // Joined with a newline, exactly as the original does — which means a pass that
+    // Joined with a newline, exactly as the original does, which means a pass that
     // returns an empty string leaves a blank line in the output. Preserved on purpose:
     // the reference file has it, and this is a byte-for-byte port.
     let settings = [
         windows_pe_pass(config, &target, edition)?,
         offline_servicing_pass(config),
         specialize_pass(config)?,
-        oobe_pass(config),
+        oobe_pass(config, false),
     ];
 
     Ok(format!(
@@ -347,6 +360,38 @@ fn run_synchronous_commands(commands: &[Command]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The answer file handed to `sysprep /generalize /unattend:`.
+///
+/// **Windows scrubs the password out of the answer file it caches.** After Setup has
+/// processed `autounattend.xml` it writes a copy to `C:\Windows\Panther\unattend.xml`
+/// with every `<Password>` replaced by the literal `*SENSITIVE*DATA*DELETED*`. A
+/// `sysprep /generalize` with no `/unattend:` falls back to exactly that file, so the
+/// `oobeSystem` pass cannot create the local account, OOBE stops and waits for a human,
+/// and the machine sits at the out-of-box wizard forever. Verified on a rack: the guest
+/// came up with `OOBEInProgress=1`, an IP, working drivers and no reachable Remote
+/// Desktop — because the RDP listener does not accept connections until OOBE finishes.
+/// `fDenyTSConnections` was already `0`; nothing was wrong with RDP itself.
+///
+/// So a golden build carries its own copy, with the password intact, and names it
+/// explicitly.
+///
+/// Two passes only. `windowsPE` is left out deliberately — it carries
+/// `DiskConfiguration`, and an answer file that could repartition a disk has no business
+/// being handed to sysprep, however sure one is that Windows ignores it outside Setup.
+/// `offlineServicing` is omitted because the drivers are already installed.
+///
+/// `specialize` *is* included: it re-resolves `<ComputerName>*</ComputerName>` so every
+/// clone gets its own name, which is the entire point. Its `RunSynchronousCommand` looks
+/// for `setup\bootstrap.ps1` across the filesystem drives and simply matches nothing on
+/// a clone, exiting zero rather than failing the pass.
+pub fn build_sysprep(config: &Config) -> Result<String> {
+    let settings = [specialize_pass(config)?, oobe_pass(config, true)];
+    Ok(format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<unattend {NS}>\n{}\n</unattend>\n",
+        settings.join("\n")
+    ))
 }
 
 fn windows_pe_pass(
@@ -722,7 +767,23 @@ fn specialize_pass(config: &Config) -> Result<String> {
     ))
 }
 
-fn oobe_pass(config: &Config) -> String {
+/// The `oobeSystem` pass.
+///
+/// `international` adds `Microsoft-Windows-International-Core`, which is **only** wanted
+/// for the sysprep answer file. On a normal install the locale is set by
+/// `Microsoft-Windows-International-Core-WinPE` in the `windowsPE` pass, which satisfies
+/// OOBE's Localization page so it never appears.
+///
+/// **`windowsPE` does not run on a generalize cycle.** Nothing sets the locale, the
+/// Localization page becomes active, and OOBE stops there waiting for a click — on a
+/// guest with no framebuffer, forever. Caught on a rack, in `UnattendGC\\setupact.log`:
+/// the original install logged `SETACTIVE: wizard page for page End`, and the cycle
+/// after sysprep logged `SETACTIVE: wizard page for page Localization` and went silent.
+/// Everything else had succeeded — `ComputerName set to OXIDEOX-F893NMJ`,
+/// `UserAccounts: Password set for 'oxide'`, `oobeSystem` exiting `0x00000000`.
+///
+/// It stays off for the normal build so the committed goldens do not move.
+fn oobe_pass(config: &Config, international: bool) -> String {
     let auto_logon = if config.auto_logon {
         format!(
             "      <AutoLogon>\n\
@@ -741,8 +802,25 @@ fn oobe_pass(config: &Config) -> String {
         String::new()
     };
 
+    // Ahead of Shell-Setup, so the locale is established before the OOBE settings that
+    // depend on it.
+    let international = if international {
+        format!(
+            "    <component name=\"Microsoft-Windows-International-Core\" {ARCH}>\n\
+             \x20     <InputLocale>{locale}</InputLocale>\n\
+             \x20     <SystemLocale>{locale}</SystemLocale>\n\
+             \x20     <UILanguage>{locale}</UILanguage>\n\
+             \x20     <UserLocale>{locale}</UserLocale>\n\
+             \x20   </component>\n",
+            locale = xml_escape(&config.locale)
+        )
+    } else {
+        String::new()
+    };
+
     format!(
         "  <settings pass=\"oobeSystem\">\n\
+         {international}\
          \x20   <component name=\"Microsoft-Windows-Shell-Setup\" {ARCH}>\n\
          \x20     <OOBE>\n\
          \x20       <HideEULAPage>true</HideEULAPage>\n\
@@ -804,6 +882,7 @@ mod tests {
             timezone: "UTC".into(),
             product_key: None,
             auto_logon: false,
+            generalize: false,
             verbose_serial: false,
             log_path: None,
             show_ui_on_error: true,
@@ -818,7 +897,7 @@ mod tests {
     }
 
     /// Every branch in the generator. The slug is the golden's filename and the label
-    /// is prose for a failure message — kept separate on purpose, because deriving the
+    /// is prose for a failure message, kept separate on purpose, because deriving the
     /// filename from the label would let a reworded label silently orphan a golden.
     fn cases() -> Vec<(&'static str, &'static str, Config)> {
         vec![
@@ -1021,6 +1100,71 @@ mod tests {
             cases.len(),
             failures.join("\n")
         );
+    }
+
+    /// The Localization page is what actually stalled a rack guest, and only the sysprep
+    /// answer file can prevent it: `windowsPE` sets the locale on a normal install and
+    /// does not run on a generalize cycle.
+    #[test]
+    fn the_sysprep_answer_file_sets_the_locale_for_oobe() {
+        let xml = build_sysprep(&base()).unwrap();
+        assert!(
+            xml.contains("Microsoft-Windows-International-Core\""),
+            "without this OOBE stops on the Localization page and waits for a click"
+        );
+        for field in ["InputLocale", "SystemLocale", "UILanguage", "UserLocale"]
+        {
+            assert!(
+                xml.contains(&format!("<{field}>en-US</{field}>")),
+                "{field} is not set"
+            );
+        }
+    }
+
+    /// And it must stay out of the normal answer file, whose bytes are pinned by a
+    /// golden that came from the builder that has installed on real hardware.
+    #[test]
+    fn the_normal_answer_file_is_unchanged_by_that() {
+        let xml = build(&base()).unwrap();
+        assert!(!xml.contains("Microsoft-Windows-International-Core\""));
+        // The WinPE one is a different component and stays where it was.
+        assert!(xml.contains("Microsoft-Windows-International-Core-WinPE"));
+    }
+
+    /// The whole point of the sysprep answer file is that it still has the password.
+    ///
+    /// Windows replaces it with `*SENSITIVE*DATA*DELETED*` in the copy it caches, which
+    /// is why relying on that copy left a rack guest stuck at the out-of-box wizard with
+    /// `OOBEInProgress=1`.
+    #[test]
+    fn the_sysprep_answer_file_keeps_the_password() {
+        let xml = build_sysprep(&base()).unwrap();
+        assert!(xml.contains("0xide!230xide!23"), "the password was lost");
+        assert!(!xml.contains("SENSITIVE"));
+    }
+
+    /// It must not be able to touch a disk. `windowsPE` carries `DiskConfiguration`,
+    /// which formats and repartitions; Windows ignores that pass outside Setup, but an
+    /// answer file handed to sysprep should not contain it in the first place.
+    #[test]
+    fn the_sysprep_answer_file_cannot_repartition_anything() {
+        let xml = build_sysprep(&base()).unwrap();
+        assert!(!xml.contains("windowsPE"), "windowsPE must not be included");
+        assert!(!xml.contains("DiskConfiguration"));
+        assert!(!xml.contains("offlineServicing"));
+        // And it must still do the two jobs it exists for.
+        assert!(xml.contains("<settings pass=\"specialize\">"));
+        assert!(xml.contains("<settings pass=\"oobeSystem\">"));
+    }
+
+    /// A golden image re-resolves its name on every clone. That only happens because
+    /// `specialize` is in this file; without it each clone keeps the template's name.
+    #[test]
+    fn the_sysprep_answer_file_re_randomises_the_computer_name() {
+        let xml =
+            build_sysprep(&Config { computer_name: "*".into(), ..base() })
+                .unwrap();
+        assert!(xml.contains("<ComputerName>*</ComputerName>"));
     }
 
     /// Adding a release to `WindowsRelease::ALL` without adding a golden for it leaves

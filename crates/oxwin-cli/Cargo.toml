@@ -14,3 +14,5 @@ workspace = true
 [dependencies]
 oxwin-core.workspace = true
 anyhow.workspace = true
+oxwin-rack = { version = "0.1.0", path = "../oxwin-rack" }
+ctrlc = "3.5.2"

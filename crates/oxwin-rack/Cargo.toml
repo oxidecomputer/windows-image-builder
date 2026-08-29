@@ -1,0 +1,22 @@
+[package]
+name = "oxwin-rack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Talking to an Oxide rack: profiles, disk upload, instance creation. No UI, no CLI, no TTY."
+
+[lints]
+workspace = true
+
+[dependencies]
+oxwin-core.workspace = true
+anyhow.workspace = true
+oxide = "0.18"
+tokio = { version = "1", features = ["rt"] }
+# Reading the credentials file the `oxide` CLI writes. The SDK models it
+# (`CredentialsFile`) but leaves loading it to the caller.
+toml = "0.9"
+# Only for the token-expiry check. Already in the SDK's tree, so it adds nothing.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+serde.workspace = true
+futures = "0.3.34"

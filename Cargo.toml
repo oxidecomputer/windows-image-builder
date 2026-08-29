@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/oxwin-core", "crates/oxwin-gui", "crates/oxwin-cli"]
+members = [
+    "crates/oxwin-core",
+    "crates/oxwin-rack",
+    "crates/oxwin-gui",
+    "crates/oxwin-cli",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,6 +14,7 @@ license = "MPL-2.0"
 
 [workspace.dependencies]
 oxwin-core = { path = "crates/oxwin-core" }
+oxwin-rack = { path = "crates/oxwin-rack" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

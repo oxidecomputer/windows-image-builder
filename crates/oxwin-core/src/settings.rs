@@ -16,11 +16,19 @@ use std::path::PathBuf;
 /// Is this image for one specific machine, or a template many machines clone?
 ///
 /// This is not just a hostname switch. A golden image is copied, so anything
-/// unique baked into it stops being unique the moment it is cloned — which is why
+/// unique baked into it stops being unique the moment it is cloned, which is why
 /// [`Credentials`] is constrained by this choice rather than sitting beside it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Deployment {
-    /// Sysprep-style template. Windows generates a random name on each clone.
+    /// A template meant to be cloned.
+    ///
+    /// Sets `<ComputerName>*</ComputerName>`, so Setup picks a random name instead of a
+    /// fixed one. **That is all it does, and on its own it is not enough.** `*` is
+    /// resolved once, during `specialize`; a clone of the resulting disk keeps the name
+    /// that was picked, and the machine SID with it. Windows re-runs `specialize` — and
+    /// so re-resolves `*` — only after `sysprep /generalize`, which nothing in this
+    /// workspace runs. Automating that is v0.4; until then it is the user's step, and
+    /// the UI says so rather than letting a cloned fleet discover it.
     GoldenImage,
     /// One machine that keeps the name it is given.
     Named { hostname: String },
@@ -46,7 +54,7 @@ impl Deployment {
 /// A password is not optional on Windows, however much we might prefer keys. The
 /// serial console (SAC) and Remote Desktop both authenticate with a password and
 /// have no notion of an SSH key, so a key-only account produces a machine reachable
-/// over SSH and nowhere else — including from the serial console, which is the one
+/// over SSH and nowhere else, including from the serial console, which is the one
 /// way in when something has gone wrong. SSH keys are therefore additive: they make
 /// SSH passwordless, they do not replace the password.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,7 +108,7 @@ pub fn generate_password() -> String {
 ///
 /// Not a preference: the media says which of these it is, and [`crate::media::inspect`]
 /// reads it. A user-asserted release is unchecked by anything, and picking the wrong one
-/// fails the way everything here fails — the build succeeds and the install looks fine,
+/// fails the way everything here fails, the build succeeds and the install looks fine,
 /// with the hardware-check bypasses in the wrong state and server edition names on client
 /// media.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,8 +144,18 @@ impl WindowsRelease {
 
     /// Whether we have actually booted this on an Oxide rack. The UI should say
     /// so rather than implying equal support.
+    ///
+    /// Kept in step with the hardware table in `TESTED-MEDIA.md`, which is the record.
+    /// Server 2025 and Windows 11 are absent deliberately: both build correctly and
+    /// neither has installed on a rack, blocked on propolis#1199 and on an NVMe
+    /// controller fault on the rack itself.
     pub fn verified_on_hardware(self) -> bool {
-        matches!(self, WindowsRelease::Server2022)
+        matches!(
+            self,
+            WindowsRelease::Server2019
+                | WindowsRelease::Server2022
+                | WindowsRelease::Windows10
+        )
     }
 
     /// Client (Windows 10/11) rather than server.
@@ -152,7 +170,7 @@ impl WindowsRelease {
     /// virtio-win's directory name for this release, and the key into the payload
     /// manifest's `drivers` map.
     ///
-    /// The one place this mapping lives. It used to exist twice — a `match` in
+    /// The one place this mapping lives. It used to exist twice: a `match` in
     /// `builder.rs` whose `_` arm handed 2k22 drivers to everything that was not Windows
     /// 11, and a field in `unattend::Target` that nothing read. `tools/fetch-payload.sh`
     /// fetches exactly these five names, and a test asserts the embedded payload carries
@@ -173,7 +191,7 @@ impl WindowsRelease {
     /// says 19045 reports 19041, so this can never be the number a filename implies.
     ///
     /// Windows 11 has several because each annual release bumps it, and 26100 appears
-    /// here *and* under Server 2025 — the same build number ships as both, which is why
+    /// here *and* under Server 2025: the same build number ships as both, which is why
     /// nothing may key on the build alone. `is_client` is what separates them.
     pub fn base_builds(self) -> &'static [u32] {
         match self {
@@ -203,7 +221,7 @@ pub struct Settings {
     pub release: WindowsRelease,
     /// Which image to install, as an index, an `EDITIONID` or part of a name. Resolved
     /// against the media's own image list by [`crate::wim::select_image`]. Empty means
-    /// no preference, and [`crate::media::default_image`] chooses — which is the default,
+    /// no preference, and [`crate::media::default_image`] chooses, which is the default,
     /// because `datacenter` is not an edition any client media carries.
     pub edition: String,
     pub deployment: Deployment,
@@ -263,7 +281,7 @@ impl Problem {
 impl Settings {
     /// The hint the image chooser gets.
     ///
-    /// An image index, an `EDITIONID`, or any substring of a name — whatever the caller
+    /// An image index, an `EDITIONID`, or any substring of a name, whatever the caller
     /// has. The GUI fills it with the index of the row picked out of the media's own
     /// image list, which is the only unambiguous selector: two images on server media
     /// share `ServerDatacenterEval`, differing only in Core-ness.
@@ -474,6 +492,21 @@ mod tests {
         }
     }
 
+    /// A warning shown against a release somebody has actually installed is noise, and
+    /// noise is how a real warning gets ignored. This exists so that moving a release
+    /// between the two lists is a deliberate edit rather than something nobody notices.
+    #[test]
+    fn the_verified_list_matches_the_hardware_record() {
+        use WindowsRelease::*;
+        for release in [Server2019, Server2022, Windows10] {
+            assert!(release.verified_on_hardware(), "{release:?}");
+        }
+        // Blocked on propolis#1199 and a rack NVMe fault — see TESTED-MEDIA.md.
+        for release in [Server2025, Windows11] {
+            assert!(!release.verified_on_hardware(), "{release:?}");
+        }
+    }
+
     #[test]
     fn golden_image_gets_a_random_computer_name() {
         assert_eq!(Deployment::GoldenImage.computer_name(), "*");
@@ -609,7 +642,7 @@ mod tests {
     /// The hint is passed through untouched apart from case and whitespace.
     ///
     /// It used to have `core` appended here when a separate Desktop/Core switch was set,
-    /// while `Config::from_settings` appended `-core` for the same fact — two spellings
+    /// while `Config::from_settings` appended `-core` for the same fact, two spellings
     /// of one thing. Core-ness now comes from the image chosen out of the media's own
     /// list, so there is nothing left to append and nothing left to disagree about.
     #[test]

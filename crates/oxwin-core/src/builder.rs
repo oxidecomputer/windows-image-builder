@@ -345,7 +345,7 @@ fn assemble(
         )?;
         p1.add_file(
             "/setup/bootstrap.ps1",
-            bootstrap::build(&config).into_bytes(),
+            bootstrap::build(&config)?.into_bytes(),
         )?;
     }
 
@@ -796,6 +796,7 @@ mod whole_image {
                 timezone: "UTC".into(),
                 product_key: None,
                 auto_logon: false,
+                generalize: false,
                 verbose_serial: false,
                 log_path: None,
                 show_ui_on_error: true,

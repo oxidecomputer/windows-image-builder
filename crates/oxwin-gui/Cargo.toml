@@ -17,3 +17,4 @@ anyhow.workspace = true
 eframe = "0.36.1"
 egui = "0.36.1"
 rfd = "0.17.2"
+oxwin-rack = { version = "0.1.0", path = "../oxwin-rack" }

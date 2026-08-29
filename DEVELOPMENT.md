@@ -276,7 +276,7 @@ Two things worth preserving:
 ## Testing
 
 ```
-cargo test              # 149 tests, no rack, ISO or payload download required
+cargo test              # 181 tests, no rack, ISO or payload download required
 cargo clippy --all-targets
 
 # The gated ones, when the artefacts are to hand:

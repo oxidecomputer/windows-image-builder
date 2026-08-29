@@ -26,6 +26,7 @@
 //! bottom.
 
 use crate::unattend::Config;
+use anyhow::Result;
 
 /// Append a block of literal lines. Split on LF so a multi-line literal in the source
 /// reads the way it will in the guest; the CRLF join happens once, at the end.
@@ -37,7 +38,7 @@ fn push(lines: &mut Vec<String>, block: &str) {
 
 /// Build the script. CRLF throughout, because it is read by PowerShell on Windows off
 /// a volume that may be mounted read-only.
-pub fn build(config: &Config) -> String {
+pub fn build(config: &Config) -> Result<String> {
     let keys: Vec<&str> = config
         .ssh_keys
         .iter()
@@ -247,7 +248,113 @@ try {
 Log "Oxide guest bootstrap complete""#,
     );
 
-    lines.join("\r\n") + "\r\n"
+    // A golden image has to be generalized, or every clone shares one name and one SID.
+    //
+    // **The sysprep cannot happen at this point in the script.** Everything here runs in
+    // the `specialize` pass, which is *before* `oobeSystem`: no account exists yet, OOBE
+    // has not run, and the machine is not a finished install. Generalizing here would
+    // seal a half-built one.
+    //
+    // it also cant hang off `FirstLogonCommands`, which fires only on an interactive logon
+    // and so would mean turning autologon on, trading a cloning problem for a console
+    // session nobody is can see.
+    //
+    // So what this block emits is only the *registration*: a SYSTEM task that fires at
+    // every startup, does nothing while Setup is still running, and generalizes on the
+    // first boot where Setup reports itself finished.
+    if config.generalize {
+        // Its own copy of the answer file, with the password still in it. See
+        // `unattend::build_sysprep`: the copy Windows caches has the password replaced
+        // by `*SENSITIVE*DATA*DELETED*`, so a sysprep that falls back to it leaves the
+        // clone stuck at the out-of-box wizard.
+        let sysprep_xml = crate::unattend::build_sysprep(config)?;
+        push(
+            &mut lines,
+            r#"
+# Golden image: generalize after the install finishes, so this disk can be cloned.
+$genDir = "$env:SystemRoot\Setup\Scripts"
+$gen = "$genDir\oxide-generalize.ps1"
+$unattend = "$env:SystemRoot\System32\Sysprep\oxide-unattend.xml"
+New-Item -ItemType Directory -Force -Path $genDir | Out-Null"#,
+        );
+        // The answer file, verbatim, inside a single-quoted here-string so nothing in it
+        // is expanded by PowerShell on the way to disk.
+        push(
+            &mut lines,
+            "Set-Content -LiteralPath $unattend -Encoding UTF8 -Value @'",
+        );
+        push(&mut lines, sysprep_xml.trim_end());
+        push(&mut lines, "'@");
+        push(
+            &mut lines,
+            r#"# A single-quoted here-string: nothing below is expanded now. It is expanded on the
+# machine, on a later boot, by the task registered underneath it.
+Set-Content -LiteralPath $gen -Encoding ASCII -Value @'
+$ErrorActionPreference = 'Continue'
+$log = "$env:SystemDrive\oxide-bootstrap.log"
+function GLog($m) {
+  "$(Get-Date -Format o)  generalize: $m" | Tee-Object -FilePath $log -Append
+}
+# Written before sysprep runs, so it is captured into the image. A clone therefore
+# finds it and does nothing. Without this every clone would generalize itself and
+# shut down on first boot, which is a fleet that turns itself off.
+$marker = "$env:SystemDrive\oxide-generalized.txt"
+if (Test-Path $marker) {
+  GLog "already generalized; this is a clone, nothing to do"
+  Unregister-ScheduledTask -TaskName 'OxideGeneralize' -Confirm:$false -ErrorAction SilentlyContinue
+  exit 0
+}
+# The task fires at every startup, including boots where Setup is still working. Do
+# nothing until it has finished and let the next boot try again.
+$setup = Get-ItemProperty -Path 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue
+if ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {
+  GLog "Setup still in progress; waiting for the next boot"
+  exit 0
+}
+$unattend = "$env:SystemRoot\System32\Sysprep\oxide-unattend.xml"
+if (-not (Test-Path $unattend)) {
+  GLog "WARNING: $unattend is missing. Sysprep would fall back to the cached answer"
+  GLog "file, whose password Windows has already deleted, and the clone would stop at"
+  GLog "the out-of-box wizard. Refusing to generalize."
+  exit 1
+}
+GLog "install finished; generalizing for cloning with $unattend"
+Set-Content -LiteralPath $marker -Value (Get-Date -Format o)
+Unregister-ScheduledTask -TaskName 'OxideGeneralize' -Confirm:$false -ErrorAction SilentlyContinue
+& "$env:SystemRoot\System32\Sysprep\sysprep.exe" /generalize /oobe /shutdown /unattend:"$unattend"
+$code = $LASTEXITCODE
+# Branch on the exit code, NOT on reaching this line. sysprep /shutdown returns
+# straight away and Windows powers off a moment later, so everything below runs on
+# success too unless it is guarded. Getting that wrong produced an infinite loop on a
+# rack: sysprep succeeded, the lines below removed the marker and put the task back,
+# and so every subsequent boot generalized the machine and shut it down again.
+if ($code -eq 0) {
+  GLog "sysprep accepted; the machine is shutting down. Snapshot it once it stops."
+  exit 0
+}
+GLog "sysprep FAILED with exit code $code; see C:\Windows\System32\Sysprep\Panther"
+# Only now: undo the marker and put the task back, so a real failure retries rather
+# than leaving a machine that looks generalized and is not.
+Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+$t = New-ScheduledTaskTrigger -AtStartup
+$p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName 'OxideGeneralize' -Action $a -Trigger $t -Principal $p -Force | Out-Null
+'@
+# Wrapped, because $ErrorActionPreference is 'Stop' for this script: a failure to
+# register the task would otherwise abort the bootstrap without saying why, and the
+# machine would come up looking fine and never generalize.
+try {
+  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$gen`""
+  $trigger = New-ScheduledTaskTrigger -AtStartup
+  $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+  Register-ScheduledTask -TaskName 'OxideGeneralize' -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+  Log "golden image: OxideGeneralize registered; the machine will sysprep and shut down once Setup finishes"
+} catch { Log "WARNING: could not register OxideGeneralize, so this image will NOT be generalized: $_" }"#,
+        );
+    }
+
+    Ok(lines.join("\r\n") + "\r\n")
 }
 
 #[cfg(test)]
@@ -272,6 +379,7 @@ mod tests {
             timezone: "UTC".into(),
             product_key: None,
             auto_logon: false,
+            generalize: false,
             verbose_serial: false,
             log_path: None,
             show_ui_on_error: true,
@@ -282,6 +390,69 @@ mod tests {
             install_from_label: None,
             ssh_keys: Vec::new(),
             enable_ssh: true,
+        }
+    }
+
+    /// Sysprep must never appear in a build that is not a golden image.
+    ///
+    /// Generalizing a machine somebody asked to be one specific named machine would
+    /// wipe its identity and shut it down on first boot, an unrecoverable surprise, and
+    /// exactly the kind of thing a `..base()` slip introduces silently.
+    #[test]
+    fn only_a_golden_image_generalizes() {
+        let named = build(&base()).unwrap();
+        assert!(!named.contains("sysprep"), "a named build must not sysprep");
+        assert!(!named.contains("OxideGeneralize"));
+
+        let golden = build(&Config { generalize: true, ..base() }).unwrap();
+        assert!(golden.contains("sysprep.exe\" /generalize /oobe /shutdown"));
+        assert!(golden.contains("OxideGeneralize"));
+        // And the guard that stops clones generalizing themselves.
+        assert!(
+            golden.contains("oxide-generalized.txt"),
+            "without the marker every clone would sysprep itself on first boot"
+        );
+        assert!(
+            golden.contains("if (Test-Path $marker)"),
+            "the marker must actually be tested, not merely written"
+        );
+        // The recovery path must be reached by a failing exit code, never merely by
+        // execution continuing past sysprep. `sysprep /shutdown` returns immediately on
+        // success, so an unguarded `Remove-Item $marker` there un-generalizes the
+        // machine and re-arms the task, which on a rack produced a guest that
+        // generalized and shut itself down on every single boot.
+        assert!(
+            golden.contains("$code = $LASTEXITCODE")
+                && golden.contains("if ($code -eq 0) {"),
+            "the sysprep result must be tested by exit code"
+        );
+        let after_sysprep = golden
+            .split("sysprep.exe\" /generalize")
+            .nth(1)
+            .expect("the sysprep invocation");
+        let success_branch = after_sysprep
+            .find("if ($code -eq 0) {")
+            .expect("the success branch");
+        let undo = after_sysprep
+            .find("Remove-Item -LiteralPath $marker")
+            .expect("the recovery path");
+        assert!(
+            success_branch < undo,
+            "the success branch must exit before the marker is removed"
+        );
+    }
+
+    /// The generated PowerShell is written out with -Encoding ASCII, so a stray
+    /// non-ASCII character in a comment reaches the guest as a replacement byte.
+    #[test]
+    fn the_script_is_ascii() {
+        for (slug, _, config) in cases() {
+            let script = build(&config).unwrap();
+            assert!(
+                script.is_ascii(),
+                "{slug}: non-ASCII in the generated script: {:?}",
+                script.chars().filter(|c| !c.is_ascii()).collect::<Vec<_>>()
+            );
         }
     }
 
@@ -320,6 +491,17 @@ mod tests {
                 Config { inject_drivers: false, ..base() },
             ),
             ("no-ssh", "no ssh", Config { enable_ssh: false, ..base() }),
+            (
+                "generalize",
+                "golden image (registers the sysprep task)",
+                Config {
+                    generalize: true,
+                    // A golden build always has the random-name token, so the golden
+                    // shows what really ships rather than an impossible pairing.
+                    computer_name: "*".into(),
+                    ..base()
+                },
+            ),
             (
                 "one-ssh-key",
                 "one ssh key",
@@ -376,8 +558,11 @@ mod tests {
             .join("testdata/bootstrap");
         std::fs::create_dir_all(&dir).expect("create testdata/bootstrap");
         for (slug, _, config) in cases() {
-            std::fs::write(dir.join(format!("{slug}.ps1")), build(&config))
-                .expect("write golden");
+            std::fs::write(
+                dir.join(format!("{slug}.ps1")),
+                build(&config).unwrap(),
+            )
+            .expect("write golden");
         }
     }
 
@@ -393,7 +578,7 @@ mod tests {
             let theirs = std::fs::read_to_string(&path).unwrap_or_else(|e| {
                 panic!("{}: {e}. Regenerate with dump_goldens", path.display())
             });
-            let ours = build(config);
+            let ours = build(config).unwrap();
             if let Some(where_) = first_difference(&theirs, &ours) {
                 panic!("bootstrap script differs for {label}: {where_}");
             }
@@ -427,7 +612,7 @@ mod tests {
     /// signature that is not Microsoft's stops the install rather than warning.
     #[test]
     fn openssh_is_only_installed_when_microsoft_signed_it() {
-        let script = build(&base());
+        let script = build(&base()).unwrap();
         assert!(script.contains("Get-AuthenticodeSignature"));
         assert!(script.contains("O=Microsoft Corporation"));
         assert!(script.contains("REFUSING to install OpenSSH"));
@@ -444,13 +629,14 @@ mod tests {
     fn the_media_root_is_trimmed_of_its_separator() {
         assert!(
             build(&base())
+                .unwrap()
                 .contains(r"$root = (Split-Path -Parent $src).TrimEnd('\')")
         );
     }
 
     #[test]
     fn the_script_is_crlf_throughout_except_the_key_array() {
-        let script = build(&base());
+        let script = build(&base()).unwrap();
         // No key array here, so every newline is a CRLF.
         assert_eq!(
             script.matches('\n').count(),
@@ -462,7 +648,8 @@ mod tests {
         let script = build(&Config {
             ssh_keys: vec!["ssh-rsa A".into(), "ssh-rsa B".into()],
             ..base()
-        });
+        })
+        .unwrap();
         assert!(script.contains(
             "  $keys = @(\n    'ssh-rsa A',\n    'ssh-rsa B'\n  )\r\n"
         ));
@@ -473,7 +660,8 @@ mod tests {
         let script = build(&Config {
             ssh_keys: vec!["ssh-rsa AAAA o'brien@host".into()],
             ..base()
-        });
+        })
+        .unwrap();
         assert!(script.contains("'ssh-rsa AAAA o''brien@host'"));
     }
 
@@ -485,7 +673,7 @@ mod tests {
             base(),
             Config { enable_ssh: false, inject_drivers: false, ..base() },
         ] {
-            let script = build(&config);
+            let script = build(&config).unwrap();
             assert!(script.contains(r"Copy-Item -Path $src2 -Destination "));
             assert!(script.contains("c12a7328-f81f-11d2-ba4b-00a0c93ec93b"));
         }

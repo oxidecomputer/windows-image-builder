@@ -165,6 +165,71 @@ impl Build {
     }
 }
 
+/// What the upload produced, or what it left behind when it did not.
+#[derive(Debug, Clone, Default)]
+pub struct UploadOutcome {
+    pub disk: String,
+    pub sent: u64,
+    pub skipped: u64,
+    /// Set only when the instance was created too.
+    pub instance: Option<String>,
+    pub system_disk: Option<String>,
+    /// True things this app cannot fix — the tcp/3389 rule, chiefly.
+    pub warnings: Vec<String>,
+}
+
+pub struct Uploading {
+    pub rx: Receiver<Event>,
+    /// The structured result, separate from the event stream.
+    ///
+    /// `Event::Done` carries a `PathBuf` and a byte count, which is the shape of a
+    /// finished *build*. An upload finishes with disk names, an optional instance and a
+    /// list of warnings, and squeezing that through a path would mean parsing it back
+    /// out on the other side.
+    pub outcome: Receiver<Result<UploadOutcome, UploadFailure>>,
+    pub cancel: Cancel,
+    pub started: Instant,
+    pub phase: String,
+    pub detail: String,
+    pub fraction: Option<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UploadFailure {
+    pub message: String,
+    /// Resources that exist on the rack because of the failed run, with the commands to
+    /// remove them. Nothing is deleted automatically — see `oxwin_rack::instance`.
+    pub leftovers: Vec<String>,
+}
+
+#[derive(Default)]
+pub enum Upload {
+    #[default]
+    Idle,
+    Running(Uploading),
+    Done {
+        outcome: UploadOutcome,
+        elapsed: Duration,
+    },
+    Failed(UploadFailure),
+}
+
+impl Upload {
+    pub fn is_running(&self) -> bool {
+        matches!(self, Upload::Running(_))
+    }
+}
+
+/// How far the Export stage should go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UploadGoal {
+    /// Create and upload the installer disk, and stop there.
+    #[default]
+    DiskOnly,
+    /// Also create the system disk and the instance, booting from the installer.
+    WholeInstance,
+}
+
 pub struct App {
     pub stage: Stage,
     pub draft: Draft,
@@ -188,9 +253,18 @@ pub struct App {
     /// generating one, since a password you cannot read is useless.
     pub show_password: bool,
     pub notice: Option<String>,
-    /// Names used to generate the copyable CLI commands on the Export stage.
+    /// Names used for the upload, and for the copyable CLI commands beside it.
     pub project: String,
     pub disk_name: String,
+    pub upload: Upload,
+    pub upload_goal: UploadGoal,
+    /// Logins found on this machine. Read once at startup; `oxide auth login` is not
+    /// something this app does, so the list does not change while it runs.
+    pub profiles: Vec<oxwin_rack::Profile>,
+    /// Index into `profiles`.
+    pub profile: usize,
+    pub instance_name: String,
+    pub system_disk_gib: String,
 }
 
 const LOG_CAP: usize = 2000;
@@ -236,6 +310,14 @@ impl App {
             notice: None,
             project: "my-project".into(),
             disk_name: "windows-install".into(),
+            upload: Upload::Idle,
+            upload_goal: UploadGoal::default(),
+            // Not being logged in is ordinary, so a failure to read the credentials is
+            // an empty list here and a hint in the UI, not a startup error.
+            profiles: oxwin_rack::profiles().unwrap_or_default(),
+            profile: 0,
+            instance_name: "windows".into(),
+            system_disk_gib: "100".into(),
         };
         // Through `set_iso` rather than by assigning the field, so a file passed on the
         // command line is inspected exactly like one that was dropped.
@@ -352,6 +434,169 @@ impl App {
         });
     }
 
+    /// Upload the built image, and optionally create the instance too.
+    ///
+    /// Same shape as `start_build`: a thread, a channel of `progress::Event`, and a
+    /// `Cancel`. The core's rule that it never prints and never blocks on a human is
+    /// what makes `oxwin-rack` drop into this slot unchanged.
+    pub fn start_upload(&mut self) {
+        let Some(artifact) = self.build.artifact().cloned() else {
+            self.upload = Upload::Failed(UploadFailure {
+                message: "there is no built image to upload".into(),
+                leftovers: Vec::new(),
+            });
+            return;
+        };
+        let Some(profile) = self.profiles.get(self.profile).cloned() else {
+            self.upload = Upload::Failed(UploadFailure {
+                message: "no Oxide login found. Run `oxide auth login`".into(),
+                leftovers: Vec::new(),
+            });
+            return;
+        };
+
+        let cancel = Cancel::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
+        let reporter = Reporter::new(tx);
+
+        let project = self.project.clone();
+        let goal = self.upload_goal;
+        let spec = oxwin_rack::DiskSpec {
+            name: self.disk_name.clone(),
+            description: "Windows installer, built by oxwin".into(),
+            block_size: oxwin_rack::INSTALLER_BLOCK_SIZE,
+        };
+        let instance_name = self.instance_name.clone();
+        let system_disk_gib =
+            self.system_disk_gib.parse::<u64>().unwrap_or(100).max(1);
+        let cancel_for_thread = cancel.clone();
+
+        self.upload = Upload::Running(Uploading {
+            rx,
+            outcome: outcome_rx,
+            cancel,
+            started: Instant::now(),
+            phase: "starting".into(),
+            detail: String::new(),
+            fraction: None,
+        });
+
+        std::thread::spawn(move || {
+            let result = (|| {
+                let rack =
+                    oxwin_rack::Rack::connect(&profile.selector, &project)
+                        .map_err(|e| UploadFailure {
+                            message: format!("{e:#}"),
+                            leftovers: Vec::new(),
+                        })?;
+                let uploaded = rack
+                    .upload_image(
+                        &artifact,
+                        &spec,
+                        &reporter,
+                        &cancel_for_thread,
+                    )
+                    .map_err(|e| UploadFailure {
+                        message: format!("{e:#}"),
+                        // The disk is deliberately left in place; a failed upload of
+                        // several gigabytes is worth keeping rather than discarding.
+                        leftovers: vec![format!(
+                            "oxide disk delete --project {project} --disk {}",
+                            spec.name
+                        )],
+                    })?;
+
+                let mut outcome = UploadOutcome {
+                    disk: uploaded.disk.clone(),
+                    sent: uploaded.sent,
+                    skipped: uploaded.skipped,
+                    ..Default::default()
+                };
+                if goal == UploadGoal::WholeInstance {
+                    let mut instance = oxwin_rack::InstanceSpec::for_installer(
+                        &instance_name,
+                        &uploaded.disk,
+                    );
+                    instance.system_disk_gib = system_disk_gib;
+                    match rack.create_instance(&instance, &reporter) {
+                        Ok(created) => {
+                            outcome.instance = Some(created.instance);
+                            outcome.system_disk = Some(created.system_disk);
+                            outcome.warnings = created.warnings;
+                        }
+                        Err(failure) => {
+                            let mut leftovers =
+                                failure.leftovers.cleanup_commands(&project);
+                            leftovers.push(format!(
+                                "oxide disk delete --project {project} --disk {}",
+                                uploaded.disk
+                            ));
+                            return Err(UploadFailure {
+                                message: format!("{:#}", failure.error),
+                                leftovers,
+                            });
+                        }
+                    }
+                }
+                Ok(outcome)
+            })();
+            let _ = outcome_tx.send(result);
+        });
+    }
+
+    /// Drain everything the upload thread has sent since the last frame.
+    fn pump_upload(&mut self) {
+        let mut finished: Option<Upload> = None;
+        let mut logs: Vec<String> = Vec::new();
+
+        if let Upload::Running(run) = &mut self.upload {
+            loop {
+                match run.rx.try_recv() {
+                    Ok(Event::Phase { name, message }) => {
+                        run.phase = name;
+                        run.detail = message.clone();
+                        logs.push(message);
+                    }
+                    Ok(Event::Fraction { fraction, detail }) => {
+                        run.fraction = Some(fraction);
+                        run.detail = detail;
+                    }
+                    Ok(Event::Log(line)) => logs.push(line),
+                    // The upload reports its result on its own channel, so these two
+                    // are not expected here. Ignoring them keeps the loop total.
+                    Ok(Event::Done { .. }) | Ok(Event::Failed { .. }) => {}
+                    Err(_) => break,
+                }
+            }
+            match run.outcome.try_recv() {
+                Ok(Ok(outcome)) => {
+                    finished = Some(Upload::Done {
+                        outcome,
+                        elapsed: run.started.elapsed(),
+                    });
+                }
+                Ok(Err(failure)) => finished = Some(Upload::Failed(failure)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    finished = Some(Upload::Failed(UploadFailure {
+                        message:
+                            "the upload stopped without reporting a result"
+                                .into(),
+                        leftovers: Vec::new(),
+                    }));
+                }
+            }
+        }
+
+        for l in logs {
+            self.push_log(l);
+        }
+        if let Some(u) = finished {
+            self.upload = u;
+        }
+    }
+
     /// Drain everything the build thread has sent since the last frame.
     fn pump(&mut self) {
         let mut finished: Option<Build> = None;
@@ -415,7 +660,8 @@ impl eframe::App for App {
         // Cheap to clone (it is a handle), and cloning frees `ui` for &mut use below.
         let ctx = ui.ctx().clone();
         self.pump();
-        if self.build.is_running() {
+        self.pump_upload();
+        if self.build.is_running() || self.upload.is_running() {
             // Progress arrives from another thread, which does not wake the UI.
             ctx.request_repaint_after(Duration::from_millis(120));
         }
