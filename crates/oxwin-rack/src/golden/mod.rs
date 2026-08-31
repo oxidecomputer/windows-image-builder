@@ -10,6 +10,8 @@
 //! idempotent, each reconciled against the rack before it runs. See
 //! `docs/superpowers/specs/2026-08-31-golden-image-automation-design.md`.
 
+pub mod keep;
 pub mod names;
 
+pub use keep::{Keep, Resource};
 pub use names::Names;
