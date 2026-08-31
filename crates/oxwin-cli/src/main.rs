@@ -609,12 +609,9 @@ fn golden(args: &[String]) -> Result<()> {
     match result {
         Ok(golden) => {
             println!("\nimage {} is ready in project {project}", golden.image);
-            if flag_in(args, "verify-clone") {
-                // After the image, never instead of it: a clone that fails to come
-                // up is a fact about the image, and the image is still what the run
-                // produced.
-                verify_named(&names, &project, &selector, quiet, args)?;
-            }
+            // Before the clone check, not after. The check takes several minutes,
+            // and a report of what was left behind is no use to anyone once it is
+            // sitting below an eight-minute wait.
             if !golden.leftovers.is_empty() {
                 // Not a failure: the image exists. Say so, so nobody goes looking
                 // for a problem with an image that is fine.
@@ -624,6 +621,12 @@ fn golden(args: &[String]) -> Result<()> {
                 for resource in &golden.leftovers {
                     println!("  {}", resource.delete_command(&project));
                 }
+            }
+            if flag_in(args, "verify-clone") {
+                // After the image, never instead of it: a clone that fails to come
+                // up is a fact about the image, and the image is still what the run
+                // produced.
+                verify_named(&names, &project, &selector, quiet, args)?;
             }
             Ok(())
         }

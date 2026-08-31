@@ -150,12 +150,57 @@ impl Rack {
         let mut stuck = Vec::new();
         for resource in keep.to_delete(names) {
             reporter.phase("teardown", format!("deleting {resource:?}"));
-            if let Err(e) = self.delete(&resource) {
-                reporter.log(format!("could not delete {resource:?}: {e}"));
-                stuck.push(resource);
+            match self.delete_with_retry(&resource, reporter) {
+                Ok(()) => {}
+                Err(e) => {
+                    // `{e:#}` for the whole chain. Reporting only the outermost
+                    // context produced "could not delete Disk(\"g4-system\"):
+                    // deleting Disk(\"g4-system\")" on a rack -- the context
+                    // repeated back with the actual reason discarded.
+                    reporter
+                        .log(format!("could not delete {resource:?}: {e:#}"));
+                    stuck.push(resource);
+                }
             }
         }
         Ok(stuck)
+    }
+
+    /// Delete, retrying briefly, because the first attempt races the rack.
+    ///
+    /// Deleting an instance detaches its disks *asynchronously*, so the disk deletes
+    /// that follow can arrive while the disk is still attached and be refused. Seen
+    /// on a rack: the system disk failed to delete and was `detached` and perfectly
+    /// deletable moments later. The whole run had succeeded, so the only consequence
+    /// was a resource left behind with a confusing explanation.
+    ///
+    /// Bounded and short: this is for a transient that clears in seconds, not a
+    /// retry loop for a rack that is actually unwell.
+    fn delete_with_retry(
+        &self,
+        resource: &Resource,
+        reporter: &Reporter,
+    ) -> Result<()> {
+        const ATTEMPTS: usize = 5;
+        const DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+        let mut last = None;
+        for attempt in 1..=ATTEMPTS {
+            match self.delete(resource) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if attempt < ATTEMPTS {
+                        reporter.log(format!(
+                            "  {resource:?} not deletable yet (attempt \
+                             {attempt}/{ATTEMPTS}); waiting"
+                        ));
+                        std::thread::sleep(DELAY);
+                    }
+                    last = Some(e);
+                }
+            }
+        }
+        Err(last.expect("a failure after every attempt"))
     }
 
     /// Build the golden image: upload, install, generalize, snapshot, image, tidy.
