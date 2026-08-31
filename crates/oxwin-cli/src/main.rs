@@ -68,7 +68,11 @@ usage: oxwin doctor
                          --name=*. Runs from a SYSTEM task at startup, so it
                          needs no autologon
   --user=<name>          local administrator to create
-  --password=<secret>    its password. Required: SAC and RDP have no key auth
+  --password-file=<path> file whose first line is the account's password. A
+                         password is required: SAC and RDP have no key auth
+  --password=<secret>    the same, on the command line -- readable by anything
+                         that can run `ps`, so it warns. OXWIN_PASSWORD works
+                         too and is not in `ps`
   --ssh-key=<a;b>        public keys authorised for SSH, semicolon separated
   --drivers=0            do not inject virtio drivers (diagnostic control:
                          isolates a hang in Setup from the drivers)
@@ -166,6 +170,86 @@ golden options:
   apart from a hang. Given an .img it cannot know, so build that with
   --name=* or --generalize.";
 
+/// Where the password may come from, in order of precedence.
+///
+/// **`--password=` puts the secret in the process's command line, which every other
+/// process on the machine can read out of `ps`.** That is not hypothetical: it was
+/// seen in the process table of the machine driving a real rack run. The flag stays,
+/// because scripts and habits depend on it and removing it would break them silently,
+/// but it warns, and there are now two ways to avoid it.
+///
+/// No default, ever: a password nobody chose is a password nobody changes, and
+/// `Settings::default()` is deliberately unbuildable for the same reason.
+#[derive(Debug, PartialEq, Eq)]
+enum PasswordSource {
+    /// `--password=`. Visible in `ps`.
+    Flag(String),
+    /// `--password-file=`. The file's first line.
+    File(String),
+    /// `OXWIN_PASSWORD`. Not in `ps`, though still in the environment.
+    Environment(String),
+}
+
+/// Pick the source, without reading anything. Separated so the precedence is
+/// testable without a filesystem or an environment.
+fn choose_password(
+    flag: Option<String>,
+    file: Option<String>,
+    env: Option<String>,
+) -> Result<PasswordSource> {
+    match (flag, file, env) {
+        // An explicit flag wins over an inherited environment, the same rule
+        // `--assets` follows.
+        (Some(p), _, _) => Ok(PasswordSource::Flag(p)),
+        (None, Some(f), _) => Ok(PasswordSource::File(f)),
+        (None, None, Some(p)) => Ok(PasswordSource::Environment(p)),
+        (None, None, None) => bail!(
+            "a password is required: SAC and RDP have no SSH-key auth, so an \
+             account with no password is reachable over SSH and nowhere else -- \
+             including from the serial console, which is the one way in when \
+             something has gone wrong.\n\n\
+             Give it as --password-file=<path>, or in OXWIN_PASSWORD, or as \
+             --password=<secret> -- though that last one is readable by anything \
+             that can run `ps`."
+        ),
+    }
+}
+
+fn password_from_args(args: &[String]) -> Result<String> {
+    let opt = |name: &str| -> Option<String> {
+        let prefix = format!("--{name}=");
+        args.iter().find_map(|a| a.strip_prefix(&prefix).map(str::to_string))
+    };
+    match choose_password(
+        opt("password"),
+        opt("password-file"),
+        std::env::var("OXWIN_PASSWORD").ok().filter(|v| !v.is_empty()),
+    )? {
+        PasswordSource::Flag(p) => {
+            eprintln!(
+                "warn  --password= is visible to anything that can run `ps`. \
+                 Prefer --password-file= or OXWIN_PASSWORD."
+            );
+            Ok(p)
+        }
+        PasswordSource::Environment(p) => Ok(p),
+        PasswordSource::File(path) => {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading the password from {path}"))?;
+            // The first line, trimmed of its newline only: a password may legally
+            // begin or end with a space, and silently trimming one produces a
+            // machine nobody can log into for a reason nobody can see.
+            let first = text.split('\n').next().unwrap_or_default();
+            let password =
+                first.strip_suffix('\r').unwrap_or(first).to_string();
+            if password.is_empty() {
+                bail!("{path} is empty, so there is no password in it");
+            }
+            Ok(password)
+        }
+    }
+}
+
 /// The answer-file config, from flags.
 ///
 /// Shared by `build` and `golden` so the two cannot drift: `golden` differs only in
@@ -182,10 +266,7 @@ fn config_from_args(args: &[String]) -> Result<Config> {
         "ws2022" => WindowsRelease::Server2022,
         other => bail!("unknown --windows={other}; this build supports ws2022"),
     };
-    // No default password anywhere in this workspace, and requiring it here is the
-    // point: a password nobody chose is a password nobody changes.
-    let password = opt("password")
-        .context("--password is required: SAC and RDP have no SSH-key auth")?;
+    let password = password_from_args(args)?;
 
     let config = Config {
         release,
@@ -1016,4 +1097,97 @@ fn doctor() -> Result<()> {
 fn find_on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).map(|d| d.join(name)).find(|c| c.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An explicit flag beats an inherited environment, the same rule `--assets`
+    /// follows: what someone typed on this command line should win over whatever
+    /// their shell happened to be carrying.
+    #[test]
+    fn an_explicit_flag_wins_over_a_file_and_the_environment() {
+        let chosen = choose_password(
+            Some("typed".into()),
+            Some("/tmp/pw".into()),
+            Some("inherited".into()),
+        )
+        .unwrap();
+        assert_eq!(chosen, PasswordSource::Flag("typed".into()));
+    }
+
+    #[test]
+    fn a_file_beats_the_environment() {
+        let chosen =
+            choose_password(None, Some("/tmp/pw".into()), Some("env".into()))
+                .unwrap();
+        assert_eq!(chosen, PasswordSource::File("/tmp/pw".into()));
+    }
+
+    #[test]
+    fn the_environment_is_used_when_nothing_else_is_given() {
+        let chosen = choose_password(None, None, Some("env".into())).unwrap();
+        assert_eq!(chosen, PasswordSource::Environment("env".into()));
+    }
+
+    /// There is no default password anywhere in this workspace, and this is the
+    /// place someone would be tempted to add one.
+    #[test]
+    fn nothing_given_is_an_error_not_a_default() {
+        let error = choose_password(None, None, None).unwrap_err().to_string();
+        assert!(error.contains("password is required"), "{error}");
+        // And it must say how to supply one without exposing it in `ps`.
+        assert!(error.contains("--password-file"), "{error}");
+        assert!(error.contains("OXWIN_PASSWORD"), "{error}");
+    }
+
+    /// A password may legally begin or end with a space. Trimming one produces a
+    /// machine nobody can log into, for a reason nobody can see.
+    #[test]
+    fn a_password_file_keeps_leading_and_trailing_spaces() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxwin-pw-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pw");
+        std::fs::write(&path, "  spaced secret  \nignored second line\n")
+            .unwrap();
+        let args = vec![format!("--password-file={}", path.display())];
+        assert_eq!(password_from_args(&args).unwrap(), "  spaced secret  ");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A CRLF file, which is what someone editing on Windows will hand us.
+    #[test]
+    fn a_password_file_written_on_windows_works() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxwin-pw-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pw");
+        std::fs::write(&path, "secret\r\n").unwrap();
+        let args = vec![format!("--password-file={}", path.display())];
+        assert_eq!(password_from_args(&args).unwrap(), "secret");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_empty_password_file_is_refused() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxwin-pw-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pw");
+        std::fs::write(&path, "\n").unwrap();
+        let args = vec![format!("--password-file={}", path.display())];
+        assert!(password_from_args(&args).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
