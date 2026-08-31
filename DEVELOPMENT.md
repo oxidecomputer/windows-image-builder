@@ -9,8 +9,10 @@ about. For the user-facing side see [README.md](README.md); for what is coming s
 ```
 crates/
   oxwin-core/     settings model, the build engine, ISO reading. No UI, no printing.
+  oxwin-rack/     talking to a rack: profiles, disk upload, instance creation. No UI,
+                  no printing, and no TTY — see below.
   oxwin-gui/      eframe/egui application.
-  oxwin-cli/      `doctor`, and `build` — the engine driven by flags.
+  oxwin-cli/      `doctor`, `build`, `upload`, `instance` — the engines driven by flags.
 assets/           third-party payload, fetched by tools/fetch-payload.sh, gitignored,
                   and embedded into the binary at build time by oxwin-core/build.rs.
 ```
@@ -19,6 +21,18 @@ The rule that keeps this honest: **`oxwin-core` never prints and never blocks on
 human.** It emits `progress::Event` values and returns `Result`. That constraint is the
 only reason the CLI was cheap to add — if the core ever grows a `println!` or a prompt,
 the CLI stops being free and starts being a rewrite.
+
+`oxwin-rack` is a separate crate rather than a module of the core, because the Oxide SDK
+brings tokio, reqwest and rustls with it. The core has four dependencies and produces
+bytes deterministically; both of those are worth keeping. `oxwin-rack` owns a
+current-thread runtime internally and exposes a **blocking** API emitting the same
+`progress::Event`, so the async never crosses the crate boundary and no caller needs
+tokio in its own tree.
+
+It inherits the core's rule and adds one: **no TTY, anywhere.** No prompt, no picker, no
+spinner, nothing read from stdin. Someone with only a terminal has to be able to pass the
+variables in and get an image uploaded, so the profile is a *parameter*; choosing one
+interactively is a GUI feature that fills that parameter in.
 
 ## The engine
 
@@ -276,7 +290,7 @@ Two things worth preserving:
 ## Testing
 
 ```
-cargo test              # 181 tests, no rack, ISO or payload download required
+cargo test              # 183 tests, no rack, ISO or payload download required
 cargo clippy --all-targets
 
 # The gated ones, when the artefacts are to hand:
@@ -311,6 +325,104 @@ test.
 
 There is no default password anywhere in this workspace, and `Settings::default()` is
 deliberately unbuildable.
+
+## Testing the golden cycle on a rack
+
+`cargo test` cannot reach a rack, so the golden cycle's real test is this procedure.
+Run it after any change to `oxwin-rack` or to the generalize block in `bootstrap.rs`,
+and before claiming the cycle works.
+
+A finished cycle proves nothing on its own. **Check the artefact at each milestone,
+not the outcome at the end.**
+
+```
+oxwin golden ~/Storage/ISOs/SERVER_2022_x64FRE_en-us.iso \
+  --run=g4 --project=<yours> --profile=<yours> \
+  --user=oxide --password=… --ssh-key="$(cat ~/.ssh/id_ed25519.pub)"
+```
+
+Everything is named from `--run`: `g4-installer`, `g4-system`, the instance `g4`,
+`g4-snap`, and the image `g4`. **Re-running the identical command resumes**, because
+every step asks the rack what already exists rather than consulting a journal.
+
+### While it installs — the window to look inside
+
+The watch prints `answered on port 22` when Setup has finished, and the machine is
+then briefly up before it generalizes. From another terminal:
+
+```
+ssh oxide@<the address the watch printed>
+```
+
+- `C:\oxide-bootstrap.log` ends with `OxideGeneralize registered`. Without that the
+  machine will never shut down and the watch will spend its whole timeout on an
+  install that worked.
+- `Get-NetAdapter` shows a bound NIC, so the virtio driver installed.
+- `Get-ComputerInfo | Select WindowsProductName` is the edition that was asked for.
+
+### After it stops
+
+- The watch said `finished`, not a failure.
+- **The gap between `port 22` and `finished` is minutes, not seconds.** A sysprep
+  takes real time; an instant stop means something else stopped the machine.
+  Observed on Server 2022: 4m52s to port 22, stopped at 6m20s.
+
+### After the image
+
+```
+oxide image view --project <yours> --image g4
+```
+
+- `os` and `version` are populated. `version` is `unknown` only when the run started
+  from a prebuilt `.img`, where there is no media to detect from.
+- The instance, both disks and the snapshot are gone under the default
+  `--keep=image`.
+
+### Resume, which has no unit test
+
+```
+# The identical command again: it must find the image, do a no-op teardown, and
+# create nothing.
+oxwin golden … --run=g4 --project=<yours>
+
+# And from a fresh run, interrupt during the watch and continue:
+oxwin golden … --run=g5 --project=<yours>
+# Ctrl-C once, during "waiting for g5 to install" -- it must stop within a second
+oxwin golden … --run=g5 --project=<yours>
+# It must resume at the watch, not re-upload.
+```
+
+### The clone, which is what "golden" actually claims
+
+```
+oxwin verify g4 --project=<yours>
+```
+
+This creates a disk from the image and an instance from that disk, and requires the
+machine to come up **and stay up for five minutes**. The staying is the test: a
+broken image generalizes itself again and powers off about a minute after reaching a
+normal startup, so a check that stopped at the first successful connection to port 22
+would pass on precisely the image it exists to catch.
+
+Then, and this is the part no green result can stand in for:
+
+```
+ssh oxide@<the clone's address>
+hostname                                              # must DIFFER from the original
+Get-CimInstance Win32_UserAccount | Select-Object SID # must DIFFER too
+type C:\oxide-bootstrap.log | findstr /i generalize   # must say "already generalized"
+```
+
+A clone that shares the original's name and SID is not a golden image, whatever else
+worked — that collision is the entire reason for generalizing.
+
+### When a run has gone wrong
+
+Every failure prints what exists on the rack and the one command that resumes, which
+is the command that was just run. If you would rather start over it also prints the
+`oxide … delete` lines in the order that works. **Nothing is ever deleted
+automatically:** an hour-long run must not discard its own work over a transient
+error.
 
 ## Known-good baseline
 

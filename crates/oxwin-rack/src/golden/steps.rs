@@ -455,9 +455,14 @@ impl Rack {
 
             match watch.observe(state, port_22, started.elapsed()) {
                 Action::KeepWaiting => {}
+                // Deliberately not "Windows Setup has begun": the same loop runs
+                // the clone check, where this is OOBE on an already-installed
+                // machine and saying Setup would be a lie in the log.
                 Action::Reached(Milestone::Running) => reporter.phase(
                     "watch",
-                    format!("{instance} is running; Windows Setup has begun"),
+                    format!(
+                        "{instance} is running; the guest has begun booting"
+                    ),
                 ),
                 Action::Reached(Milestone::Reachable) => reporter.phase(
                     "watch",
