@@ -13,12 +13,15 @@
 //! the normal state of every one of these during a run.
 
 use crate::golden::keep::Resource;
+use crate::golden::watch::{Action, Milestone, Watch, WatchOptions};
 use crate::upload::Rack;
 use anyhow::{Context, Result};
 use oxide::types::{ExternalIp, InstanceState};
 use oxide::{
     ClientDisksExt, ClientImagesExt, ClientInstancesExt, ClientSnapshotsExt,
 };
+use oxwin_core::engine::Cancel;
+use oxwin_core::progress::Reporter;
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::time::Duration;
 
@@ -273,6 +276,139 @@ impl Rack {
         };
         outcome.with_context(|| format!("deleting {resource:?}"))
     }
+
+    /// Wait for a golden install to finish and shut itself down.
+    ///
+    /// Returns once the instance has stopped *having been reachable* — see
+    /// [`super::watch`] for why that qualification is the whole point. On a failure
+    /// or a timeout the serial console tail is emitted as log lines first, because
+    /// the project's rule is to read what the machine wrote down before reasoning
+    /// about what Windows does.
+    pub fn watch_install(
+        &self,
+        instance: &str,
+        opts: &WatchOptions,
+        reporter: &Reporter,
+        cancel: &Cancel,
+    ) -> Result<()> {
+        reporter.phase(
+            "watch",
+            format!("waiting for {instance} to install and generalize"),
+        );
+        self.watch_for(
+            instance,
+            Watch::new(opts.timeout),
+            opts,
+            reporter,
+            cancel,
+        )
+    }
+
+    /// The loop itself, shared by the golden watch and the clone check.
+    ///
+    /// They differ only in the [`Watch`] they start with — the two have opposite
+    /// finish conditions — so the loop is written once.
+    pub(crate) fn watch_for(
+        &self,
+        instance: &str,
+        mut watch: Watch,
+        opts: &WatchOptions,
+        reporter: &Reporter,
+        cancel: &Cancel,
+    ) -> Result<()> {
+        let started = std::time::Instant::now();
+        // Looked up once it exists, then cached: an instance has its address from
+        // creation, and re-listing every fifteen seconds buys nothing.
+        let mut address: Option<IpAddr> = None;
+
+        loop {
+            cancel.check()?;
+
+            let state = self.instance_state(instance)?.ok_or_else(|| {
+                anyhow::anyhow!("there is no instance called {instance}")
+            })?;
+            if address.is_none() {
+                address = self.reachable_address(instance)?;
+            }
+            let port_22 = match address {
+                // Half the poll interval: a probe that blocks for the whole
+                // interval turns a fifteen-second loop into a thirty-second one.
+                Some(addr) => port_open(addr, 22, opts.poll / 2),
+                None => false,
+            };
+
+            match watch.observe(state, port_22, started.elapsed()) {
+                Action::KeepWaiting => {}
+                Action::Reached(Milestone::Running) => reporter.phase(
+                    "watch",
+                    format!("{instance} is running; Windows Setup has begun"),
+                ),
+                Action::Reached(Milestone::Reachable) => reporter.phase(
+                    "watch",
+                    format!(
+                        "{instance} answered on port 22 after {}: Setup has \
+                         finished",
+                        elapsed(started)
+                    ),
+                ),
+                Action::Finished => {
+                    reporter.phase(
+                        "watch",
+                        format!(
+                            "{instance} finished after {}",
+                            elapsed(started)
+                        ),
+                    );
+                    return Ok(());
+                }
+                Action::Failed(why) => {
+                    self.report_serial(instance, opts, reporter);
+                    anyhow::bail!("{why}");
+                }
+            }
+
+            // Progress that moves, so an hour-long wait does not read as a hang.
+            reporter.log(format!(
+                "  {instance}: {state} after {}",
+                elapsed(started)
+            ));
+            std::thread::sleep(opts.poll);
+        }
+    }
+
+    /// Emit the serial tail as log lines.
+    ///
+    /// A failure to read it is itself only a log line: we are already reporting a
+    /// failure, and losing the diagnosis must not replace the diagnosis.
+    fn report_serial(
+        &self,
+        instance: &str,
+        opts: &WatchOptions,
+        reporter: &Reporter,
+    ) {
+        match self.serial_tail(instance, opts.serial_bytes) {
+            Ok(text) if text.trim().is_empty() => reporter.log(
+                "the serial console is empty. That is normal on Windows 10 and \
+                 11, which write nothing to COM1"
+                    .to_string(),
+            ),
+            Ok(text) => {
+                reporter
+                    .log(format!("last {} bytes of COM1:", opts.serial_bytes));
+                for line in text.lines() {
+                    reporter.log(format!("  | {line}"));
+                }
+            }
+            Err(e) => {
+                reporter.log(format!("could not read the serial console: {e}"))
+            }
+        }
+    }
+}
+
+fn elapsed(started: std::time::Instant) -> String {
+    let s = started.elapsed().as_secs();
+    format!("{}m{:02}s", s / 60, s % 60)
 }
 
 #[cfg(test)]

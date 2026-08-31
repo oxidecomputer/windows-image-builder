@@ -33,6 +33,7 @@ fn main() -> Result<()> {
         "build" => build(&args[1..]),
         "upload" => upload(&args[1..]),
         "instance" => instance(&args[1..]),
+        "watch" => watch(&args[1..]),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())
@@ -49,6 +50,7 @@ usage: oxwin doctor
        oxwin build <iso-or-mount> <out.img> [--opt=value]
        oxwin upload <image.img> --project=<p> --disk=<name> [--opt=value]
        oxwin instance <name> --project=<p> --installer-disk=<d> [--opt=value]
+       oxwin watch <instance> --project=<p> [--timeout=2h] [--poll=15s]
 
   --name=<hostname>      computer name, or * for a golden image
   --generalize           after the install finishes, sysprep /generalize and
@@ -103,7 +105,20 @@ instance options:
   --memory-gib=<n>       RAM in GiB (default 8)
   --system-disk=<name>   blank disk to install onto (default <name>-system)
   --system-disk-gib=<n>  its size (default 100)
-  --no-start             create it stopped";
+  --no-start             create it stopped
+
+watch options:
+  --project=<name>       project the instance is in. Required
+  --timeout=<dur>        give up after this long (default 2h). Server 2022
+                         takes tens of minutes across several reboots, and
+                         2025 and 11 are slower
+  --poll=<dur>           how often to look (default 15s)
+  --profile=<name>       as for upload
+
+  A golden build finishes by shutting itself down, so the signal is the
+  instance reaching `stopped`: a guest shutdown stops the instance and a
+  guest reboot does not. Port 22 is polled alongside it for one judgement —
+  stopping without it ever having answered means Setup never finished.";
 
 fn build(args: &[String]) -> Result<()> {
     let positional: Vec<&String> =
@@ -394,6 +409,46 @@ fn instance(args: &[String]) -> Result<()> {
          --instance {}",
         created.instance
     );
+    Ok(())
+}
+
+/// Wait for a golden install to finish and shut itself down.
+///
+/// Takes an hour or more, and prints a line per poll so it is visibly alive: a UI
+/// that does not move is a UI that has frozen as far as anyone watching it can
+/// tell, and the natural response is to kill it.
+fn watch(args: &[String]) -> Result<()> {
+    let positional: Vec<&String> =
+        args.iter().filter(|a| !a.starts_with("--")).collect();
+    let [instance] = positional.as_slice() else {
+        bail!("watch needs exactly one instance name\n\n{USAGE}");
+    };
+    let opt = |key: &str| -> Option<String> {
+        let prefix = format!("--{key}=");
+        args.iter().find_map(|a| a.strip_prefix(&prefix).map(str::to_string))
+    };
+    let project = opt("project").context("--project is required")?;
+
+    let mut opts = oxwin_rack::golden::watch::WatchOptions::default();
+    if let Some(v) = opt("timeout") {
+        opts.timeout = oxwin_rack::golden::watch::parse_duration(&v)?;
+    }
+    if let Some(v) = opt("poll") {
+        opts.poll = oxwin_rack::golden::watch::parse_duration(&v)?;
+    }
+
+    let selector = match opt("profile") {
+        Some(profile) => oxwin_rack::Selector::Profile(profile),
+        None => oxwin_rack::Selector::Environment,
+    };
+    let cancel = cancel_on_interrupt();
+    let rack = oxwin_rack::Rack::connect(&selector, &project)?;
+    let (reporter, printer) = printer(flag_in(args, "quiet"), "waiting");
+    let result = rack.watch_install(instance, &opts, &reporter, &cancel);
+    drop(reporter);
+    printer.join().ok();
+    result?;
+    println!("{instance} is generalized and stopped; it is ready to snapshot");
     Ok(())
 }
 

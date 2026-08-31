@@ -163,6 +163,46 @@ impl Watch {
     }
 }
 
+/// How long to wait, and how often to look.
+#[derive(Debug, Clone, Copy)]
+pub struct WatchOptions {
+    /// Server 2022 reaches a login prompt in tens of minutes across several
+    /// reboots, and 2025 and 11 are slower. An hour is too tight to be a safe
+    /// default; two hours is well past anything observed and still finite, which is
+    /// what makes this usable from a script.
+    pub timeout: Duration,
+    /// Coarse on purpose. Every 15 s is plenty across an hour-long wait, and a
+    /// tighter loop against a control plane is rude for no benefit.
+    pub poll: Duration,
+    /// How much serial console to fetch when something has gone wrong.
+    pub serial_bytes: u64,
+}
+
+impl Default for WatchOptions {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(2 * 60 * 60),
+            poll: Duration::from_secs(15),
+            serial_bytes: 16 * 1024,
+        }
+    }
+}
+
+/// `90s`, `30m`, `2h`, or a bare number of seconds.
+pub fn parse_duration(raw: &str) -> anyhow::Result<Duration> {
+    let (value, multiplier) = match raw.chars().last() {
+        Some('s') => (&raw[..raw.len() - 1], 1),
+        Some('m') => (&raw[..raw.len() - 1], 60),
+        Some('h') => (&raw[..raw.len() - 1], 3600),
+        Some(c) if c.is_ascii_digit() => (raw, 1),
+        _ => anyhow::bail!("{raw:?}: expected a duration like 90s, 30m or 2h"),
+    };
+    let n: u64 = value
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{raw:?}: expected a duration like 2h"))?;
+    Ok(Duration::from_secs(n * multiplier))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +320,30 @@ mod tests {
             panic!("expected a timeout, got {action:?}");
         };
         assert!(why.contains("generalize"), "{why}");
+    }
+
+    #[test]
+    fn the_defaults_are_the_ones_the_spec_argued_for() {
+        let o = WatchOptions::default();
+        assert_eq!(o.timeout, Duration::from_secs(2 * 60 * 60));
+        // 15s is plenty for an hour-long wait, and a tighter loop is rude to the
+        // control plane for no benefit.
+        assert_eq!(o.poll, Duration::from_secs(15));
+        assert!(
+            o.serial_bytes >= 4096,
+            "a useful tail is more than a line or two"
+        );
+    }
+
+    /// Two hours has to be expressible the way people write it.
+    #[test]
+    fn parsing_a_duration_flag() {
+        assert_eq!(parse_duration("90s").unwrap(), Duration::from_secs(90));
+        assert_eq!(parse_duration("30m").unwrap(), Duration::from_secs(1800));
+        assert_eq!(parse_duration("2h").unwrap(), Duration::from_secs(7200));
+        assert_eq!(parse_duration("45").unwrap(), Duration::from_secs(45));
+        assert!(parse_duration("soon").is_err());
+        assert!(parse_duration("").is_err());
     }
 
     /// A finish that arrives on the same poll as the timeout is a finish. The guest
