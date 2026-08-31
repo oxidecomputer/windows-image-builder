@@ -176,6 +176,12 @@ pub struct UploadOutcome {
     pub system_disk: Option<String>,
     /// True things this app cannot fix — the tcp/3389 rule, chiefly.
     pub warnings: Vec<String>,
+    /// Set only by a golden run. Its presence is what makes the summary render as a
+    /// finished image rather than as an upload.
+    pub image: Option<String>,
+    /// What a golden run's teardown could not remove. Not a failure: the image
+    /// exists, so saying nothing would leave a resource behind unmentioned.
+    pub leftovers: Vec<String>,
 }
 
 pub struct Uploading {
@@ -228,6 +234,12 @@ pub enum UploadGoal {
     DiskOnly,
     /// Also create the system disk and the instance, booting from the installer.
     WholeInstance,
+    /// The whole golden cycle: install, generalize, snapshot, image, tidy up.
+    ///
+    /// Only offered for an image this session built as a golden image. See
+    /// `stages::golden_unavailable` for why that is keyed on the build rather than
+    /// on the draft.
+    GoldenImage,
 }
 
 pub struct App {
@@ -265,6 +277,17 @@ pub struct App {
     pub profile: usize,
     pub instance_name: String,
     pub system_disk_gib: String,
+    /// Names every resource a golden run touches.
+    pub run_name: String,
+    pub keep: oxwin_rack::Keep,
+    pub verify_clone: bool,
+    /// Whether the image that was *built* is a golden image.
+    ///
+    /// Recorded when the build starts, not read from `draft` later: the draft stays
+    /// editable afterwards, so reading it at render time would offer a golden run
+    /// for an image that will never generalize itself. `None` means no build has
+    /// happened in this session.
+    pub built_golden: Option<bool>,
 }
 
 const LOG_CAP: usize = 2000;
@@ -317,6 +340,10 @@ impl App {
             profiles: oxwin_rack::profiles().unwrap_or_default(),
             profile: 0,
             instance_name: "windows".into(),
+            run_name: "windows-golden".into(),
+            keep: oxwin_rack::Keep::default(),
+            verify_clone: false,
+            built_golden: None,
             system_disk_gib: "100".into(),
         };
         // Through `set_iso` rather than by assigning the field, so a file passed on the
@@ -393,6 +420,12 @@ impl App {
             return;
         };
         let settings = self.draft.to_settings();
+        // Recorded here, from the settings this build is actually using. Reading the
+        // draft again in stage 4 would be reading something the user may have edited
+        // since, and the consequence is not cosmetic: a golden run on media that
+        // does not generalize installs perfectly, never shuts down, and burns the
+        // whole two-hour timeout before saying so.
+        self.built_golden = Some(settings.deployment.is_golden());
         let cancel = Cancel::new();
         let (tx, rx) = std::sync::mpsc::channel();
         let reporter = Reporter::new(tx);
@@ -431,6 +464,131 @@ impl App {
                     reporter.send(Event::Failed { message: format!("{e:#}") })
                 }
             }
+        });
+    }
+
+    /// Run the whole golden cycle: install, generalize, snapshot, image, tidy up.
+    ///
+    /// The same shape as [`Self::start_upload`] — a thread, a channel of
+    /// `progress::Event`, a `Cancel` — because `run_golden` emits exactly the same
+    /// events. What differs is the wall clock: this takes about an hour, so the UI
+    /// shows the command that continues it. Closing the window kills this thread and
+    /// loses nothing on the rack.
+    pub fn start_golden(&mut self) {
+        let Some(artifact) = self.build.artifact().cloned() else {
+            self.upload = Upload::Failed(UploadFailure {
+                message: "there is no built image to work from".into(),
+                leftovers: Vec::new(),
+            });
+            return;
+        };
+        let Some(profile) = self.profiles.get(self.profile).cloned() else {
+            self.upload = Upload::Failed(UploadFailure {
+                message: "no Oxide login found. Run `oxide auth login`".into(),
+                leftovers: Vec::new(),
+            });
+            return;
+        };
+        let names = match oxwin_rack::Names::new(self.run_name.trim()) {
+            Ok(names) => names,
+            Err(e) => {
+                self.upload = Upload::Failed(UploadFailure {
+                    message: format!("{e:#}"),
+                    leftovers: Vec::new(),
+                });
+                return;
+            }
+        };
+
+        let cancel = Cancel::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
+        let reporter = Reporter::new(tx);
+
+        let project = self.project.clone();
+        let verify = self.verify_clone;
+        let spec = oxwin_rack::golden::GoldenSpec {
+            names: names.clone(),
+            image_path: artifact,
+            keep: self.keep,
+            watch: oxwin_rack::golden::WatchOptions::default(),
+            system_disk_gib: self
+                .system_disk_gib
+                .parse::<u64>()
+                .unwrap_or(100)
+                .max(1),
+            ncpus: 4,
+            memory_gib: 8,
+            os: "windows".into(),
+            // What the image reports about itself later. The media's own release,
+            // detected during the build rather than asserted here.
+            version: self
+                .media
+                .as_ref()
+                .and_then(|m| m.release)
+                .map(|r| r.label().to_string())
+                .unwrap_or_else(|| "unknown".into()),
+        };
+        let cancel_for_thread = cancel.clone();
+
+        self.upload = Upload::Running(Uploading {
+            rx,
+            outcome: outcome_rx,
+            cancel,
+            started: Instant::now(),
+            phase: "starting".into(),
+            detail: String::new(),
+            fraction: None,
+        });
+
+        std::thread::spawn(move || {
+            let result = (|| {
+                let rack =
+                    oxwin_rack::Rack::connect(&profile.selector, &project)
+                        .map_err(|e| UploadFailure {
+                            message: format!("{e:#}"),
+                            leftovers: Vec::new(),
+                        })?;
+                let golden = rack
+                    .run_golden(&spec, &reporter, &cancel_for_thread)
+                    .map_err(|failure| UploadFailure {
+                        message: format!("{:#}", failure.error),
+                        // Nothing is torn down on failure, so name what exists.
+                        leftovers: failure.leftovers.cleanup_commands(&project),
+                    })?;
+
+                // The clone check runs after the image, never instead of it: a clone
+                // that fails to come up is a fact about the image, and the image is
+                // still what the run produced.
+                if verify
+                    && let Err(e) = rack.verify_clone(
+                        &spec.names,
+                        &spec.watch,
+                        &reporter,
+                        &cancel_for_thread,
+                    )
+                {
+                    return Err(UploadFailure {
+                        message: format!(
+                            "the image {} was made, but the clone check failed: \
+                             {e:#}",
+                            golden.image
+                        ),
+                        leftovers: Vec::new(),
+                    });
+                }
+
+                Ok(UploadOutcome {
+                    image: Some(golden.image),
+                    leftovers: golden
+                        .leftovers
+                        .iter()
+                        .map(|r| r.delete_command(&project))
+                        .collect(),
+                    ..Default::default()
+                })
+            })();
+            let _ = outcome_tx.send(result);
         });
     }
 

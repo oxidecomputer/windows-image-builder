@@ -811,25 +811,59 @@ impl App {
                 egui::TextEdit::singleline(&mut self.project)
                     .desired_width(180.0),
             );
-            ui.add_space(12.0);
-            ui.label("Disk name");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.disk_name)
-                    .desired_width(180.0),
-            );
+            // A golden run derives its installer disk from the run name, so this
+            // field would sit there doing nothing -- which is worse than absent,
+            // because someone will type in it and expect it to matter.
+            if self.upload_goal != UploadGoal::GoldenImage {
+                ui.add_space(12.0);
+                ui.label("Disk name");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.disk_name)
+                        .desired_width(180.0),
+                );
+            }
         });
 
-        let mut whole = self.upload_goal == UploadGoal::WholeInstance;
-        if ui
-            .checkbox(&mut whole, "Also create the instance and install")
-            .changed()
-        {
-            self.upload_goal = if whole {
-                UploadGoal::WholeInstance
-            } else {
-                UploadGoal::DiskOnly
-            };
+        // Three alternatives, one row. Radio buttons rather than a ComboBox because
+        // the count is fixed at three rather than sized by data, and rather than two
+        // checkboxes because choosing one must un-choose the others.
+        let blocked = golden_unavailable(self.built_golden);
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut self.upload_goal,
+                UploadGoal::DiskOnly,
+                "Disk only",
+            );
+            ui.selectable_value(
+                &mut self.upload_goal,
+                UploadGoal::WholeInstance,
+                "Disk + instance",
+            );
+            // Disabled rather than hidden, so it is discoverable, with the reason
+            // said next to it rather than left to be guessed.
+            ui.add_enabled_ui(blocked.is_none(), |ui| {
+                ui.selectable_value(
+                    &mut self.upload_goal,
+                    UploadGoal::GoldenImage,
+                    "Golden image",
+                );
+            });
+        });
+        if let Some(reason) = blocked {
+            // And if the selection is no longer legal -- they picked golden, then
+            // went back and rebuilt as a named machine -- do not silently run the
+            // wrong thing.
+            if self.upload_goal == UploadGoal::GoldenImage {
+                self.upload_goal = UploadGoal::DiskOnly;
+            }
+            ui.label(RichText::new(reason).color(theme::TEXT_DIM).size(11.5));
         }
+
+        if self.upload_goal == UploadGoal::GoldenImage {
+            self.ui_golden_controls(ui);
+        }
+
+        let whole = self.upload_goal == UploadGoal::WholeInstance;
         if whole {
             ui.horizontal(|ui| {
                 ui.label("Instance");
@@ -854,21 +888,87 @@ impl App {
         ui.add_space(8.0);
         match &self.upload {
             Upload::Running(run) => {
-                let fraction = run.fraction.unwrap_or(0.0);
-                ui.add(
-                    egui::ProgressBar::new(fraction)
-                        .desired_width(420.0)
-                        .text(run.detail.clone()),
+                let golden = self.upload_goal == UploadGoal::GoldenImage;
+                // Over an hour the phase matters more than the fraction, which is
+                // only meaningful while the upload is running. So the phase and the
+                // elapsed time lead, and the bar appears only when there is
+                // genuinely a fraction to show.
+                ui.label(
+                    RichText::new(format!(
+                        "{} — {}",
+                        run.phase,
+                        fmt_duration(run.started.elapsed())
+                    ))
+                    .color(theme::PRIMARY)
+                    .size(12.5),
                 );
+                match run.fraction {
+                    Some(fraction) => {
+                        ui.add(
+                            egui::ProgressBar::new(fraction)
+                                .desired_width(420.0)
+                                .text(run.detail.clone()),
+                        );
+                    }
+                    None if !run.detail.is_empty() => {
+                        ui.label(
+                            RichText::new(&run.detail)
+                                .color(theme::TEXT_DIM)
+                                .size(11.5),
+                        );
+                    }
+                    None => {}
+                }
                 if ui.button("Cancel").clicked() {
                     run.cancel.cancel();
                 }
-                hint(
-                    ui,
-                    "Cancelling stops the import cleanly. Closing the app instead \
-                     leaves the disk mid-import, where it refuses deletion until it is \
-                     stopped and finalized.",
+                if golden {
+                    hint(
+                        ui,
+                        "Closing this window stops the run but loses nothing on the \
+                         rack. To carry on from a terminal, or to pick it up later, \
+                         run this — it continues from wherever it got to:",
+                    );
+                    code_block(
+                        ui,
+                        &golden_command(
+                            artifact,
+                            &self.project,
+                            &self.run_name,
+                            self.keep,
+                            self.verify_clone,
+                        ),
+                    );
+                } else {
+                    hint(
+                        ui,
+                        "Cancelling stops the import cleanly. Closing the app instead \
+                         leaves the disk mid-import, where it refuses deletion until it is \
+                         stopped and finalized.",
+                    );
+                }
+            }
+            Upload::Done { outcome, elapsed } if outcome.image.is_some() => {
+                let image = outcome.image.as_deref().unwrap_or_default();
+                ui.label(
+                    RichText::new(format!(
+                        "Image {image} is ready — {}",
+                        fmt_duration(*elapsed)
+                    ))
+                    .color(theme::PRIMARY)
+                    .size(12.0),
                 );
+                if !outcome.leftovers.is_empty() {
+                    // Not a failure. Say so, or someone goes looking for a problem
+                    // with an image that is fine.
+                    hint(
+                        ui,
+                        "The image is finished. These could not be tidied away:",
+                    );
+                    for command in &outcome.leftovers {
+                        code_block(ui, command);
+                    }
+                }
             }
             Upload::Done { outcome, elapsed } => {
                 ui.label(
@@ -914,8 +1014,45 @@ impl App {
                         code_block(ui, command);
                     }
                 }
-                if ui.button("Try again").clicked() {
+                if self.upload_goal == UploadGoal::GoldenImage {
+                    hint(
+                        ui,
+                        "Nothing has been deleted. Pressing this again carries on \
+                         from wherever it got to rather than starting over, and so \
+                         does this command:",
+                    );
+                    code_block(
+                        ui,
+                        &golden_command(
+                            artifact,
+                            &self.project,
+                            &self.run_name,
+                            self.keep,
+                            self.verify_clone,
+                        ),
+                    );
+                    if ui.button("Carry on").clicked() {
+                        self.start_golden();
+                    }
+                } else if ui.button("Try again").clicked() {
                     self.start_upload();
+                }
+            }
+            Upload::Idle if self.upload_goal == UploadGoal::GoldenImage => {
+                let ready = !self.project.trim().is_empty()
+                    && !self.run_name.trim().is_empty();
+                if ready {
+                    if ui.button("Build the golden image").clicked() {
+                        self.start_golden();
+                    }
+                } else {
+                    ui.label(
+                        RichText::new(
+                            "Name a project and a run to start the golden build.",
+                        )
+                        .color(theme::TEXT_DIM)
+                        .size(12.0),
+                    );
                 }
             }
             Upload::Idle => {
@@ -942,6 +1079,59 @@ impl App {
         ui.collapsing("Or run it yourself", |ui| {
             self.ui_upload_commands(ui, artifact);
         });
+    }
+
+    /// The three controls a golden run needs, and the one warning it deserves.
+    fn ui_golden_controls(&mut self, ui: &mut Ui) {
+        hint(
+            ui,
+            "Installs Windows once, generalizes it, and turns the result into an \
+             image the rack can stamp copies from. About an hour, almost all of it \
+             waiting for Setup.",
+        );
+        ui.horizontal(|ui| {
+            ui.label("Run name");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.run_name)
+                    .desired_width(180.0),
+            );
+            ui.add_space(12.0);
+            ui.label("Keep");
+            egui::ComboBox::from_id_salt("keep")
+                .selected_text(keep_label(self.keep))
+                .width(190.0)
+                .show_ui(ui, |ui| {
+                    for keep in [
+                        oxwin_rack::Keep::Image,
+                        oxwin_rack::Keep::Snapshot,
+                        oxwin_rack::Keep::Disks,
+                        oxwin_rack::Keep::All,
+                    ] {
+                        ui.selectable_value(
+                            &mut self.keep,
+                            keep,
+                            keep_label(keep),
+                        );
+                    }
+                });
+        });
+        hint(
+            ui,
+            "Everything is named from the run name: <run>-installer, <run>-system, \
+             the instance <run>, <run>-snap, and the image <run>.",
+        );
+        ui.checkbox(
+            &mut self.verify_clone,
+            "Prove it boots: make a clone and wait for it to come up and stay up",
+        );
+        if self.verify_clone {
+            hint(
+                ui,
+                "Adds about ten minutes, and leaves the clone running so you can log \
+                 in and check its computer name differs from the original. That is \
+                 the one thing this cannot check for you.",
+            );
+        }
     }
 
     /// The copyable commands. Still here, and still complete: an airgapped rack, or
@@ -1338,6 +1528,76 @@ fn upload_command(image: &Path, project: &str, disk: &str) -> String {
     )
 }
 
+/// The command that runs, or resumes, a golden build.
+///
+/// Shown while a run is in flight and again if it fails, because **closing this
+/// window kills the run but loses nothing on the rack** — every step asks the rack
+/// what already exists, so continuing is running this line. An hour is long enough
+/// that someone will close the laptop, and the honest answer is to hand them the
+/// command rather than to pretend the window is safe.
+fn golden_command(
+    image: &Path,
+    project: &str,
+    run: &str,
+    keep: oxwin_rack::Keep,
+    verify: bool,
+) -> String {
+    let mut cmd = format!(
+        "oxwin golden {} \\\n  --run {run} \\\n  --project {project}",
+        image.display()
+    );
+    // Only when it is not the default: a command someone copies should be the
+    // shortest one that does what they asked for.
+    if keep != oxwin_rack::Keep::default() {
+        cmd.push_str(&format!(" \\\n  --keep={}", keep_flag(keep)));
+    }
+    if verify {
+        cmd.push_str(" \\\n  --verify-clone");
+    }
+    cmd
+}
+
+/// What each level means, rather than what it is called. A picker that says only
+/// "disks" makes someone guess whether that is what survives or what goes.
+fn keep_label(keep: oxwin_rack::Keep) -> &'static str {
+    match keep {
+        oxwin_rack::Keep::Image => "the image",
+        oxwin_rack::Keep::Snapshot => "the image and snapshot",
+        oxwin_rack::Keep::Disks => "everything but the instance",
+        oxwin_rack::Keep::All => "everything",
+    }
+}
+
+fn keep_flag(keep: oxwin_rack::Keep) -> &'static str {
+    match keep {
+        oxwin_rack::Keep::Image => "image",
+        oxwin_rack::Keep::Snapshot => "snapshot",
+        oxwin_rack::Keep::Disks => "disks",
+        oxwin_rack::Keep::All => "all",
+    }
+}
+
+/// Why the golden option cannot be chosen, or `None` if it can.
+///
+/// Keyed on what this session actually *built*, never on the current draft: the
+/// draft stays editable after the build, so reading it here would offer a golden run
+/// for an image that is not one. That image installs perfectly and never shuts down,
+/// and the watcher cannot tell that apart from a hang — it would spend two hours on a
+/// working install before saying so.
+fn golden_unavailable(built_golden: Option<bool>) -> Option<&'static str> {
+    match built_golden {
+        Some(true) => None,
+        Some(false) => Some(
+            "This image was built as a named machine, so it will not generalize \
+             itself. Go back to Settings, choose Golden image, and build again.",
+        ),
+        None => Some(
+            "Only available for an image built in this session, because nothing in \
+             an image file says whether it was built to generalize.",
+        ),
+    }
+}
+
 fn instance_json(project: &str, installer_disk: &str) -> String {
     // Written out rather than built with a JSON library: the point is for someone
     // to read it, understand which disk boots, and edit it.
@@ -1392,6 +1652,69 @@ fn eta(elapsed: std::time::Duration, fraction: f32) -> Option<String> {
 mod tests {
     use super::*;
     use oxwin_core::{Deployment, Settings};
+
+    #[test]
+    fn the_golden_command_is_the_resume_command() {
+        let cmd = golden_command(
+            Path::new("/tmp/g4.img"),
+            "danb",
+            "g4",
+            oxwin_rack::Keep::Image,
+            false,
+        );
+        assert!(cmd.contains("oxwin golden /tmp/g4.img"), "{cmd}");
+        assert!(cmd.contains("--run g4"), "{cmd}");
+        assert!(cmd.contains("--project danb"), "{cmd}");
+        // The default is not spelled out: a command someone copies should be the
+        // shortest one that does what they asked for.
+        assert!(!cmd.contains("--keep"), "{cmd}");
+        assert!(!cmd.contains("--verify-clone"), "{cmd}");
+    }
+
+    #[test]
+    fn a_non_default_keep_and_verify_are_spelled_out() {
+        let cmd = golden_command(
+            Path::new("/tmp/g4.img"),
+            "danb",
+            "g4",
+            oxwin_rack::Keep::All,
+            true,
+        );
+        assert!(cmd.contains("--keep=all"), "{cmd}");
+        assert!(cmd.contains("--verify-clone"), "{cmd}");
+    }
+
+    /// Every level has a flag spelling, so a picker cannot produce a command that
+    /// does something other than what the picker said.
+    #[test]
+    fn every_keep_level_has_a_flag() {
+        for keep in [
+            oxwin_rack::Keep::Image,
+            oxwin_rack::Keep::Snapshot,
+            oxwin_rack::Keep::Disks,
+            oxwin_rack::Keep::All,
+        ] {
+            let flag = keep_flag(keep);
+            assert_eq!(
+                flag.parse::<oxwin_rack::Keep>().unwrap(),
+                keep,
+                "{flag} does not round-trip"
+            );
+        }
+    }
+
+    /// The gate reads what was built, not what the draft currently says. Offering a
+    /// golden run for media built as a named machine produces an install that works
+    /// perfectly and never shuts down.
+    #[test]
+    fn golden_is_offered_only_for_an_image_built_as_one() {
+        assert_eq!(golden_unavailable(Some(true)), None);
+        let named = golden_unavailable(Some(false)).expect("a reason");
+        assert!(named.contains("named machine"), "{named}");
+        // And it says how to fix it, rather than only that it is wrong.
+        assert!(named.contains("Settings"), "{named}");
+        assert!(golden_unavailable(None).is_some());
+    }
 
     #[test]
     fn suggested_names_are_filesystem_safe_and_descriptive() {
