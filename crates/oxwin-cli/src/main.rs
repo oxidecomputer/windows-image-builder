@@ -547,8 +547,9 @@ fn golden(args: &[String]) -> Result<()> {
     let quiet = flag_in(args, "quiet");
 
     let source = PathBuf::from(source);
-    // An .img is already built. Anything else is media, and gets built first --
-    // which is also the first reconcile: an image file already there is not rebuilt.
+    // An .img is already built. Anything else is media, and gets built first,
+    // every time -- see build_for_golden for why a resume does not reuse the file
+    // it finds.
     let is_image = source.extension().is_some_and(|e| e == "img");
     let (image_path, version) = if is_image {
         (
@@ -667,8 +668,15 @@ fn golden(args: &[String]) -> Result<()> {
 /// perfectly and never shuts down, and the watcher cannot tell that apart from a
 /// hang -- it would spend its whole timeout on an install that worked.
 ///
-/// Skips the build when the image is already there, which is what makes a resume
-/// after the upload cost nothing rather than several minutes.
+/// **Rebuilds every time, including on a resume**, rather than reusing an image
+/// file that happens to be at `out`.
+///
+/// The tempting alternative -- skip when the file exists -- cannot tell a finished
+/// image from one an interrupted build left half-written, because both are just a
+/// file of the right name. Uploading a truncated installer produces media that fails
+/// somewhere inside Setup, an hour later, for no visible reason. A rebuild costs a
+/// few minutes against a cycle measured in the tens, so the cheap answer is also the
+/// wrong one here.
 fn build_for_golden(
     source: &std::path::Path,
     out: &std::path::Path,

@@ -345,6 +345,12 @@ Everything is named from `--run`: `g4-installer`, `g4-system`, the instance `g4`
 `g4-snap`, and the image `g4`. **Re-running the identical command resumes**, because
 every step asks the rack what already exists rather than consulting a journal.
 
+The one step that does *not* reconcile is the build: from an ISO it rebuilds the image
+every time, including on a resume. A file at `--image-out` could equally be a finished
+image or one an interrupted build left half-written, and uploading a truncated
+installer fails somewhere inside Setup an hour later for no visible reason. A few
+minutes of rebuilding is the cheaper mistake.
+
 ### While it installs — the window to look inside
 
 The watch prints `answered on port 22` when Setup has finished, and the machine is
