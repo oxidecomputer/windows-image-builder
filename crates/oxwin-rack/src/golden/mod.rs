@@ -12,6 +12,8 @@
 
 pub mod keep;
 pub mod names;
+pub mod watch;
 
 pub use keep::{Keep, Resource};
 pub use names::Names;
+pub use watch::{Action, Milestone, Watch};
