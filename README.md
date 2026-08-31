@@ -161,7 +161,12 @@ A golden image is a Windows image you can stamp out copies of. Instead of runnin
 installer every time, you install once, strip the machine of its identity, and turn
 that into an image the rack can create new instances from in a couple of minutes.
 
-The whole thing is one command:
+**In the app:** choose Golden image in Settings, build, and then pick *Golden image*
+on the Export stage. It is offered only for an image built that way, because nothing
+in an image file says whether it was built to generalize, and one that was not
+installs perfectly and then never finishes.
+
+The whole thing is also one command:
 
 ```
 oxwin golden ~/path/to/windows.iso --run=ws2022 --project=<your project> \
