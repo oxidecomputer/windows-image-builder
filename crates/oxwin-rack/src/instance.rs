@@ -88,27 +88,40 @@ pub struct Created {
 pub struct Leftovers {
     pub disks: Vec<String>,
     pub instances: Vec<String>,
+    /// A golden run snapshots the system disk before it makes an image.
+    pub snapshots: Vec<String>,
+    /// The product of a golden run. Present here only when a *later* step failed.
+    pub images: Vec<String>,
 }
 
 impl Leftovers {
     pub fn is_empty(&self) -> bool {
-        self.disks.is_empty() && self.instances.is_empty()
+        self.disks.is_empty()
+            && self.instances.is_empty()
+            && self.snapshots.is_empty()
+            && self.images.is_empty()
     }
 
     /// What to run to clear it, in the order that works.
     ///
-    /// Instances before disks, because a disk attached to an instance cannot be deleted.
+    /// Instances before disks, because a disk attached to an instance cannot be
+    /// deleted and the other order hands the user a command that fails on the first
+    /// line. Snapshots after disks, because a snapshot outlives the disk it came
+    /// from; images last, because an image derived from a snapshot may pin it.
     pub fn cleanup_commands(&self, project: &str) -> Vec<String> {
+        use crate::golden::Resource;
         let mut out = Vec::new();
-        for instance in &self.instances {
-            out.push(format!(
-                "oxide instance delete --project {project} --instance {instance}"
-            ));
+        for n in &self.instances {
+            out.push(Resource::Instance(n.clone()).delete_command(project));
         }
-        for disk in &self.disks {
-            out.push(format!(
-                "oxide disk delete --project {project} --disk {disk}"
-            ));
+        for n in &self.disks {
+            out.push(Resource::Disk(n.clone()).delete_command(project));
+        }
+        for n in &self.snapshots {
+            out.push(Resource::Snapshot(n.clone()).delete_command(project));
+        }
+        for n in &self.images {
+            out.push(Resource::Image(n.clone()).delete_command(project));
         }
         out
     }
@@ -275,6 +288,25 @@ mod tests {
         assert!(spec.start);
     }
 
+    /// A golden run can leave four kinds of thing behind, and the order they have
+    /// to be removed in is the whole reason this function exists.
+    #[test]
+    fn cleanup_orders_instances_disks_snapshots_images() {
+        let leftovers = Leftovers {
+            disks: vec!["d1".into()],
+            instances: vec!["i1".into()],
+            snapshots: vec!["s1".into()],
+            images: vec!["m1".into()],
+        };
+        let commands = leftovers.cleanup_commands("danb");
+        assert_eq!(commands.len(), 4);
+        assert!(commands[0].contains("instance delete"), "{commands:?}");
+        assert!(commands[1].contains("disk delete"), "{commands:?}");
+        assert!(commands[2].contains("snapshot delete"), "{commands:?}");
+        assert!(commands[3].contains("image delete"), "{commands:?}");
+        assert!(commands.iter().all(|c| c.contains("--project danb")));
+    }
+
     /// Instances before disks. A disk attached to an instance cannot be deleted, so the
     /// other order hands the user commands that fail on the first one.
     #[test]
@@ -282,6 +314,7 @@ mod tests {
         let leftovers = Leftovers {
             disks: vec!["d1".into()],
             instances: vec!["i1".into()],
+            ..Default::default()
         };
         let commands = leftovers.cleanup_commands("danb");
         assert_eq!(commands.len(), 2);
