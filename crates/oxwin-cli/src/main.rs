@@ -38,6 +38,7 @@ fn main() -> Result<()> {
         "image" => image(&args[1..]),
         "teardown" => teardown(&args[1..]),
         "golden" => golden(&args[1..]),
+        "verify" => verify(&args[1..]),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())
@@ -59,6 +60,7 @@ usage: oxwin doctor
        oxwin image <run> --project=<p> [--image-version=<v>]
        oxwin teardown <run> --project=<p> [--keep=image]
        oxwin golden <iso-or-mount-or-img> --run=<name> --project=<p>
+       oxwin verify <run> --project=<p>
 
   --name=<hostname>      computer name, or * for a golden image
   --generalize           after the install finishes, sysprep /generalize and
@@ -152,6 +154,9 @@ golden options:
   --timeout=<dur>        how long to wait for the install (default 2h)
   --image-version=<v>    detected from the media unless the source is an .img
   --system-disk-gib=<n>  size of the disk Windows installs onto (default 100)
+  --verify-clone         when the image is made, create an instance from it
+                         and prove it comes up and stays up. Leaves it
+                         running: it is the proof. Same as `oxwin verify`
   --cpus=<n>  --memory-gib=<n>  --profile=<name>
                          as for instance, plus every build option above
 
@@ -420,7 +425,7 @@ fn instance(args: &[String]) -> Result<()> {
         spec.memory_gib = v.parse().context("--memory-gib must be a number")?;
     }
     if let Some(v) = opt("system-disk") {
-        spec.system_disk = v;
+        spec.system_disk = Some(v);
     }
     if let Some(v) = opt("system-disk-gib") {
         spec.system_disk_gib =
@@ -464,7 +469,9 @@ fn instance(args: &[String]) -> Result<()> {
         "instance {} created in project {project}, booting from {installer}",
         created.instance
     );
-    println!("  system disk: {}", created.system_disk);
+    if let Some(disk) = &created.system_disk {
+        println!("  system disk: {disk}");
+    }
     for warning in &created.warnings {
         println!("\nnote: {warning}");
     }
@@ -601,6 +608,12 @@ fn golden(args: &[String]) -> Result<()> {
     match result {
         Ok(golden) => {
             println!("\nimage {} is ready in project {project}", golden.image);
+            if flag_in(args, "verify-clone") {
+                // After the image, never instead of it: a clone that fails to come
+                // up is a fact about the image, and the image is still what the run
+                // produced.
+                verify(args)?;
+            }
             if !golden.leftovers.is_empty() {
                 // Not a failure: the image exists. Say so, so nobody goes looking
                 // for a problem with an image that is fine.
@@ -703,6 +716,51 @@ fn build_for_golden(
     // The label, not the slug: this becomes the image's version string, which
     // someone reads in `oxide image list` months later.
     Ok(output.release.label().to_string())
+}
+
+/// Prove the image boots: clone it, and watch it come up and stay up.
+///
+/// Until this has been run, "golden image" is a claim rather than a feature.
+fn verify(args: &[String]) -> Result<()> {
+    let (names, project, selector, quiet) = golden_common(args, "verify")?;
+    let opt = |key: &str| -> Option<String> {
+        let prefix = format!("--{key}=");
+        args.iter().find_map(|a| a.strip_prefix(&prefix).map(str::to_string))
+    };
+    let mut opts = oxwin_rack::golden::WatchOptions::default();
+    if let Some(v) = opt("timeout") {
+        opts.timeout = oxwin_rack::golden::watch::parse_duration(&v)?;
+    }
+    let cancel = cancel_on_interrupt();
+    let rack = oxwin_rack::Rack::connect(&selector, &project)?;
+    let (reporter, printer) = printer(quiet, "verifying");
+    let result = rack.verify_clone(&names, &opts, &reporter, &cancel);
+    drop(reporter);
+    printer.join().ok();
+    result?;
+
+    println!(
+        "\n{} came up and stayed up, so the image boots and does not \
+         generalize itself.",
+        names.clone_instance()
+    );
+    // The one thing a green result cannot stand in for. Said plainly rather than
+    // implied, because it is the entire reason for generalizing.
+    println!(
+        "\nStill to check by hand, and it is the point of the exercise: log in \
+         and confirm the clone's computer name and SID DIFFER from the machine \
+         the image was taken from.\n  \
+         hostname\n  \
+         Get-CimInstance Win32_UserAccount | Select-Object SID"
+    );
+    println!(
+        "\nwhen you are done with it:\n  \
+         oxide instance delete --project {project} --instance {}\n  \
+         oxide disk delete --project {project} --disk {}",
+        names.clone_instance(),
+        names.clone_disk()
+    );
+    Ok(())
 }
 
 /// Snapshot the system disk of a stopped, generalized instance.

@@ -522,7 +522,7 @@ impl App {
                     match rack.create_instance(&instance, &reporter) {
                         Ok(created) => {
                             outcome.instance = Some(created.instance);
-                            outcome.system_disk = Some(created.system_disk);
+                            outcome.system_disk = created.system_disk;
                             outcome.warnings = created.warnings;
                         }
                         Err(failure) => {

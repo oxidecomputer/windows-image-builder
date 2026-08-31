@@ -235,7 +235,7 @@ impl Rack {
                         &names.instance(),
                         &names.installer_disk(),
                     );
-                    instance.system_disk = names.system_disk();
+                    instance.system_disk = Some(names.system_disk());
                     instance.system_disk_gib = spec.system_disk_gib;
                     instance.ncpus = spec.ncpus;
                     instance.memory_gib = spec.memory_gib;

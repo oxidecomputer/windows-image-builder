@@ -41,7 +41,12 @@ pub struct InstanceSpec {
     /// The already-uploaded installer. Pinned as the boot disk.
     pub installer_disk: String,
     /// Blank disk for Windows to install onto, created here.
-    pub system_disk: String,
+    ///
+    /// `None` for a machine that needs no second disk, which is what a clone made
+    /// from a finished image is: the image *is* its system disk. Creating a
+    /// throwaway 1 GiB disk to satisfy this field would leave a resource nobody
+    /// asked for on every clone check.
+    pub system_disk: Option<String>,
     pub system_disk_gib: u64,
     /// Block size for the system disk. 4096 is what a rack normally uses; the *installer*
     /// is the one that must be 512.
@@ -61,7 +66,7 @@ impl InstanceSpec {
             ncpus: 4,
             memory_gib: 8,
             installer_disk: installer_disk.to_string(),
-            system_disk: format!("{name}-system"),
+            system_disk: Some(format!("{name}-system")),
             system_disk_gib: 100,
             system_block_size: 4096,
             start: true,
@@ -73,7 +78,7 @@ impl InstanceSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Created {
     pub instance: String,
-    pub system_disk: String,
+    pub system_disk: Option<String>,
     /// Things that are true and cannot be fixed from here.
     pub warnings: Vec<String>,
 }
@@ -149,17 +154,19 @@ impl Rack {
     ) -> std::result::Result<Created, Failure> {
         let mut leftovers = Leftovers::default();
 
-        reporter.phase(
-            "instance",
-            format!(
-                "creating system disk {} ({} GiB)",
-                spec.system_disk, spec.system_disk_gib
-            ),
-        );
-        if let Err(error) = self.create_system_disk(spec) {
-            return Err(Failure { error, leftovers });
+        if let Some(system_disk) = &spec.system_disk {
+            reporter.phase(
+                "instance",
+                format!(
+                    "creating system disk {} ({} GiB)",
+                    system_disk, spec.system_disk_gib
+                ),
+            );
+            if let Err(error) = self.create_system_disk(spec, system_disk) {
+                return Err(Failure { error, leftovers });
+            }
+            leftovers.disks.push(system_disk.clone());
         }
-        leftovers.disks.push(spec.system_disk.clone());
 
         reporter.phase("instance", format!("creating instance {}", spec.name));
         match self.create_the_instance(spec) {
@@ -174,11 +181,15 @@ impl Rack {
         })
     }
 
-    fn create_system_disk(&self, spec: &InstanceSpec) -> Result<()> {
+    fn create_system_disk(
+        &self,
+        spec: &InstanceSpec,
+        system_disk: &str,
+    ) -> Result<()> {
         // Whole GiB, at least one. Without this the first real upload is rejected.
         let gib = spec.system_disk_gib.max(1);
         let body = oxide::types::DiskCreate {
-            name: name(&spec.system_disk)?,
+            name: name(system_disk)?,
             description: format!("System disk for {}", spec.name),
             size: oxide::types::ByteCount(gib * GIB),
             disk_backend: oxide::types::DiskSource::Blank {
@@ -198,7 +209,7 @@ impl Rack {
                 .body(body)
                 .send(),
         )
-        .with_context(|| format!("creating disk {}", spec.system_disk))?;
+        .with_context(|| format!("creating disk {system_disk}"))?;
         Ok(())
     }
 
@@ -219,9 +230,14 @@ impl Rack {
             boot_disk: Some(oxide::types::InstanceDiskAttachment::Attach {
                 name: name(&spec.installer_disk)?,
             }),
-            disks: vec![oxide::types::InstanceDiskAttachment::Attach {
-                name: name(&spec.system_disk)?,
-            }],
+            disks: match &spec.system_disk {
+                Some(disk) => {
+                    vec![oxide::types::InstanceDiskAttachment::Attach {
+                        name: name(disk)?,
+                    }]
+                }
+                None => Vec::new(),
+            },
             // Without this the instance has no route in at all, and nothing inside the
             // guest can add one afterwards.
             external_ips: vec![oxide::types::ExternalIpCreate::Ephemeral {
@@ -283,7 +299,7 @@ mod tests {
     fn defaults_pin_the_installer_as_the_boot_disk_and_name_a_system_disk() {
         let spec = InstanceSpec::for_installer("windows", "ws2022-installer");
         assert_eq!(spec.installer_disk, "ws2022-installer");
-        assert_eq!(spec.system_disk, "windows-system");
+        assert_eq!(spec.system_disk.as_deref(), Some("windows-system"));
         assert!(spec.system_disk_gib >= 1, "a disk must be at least 1 GiB");
         assert!(spec.start);
     }

@@ -53,9 +53,40 @@ pub enum Action {
     Failed(String),
 }
 
+/// How long a clone must stay running after answering on port 22 before it counts.
+///
+/// Not zero, and that is the whole point. The failure a clone check exists to catch
+/// is an image that generalizes itself again and powers off, and on a rack that
+/// happened about a minute after the machine reached a normal startup. A check that
+/// stops at the first successful connection to port 22 therefore passes on exactly
+/// the broken image it was written to catch. Five minutes is several times the
+/// observed delay.
+pub const CLONE_SETTLE: Duration = Duration::from_secs(5 * 60);
+
+/// What counts as finished.
+///
+/// The two are inverses, and naming them is the point. A golden build finishes by
+/// *shutting down*, and port 22 is only the milestone proving Setup got that far. A
+/// clone finishes by *coming up*, and stopping means it failed. Confusing them means
+/// waiting two hours for a shutdown that is never coming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Finished when the instance stops, having been reachable.
+    Generalize,
+    /// Finished when port 22 answers.
+    Clone,
+}
+
 /// The watcher's memory: which milestones have been announced, and what was seen.
 pub struct Watch {
+    mode: Mode,
     timeout: Duration,
+    /// Clone mode only: how long the machine must stay up after answering on 22
+    /// before the clone is believed. See the check in `observe` for why this is
+    /// not zero.
+    settle: Duration,
+    /// Clone mode only: when port 22 first answered.
+    reachable_at: Option<Duration>,
     announced_running: bool,
     /// Whether the Reachable milestone has been emitted. Distinct from
     /// `ever_reachable`, which is the judgement input and is never reset.
@@ -71,8 +102,31 @@ pub struct Watch {
 
 impl Watch {
     pub fn new(timeout: Duration) -> Self {
+        Self::with_mode(Mode::Generalize, timeout)
+    }
+
+    /// A watch for a clone made from a finished image.
+    ///
+    /// A clone boots into OOBE and comes up as a usable machine; it does not shut
+    /// down, because the marker file captured into the image tells `OxideGeneralize`
+    /// there is nothing to do. So port 22 is the finish here, not a milestone.
+    pub fn for_clone(timeout: Duration) -> Self {
+        Self::with_mode(Mode::Clone, timeout)
+    }
+
+    /// How long a clone must stay up. For tests, and for a caller who knows the
+    /// image takes longer than usual to settle.
+    pub fn with_settle(mut self, settle: Duration) -> Self {
+        self.settle = settle;
+        self
+    }
+
+    fn with_mode(mode: Mode, timeout: Duration) -> Self {
         Self {
+            mode,
             timeout,
+            settle: CLONE_SETTLE,
+            reachable_at: None,
             announced_running: false,
             reachable_announced: false,
             ever_reachable: false,
@@ -91,6 +145,37 @@ impl Watch {
         }
         if matches!(state, InstanceState::Running) {
             self.ever_running = true;
+        }
+
+        if self.mode == Mode::Clone {
+            if matches!(state, InstanceState::Stopped) {
+                return Action::Failed(
+                    "the clone powered itself off. A clone must boot into OOBE and \
+                     STAY up: if it shuts down, OxideGeneralize generalized it \
+                     again, which means the marker file C:\\oxide-generalized.txt \
+                     was not captured into the image or the task was re-armed. \
+                     That is a fleet that will not stay on"
+                        .into(),
+                );
+            }
+            // Answering on 22 is not the finish. The failure this check exists to
+            // catch -- a clone that generalizes itself again -- happens about a
+            // minute AFTER the machine comes up, so a check that stops at the first
+            // successful connection passes on precisely the image that is broken.
+            // It has to stay up.
+            match self.reachable_at {
+                None if port_22 => {
+                    self.reachable_at = Some(elapsed);
+                    // Also mark it announced, or the shared path below emits the
+                    // same milestone again on every poll of the settle window.
+                    self.reachable_announced = true;
+                    return Action::Reached(Milestone::Reachable);
+                }
+                Some(at) if elapsed >= at + self.settle => {
+                    return Action::Finished;
+                }
+                _ => {}
+            }
         }
 
         match state {
@@ -320,6 +405,74 @@ mod tests {
             panic!("expected a timeout, got {action:?}");
         };
         assert!(why.contains("generalize"), "{why}");
+    }
+
+    /// A clone's finish is the inverse of a golden build's: it comes up rather than
+    /// shutting down. But coming up is not enough on its own -- see the next test.
+    #[test]
+    fn a_clone_finishes_only_after_it_has_stayed_up() {
+        let mut w = Watch::for_clone(TIMEOUT).with_settle(secs(300));
+        assert_eq!(
+            w.observe(S::Starting, false, secs(10)),
+            Action::KeepWaiting
+        );
+        assert_eq!(
+            w.observe(S::Running, false, secs(60)),
+            Action::Reached(Milestone::Running)
+        );
+        assert_eq!(
+            w.observe(S::Running, true, secs(600)),
+            Action::Reached(Milestone::Reachable)
+        );
+        // Still inside the settle window: answering is not finishing.
+        assert_eq!(w.observe(S::Running, true, secs(700)), Action::KeepWaiting);
+        assert_eq!(w.observe(S::Running, true, secs(899)), Action::KeepWaiting);
+        assert_eq!(w.observe(S::Running, true, secs(900)), Action::Finished);
+    }
+
+    /// The whole reason the clone check exists, and the reason it cannot stop at the
+    /// first successful connection.
+    ///
+    /// A broken image generalizes itself again and powers off about a minute after
+    /// reaching a normal startup -- so it answers on port 22 first, and a check that
+    /// finished there would pass on exactly the image it was written to catch.
+    /// Seen on a rack over three cycles.
+    #[test]
+    fn a_clone_that_comes_up_and_then_powers_itself_off_has_failed() {
+        let mut w = Watch::for_clone(TIMEOUT).with_settle(secs(300));
+        w.observe(S::Running, false, secs(60));
+        assert_eq!(
+            w.observe(S::Running, true, secs(600)),
+            Action::Reached(Milestone::Reachable),
+            "it did come up"
+        );
+        let action = w.observe(S::Stopped, false, secs(660));
+        let Action::Failed(why) = action else {
+            panic!("a clone that powers itself off must fail, got {action:?}");
+        };
+        assert!(
+            why.contains("oxide-generalized.txt"),
+            "the reason must name the marker file: {why}"
+        );
+    }
+
+    /// And a clone that never comes up at all is a failure too, by timeout.
+    #[test]
+    fn a_clone_that_stops_before_answering_has_failed() {
+        let mut w = Watch::for_clone(TIMEOUT);
+        w.observe(S::Running, false, secs(60));
+        let action = w.observe(S::Stopped, false, secs(300));
+        assert!(matches!(action, Action::Failed(_)), "{action:?}");
+    }
+
+    /// The settle window is not zero. A zero default would silently reintroduce the
+    /// bug this whole check exists for.
+    #[test]
+    fn the_clone_settle_window_is_minutes_not_instant() {
+        assert!(
+            CLONE_SETTLE >= Duration::from_secs(120),
+            "a settle window shorter than the observed failure delay proves nothing"
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@
 //! the normal state of every one of these during a run.
 
 use crate::golden::keep::Resource;
+use crate::golden::names::Names;
 use crate::golden::watch::{Action, Milestone, Watch, WatchOptions};
 use crate::upload::Rack;
 use anyhow::{Context, Result};
@@ -39,14 +40,14 @@ pub fn pick_address(ips: &[ExternalIp]) -> Option<IpAddr> {
     })
 }
 
+/// The longest a single port probe may block the watch loop.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Is anything listening?
 ///
 /// A refused or timed-out connection is `false`, not an error: for most of an
 /// install that is the correct and expected answer, and an error here would end the
 /// watch on a machine that is working.
-/// The longest a single port probe may block the watch loop.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-
 pub fn port_open(addr: IpAddr, port: u16, timeout: Duration) -> bool {
     TcpStream::connect_timeout(&SocketAddr::new(addr, port), timeout).is_ok()
 }
@@ -239,6 +240,107 @@ impl Rack {
         .map_err(|e| anyhow::anyhow!("{e}"))
         .with_context(|| format!("creating image {name}"))?;
         Ok(())
+    }
+
+    /// A disk whose contents are a finished image. The clone's system disk.
+    pub fn create_disk_from_image(
+        &self,
+        disk: &str,
+        image: &str,
+    ) -> Result<()> {
+        let image_id = self.image_id(image)?.ok_or_else(|| {
+            anyhow::anyhow!("there is no image called {image}")
+        })?;
+        let size = self
+            .block_on(
+                self.client()
+                    .image_view()
+                    .project(self.project())
+                    .image(image)
+                    .send(),
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .into_inner()
+            .size;
+        let body = oxide::types::DiskCreate {
+            name: disk
+                .parse()
+                .map_err(|e| anyhow::anyhow!("disk name {disk:?}: {e}"))?,
+            description: format!("Clone of {image}, to prove it boots"),
+            size,
+            // Writable: the clone boots from it and runs OOBE, which writes.
+            disk_backend: oxide::types::DiskSource::Image {
+                image_id,
+                read_only: false,
+            }
+            .into(),
+        };
+        self.block_on(
+            self.client()
+                .disk_create()
+                .project(self.project())
+                .body(body)
+                .send(),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .with_context(|| format!("creating {disk} from image {image}"))?;
+        Ok(())
+    }
+
+    /// Prove the image boots: a disk from it, an instance from that disk, and then
+    /// wait for it to come up **and stay up**.
+    ///
+    /// Idempotent like everything else, so a re-run reuses a clone that already
+    /// exists rather than colliding with its name.
+    ///
+    /// Until this has run and been checked, "golden image" is a claim rather than a
+    /// feature. What it cannot check is the part that matters most — that the
+    /// clone's computer name and SID differ from the machine the image came from —
+    /// because that needs a look inside the guest. The caller says so.
+    pub fn verify_clone(
+        &self,
+        names: &Names,
+        opts: &WatchOptions,
+        reporter: &Reporter,
+        cancel: &Cancel,
+    ) -> Result<()> {
+        if self.instance_state(&names.clone_instance())?.is_none() {
+            reporter.phase(
+                "verify",
+                format!(
+                    "creating {} from image {}",
+                    names.clone_instance(),
+                    names.image()
+                ),
+            );
+            if self.disk_state(&names.clone_disk())?.is_none() {
+                self.create_disk_from_image(
+                    &names.clone_disk(),
+                    &names.image(),
+                )?;
+            }
+            let mut spec = crate::InstanceSpec::for_installer(
+                &names.clone_instance(),
+                &names.clone_disk(),
+            );
+            // The image is the system disk. A clone needs no second one.
+            spec.system_disk = None;
+            self.create_instance(&spec, reporter).map_err(|f| f.error)?;
+        }
+        reporter.phase(
+            "verify",
+            format!(
+                "waiting for {} to come up and stay up",
+                names.clone_instance()
+            ),
+        );
+        self.watch_for(
+            &names.clone_instance(),
+            Watch::for_clone(opts.timeout),
+            opts,
+            reporter,
+            cancel,
+        )
     }
 
     /// Remove one resource. **Already gone is success**, which is what makes
