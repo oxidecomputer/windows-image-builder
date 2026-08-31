@@ -464,11 +464,14 @@ impl Rack {
                         "{instance} is running; the guest has begun booting"
                     ),
                 ),
+                // Neutral for the same reason as the milestone above: on a clone
+                // this is OOBE finishing, not Setup, and the log should not say
+                // otherwise. It is also weaker than it looks -- sshd starts
+                // automatically and answers while OOBE is still running.
                 Action::Reached(Milestone::Reachable) => reporter.phase(
                     "watch",
                     format!(
-                        "{instance} answered on port 22 after {}: Setup has \
-                         finished",
+                        "{instance} answered on port 22 after {}",
                         elapsed(started)
                     ),
                 ),
