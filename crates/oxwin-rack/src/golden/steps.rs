@@ -44,6 +44,9 @@ pub fn pick_address(ips: &[ExternalIp]) -> Option<IpAddr> {
 /// A refused or timed-out connection is `false`, not an error: for most of an
 /// install that is the correct and expected answer, and an error here would end the
 /// watch on a machine that is working.
+/// The longest a single port probe may block the watch loop.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 pub fn port_open(addr: IpAddr, port: u16, timeout: Duration) -> bool {
     TcpStream::connect_timeout(&SocketAddr::new(addr, port), timeout).is_ok()
 }
@@ -338,9 +341,13 @@ impl Rack {
                 address = self.reachable_address(instance)?;
             }
             let port_22 = match address {
-                // Half the poll interval: a probe that blocks for the whole
-                // interval turns a fifteen-second loop into a thirty-second one.
-                Some(addr) => port_open(addr, 22, opts.poll / 2),
+                // Capped as well as bounded by the poll interval. A probe that
+                // blocks for the whole interval turns a fifteen-second loop into a
+                // thirty-second one, and it is also time the loop cannot notice a
+                // Ctrl-C in. Three seconds is many times a TCP handshake.
+                Some(addr) => {
+                    port_open(addr, 22, (opts.poll / 2).min(PROBE_TIMEOUT))
+                }
                 None => false,
             };
 
@@ -388,7 +395,7 @@ impl Rack {
                 last_tick = Some(std::time::Instant::now());
             }
             last_state = Some(state);
-            std::thread::sleep(opts.poll);
+            sleep_until_cancelled(opts.poll, cancel);
         }
     }
 
@@ -419,6 +426,24 @@ impl Rack {
                 reporter.log(format!("could not read the serial console: {e}"))
             }
         }
+    }
+}
+
+/// Wait, but wake up promptly when cancelled.
+///
+/// A plain `sleep(poll)` makes Ctrl-C take up to a full poll interval to be
+/// noticed, and during a watch there is nothing to tear down — the guest is
+/// installing and does not care — so a cancel there should be immediate. Someone
+/// who presses Ctrl-C and sees nothing happen for twenty seconds presses it again,
+/// and the second press is the one that abandons rather than cleans up.
+fn sleep_until_cancelled(total: Duration, cancel: &Cancel) {
+    const SLICE: Duration = Duration::from_millis(200);
+    let deadline = std::time::Instant::now() + total;
+    while std::time::Instant::now() < deadline {
+        if cancel.is_cancelled() {
+            return;
+        }
+        std::thread::sleep(SLICE.min(deadline - std::time::Instant::now()));
     }
 }
 
@@ -462,6 +487,32 @@ mod tests {
     #[test]
     fn an_instance_with_only_snat_has_no_address_to_poll() {
         assert_eq!(pick_address(&[snat(v4(10, 0, 0, 1))]), None);
+    }
+
+    /// During a watch there is nothing to tear down, so a cancel has to be
+    /// immediate. It was not: the loop checked only at the top and then slept a
+    /// whole poll interval, so Ctrl-C took up to twenty seconds to be noticed —
+    /// long enough that the natural response is to press it again, and the second
+    /// press abandons rather than cleans up. Found on a rack, not in a test.
+    #[test]
+    fn a_cancelled_sleep_returns_at_once() {
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let started = std::time::Instant::now();
+        sleep_until_cancelled(Duration::from_secs(30), &cancel);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a cancelled sleep waited {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// And an uncancelled one still waits.
+    #[test]
+    fn an_uncancelled_sleep_waits_its_full_time() {
+        let started = std::time::Instant::now();
+        sleep_until_cancelled(Duration::from_millis(500), &Cancel::new());
+        assert!(started.elapsed() >= Duration::from_millis(450));
     }
 
     /// Closed is the normal case for most of an install — it must be an answer, not
