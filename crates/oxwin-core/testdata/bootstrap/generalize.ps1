@@ -227,15 +227,37 @@ if (-not (Test-Path $unattend)) {
 GLog "install finished; generalizing for cloning with $unattend"
 Set-Content -LiteralPath $marker -Value (Get-Date -Format o)
 Unregister-ScheduledTask -TaskName 'OxideGeneralize' -Confirm:$false -ErrorAction SilentlyContinue
-& "$env:SystemRoot\System32\Sysprep\sysprep.exe" /generalize /oobe /shutdown /unattend:"$unattend"
-$code = $LASTEXITCODE
+# Start-Process -Wait -PassThru, NOT `& sysprep.exe`. $LASTEXITCODE is populated only
+# by console-subsystem programs, and sysprep.exe leaves it unset here, so `$code -eq 0`
+# compared $null against 0, was False, and took the failure path on a sysprep that had
+# SUCCEEDED. That path deletes the marker and re-arms the task, so the machine
+# generalized and shut itself down again on every boot. Seen on a rack over three
+# cycles, each logging "sysprep FAILED with exit code " with no number after it -- the
+# empty exit code is the tell.
+$code = $null
+try {
+  $proc = Start-Process -FilePath "$env:SystemRoot\System32\Sysprep\sysprep.exe" -ArgumentList '/generalize','/oobe','/shutdown',"/unattend:$unattend" -Wait -PassThru -ErrorAction Stop
+  $code = $proc.ExitCode
+} catch {
+  GLog "could not start sysprep: $_"
+}
 # Branch on the exit code, NOT on reaching this line. sysprep /shutdown returns
 # straight away and Windows powers off a moment later, so everything below runs on
-# success too unless it is guarded. Getting that wrong produced an infinite loop on a
-# rack: sysprep succeeded, the lines below removed the marker and put the task back,
-# and so every subsequent boot generalized the machine and shut it down again.
+# success too unless it is guarded.
 if ($code -eq 0) {
   GLog "sysprep accepted; the machine is shutting down. Snapshot it once it stops."
+  exit 0
+}
+if ($null -eq $code) {
+  # Unknown is not failure, and the two are not symmetric. The recovery below deletes
+  # the marker and re-arms the task, so treating "no exit code" as a failure is what
+  # turns one successful generalize into a machine that generalizes itself forever.
+  # A machine needing one manual retry is a far better wrong answer than a fleet that
+  # will not stay on. The task is already unregistered above, so exiting here leaves
+  # the machine armed for nothing.
+  GLog "sysprep returned no exit code, so whether it worked is unknown. Leaving the"
+  GLog "marker in place and NOT re-arming the task: booting to OOBE means it worked."
+  GLog "If it did not, see C:\Windows\System32\Sysprep\Panther and sysprep by hand."
   exit 0
 }
 GLog "sysprep FAILED with exit code $code; see C:\Windows\System32\Sysprep\Panther"

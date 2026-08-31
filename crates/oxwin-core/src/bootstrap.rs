@@ -321,15 +321,37 @@ if (-not (Test-Path $unattend)) {
 GLog "install finished; generalizing for cloning with $unattend"
 Set-Content -LiteralPath $marker -Value (Get-Date -Format o)
 Unregister-ScheduledTask -TaskName 'OxideGeneralize' -Confirm:$false -ErrorAction SilentlyContinue
-& "$env:SystemRoot\System32\Sysprep\sysprep.exe" /generalize /oobe /shutdown /unattend:"$unattend"
-$code = $LASTEXITCODE
+# Start-Process -Wait -PassThru, NOT `& sysprep.exe`. $LASTEXITCODE is populated only
+# by console-subsystem programs, and sysprep.exe leaves it unset here, so `$code -eq 0`
+# compared $null against 0, was False, and took the failure path on a sysprep that had
+# SUCCEEDED. That path deletes the marker and re-arms the task, so the machine
+# generalized and shut itself down again on every boot. Seen on a rack over three
+# cycles, each logging "sysprep FAILED with exit code " with no number after it -- the
+# empty exit code is the tell.
+$code = $null
+try {
+  $proc = Start-Process -FilePath "$env:SystemRoot\System32\Sysprep\sysprep.exe" -ArgumentList '/generalize','/oobe','/shutdown',"/unattend:$unattend" -Wait -PassThru -ErrorAction Stop
+  $code = $proc.ExitCode
+} catch {
+  GLog "could not start sysprep: $_"
+}
 # Branch on the exit code, NOT on reaching this line. sysprep /shutdown returns
 # straight away and Windows powers off a moment later, so everything below runs on
-# success too unless it is guarded. Getting that wrong produced an infinite loop on a
-# rack: sysprep succeeded, the lines below removed the marker and put the task back,
-# and so every subsequent boot generalized the machine and shut it down again.
+# success too unless it is guarded.
 if ($code -eq 0) {
   GLog "sysprep accepted; the machine is shutting down. Snapshot it once it stops."
+  exit 0
+}
+if ($null -eq $code) {
+  # Unknown is not failure, and the two are not symmetric. The recovery below deletes
+  # the marker and re-arms the task, so treating "no exit code" as a failure is what
+  # turns one successful generalize into a machine that generalizes itself forever.
+  # A machine needing one manual retry is a far better wrong answer than a fleet that
+  # will not stay on. The task is already unregistered above, so exiting here leaves
+  # the machine armed for nothing.
+  GLog "sysprep returned no exit code, so whether it worked is unknown. Leaving the"
+  GLog "marker in place and NOT re-arming the task: booting to OOBE means it worked."
+  GLog "If it did not, see C:\Windows\System32\Sysprep\Panther and sysprep by hand."
   exit 0
 }
 GLog "sysprep FAILED with exit code $code; see C:\Windows\System32\Sysprep\Panther"
@@ -405,7 +427,10 @@ mod tests {
         assert!(!named.contains("OxideGeneralize"));
 
         let golden = build(&Config { generalize: true, ..base() }).unwrap();
-        assert!(golden.contains("sysprep.exe\" /generalize /oobe /shutdown"));
+        assert!(
+            golden.contains("'/generalize','/oobe','/shutdown'"),
+            "the sysprep arguments"
+        );
         assert!(golden.contains("OxideGeneralize"));
         // And the guard that stops clones generalizing themselves.
         assert!(
@@ -422,12 +447,27 @@ mod tests {
         // machine and re-arms the task, which on a rack produced a guest that
         // generalized and shut itself down on every single boot.
         assert!(
-            golden.contains("$code = $LASTEXITCODE")
-                && golden.contains("if ($code -eq 0) {"),
+            golden.contains("if ($code -eq 0) {"),
             "the sysprep result must be tested by exit code"
         );
+        // And it must be an exit code that actually exists. `$LASTEXITCODE` is set
+        // only by console-subsystem programs; sysprep.exe leaves it unset, so the
+        // previous `& sysprep.exe` plus `$code = $LASTEXITCODE` compared $null with
+        // 0, took the failure path on a *successful* sysprep, and re-armed the task.
+        // Three generalize-and-shutdown cycles on a rack, each logging an exit code
+        // with no number in it.
+        // Scoped to sysprep: `$LASTEXITCODE` is right for pnputil and install-sshd,
+        // which are console programs that set it.
+        assert!(
+            !golden.contains("$code = $LASTEXITCODE"),
+            "sysprep.exe does not set $LASTEXITCODE; use Start-Process -PassThru"
+        );
+        assert!(
+            golden.contains("-Wait -PassThru"),
+            "the exit code has to come from the process object"
+        );
         let after_sysprep = golden
-            .split("sysprep.exe\" /generalize")
+            .split("-ArgumentList '/generalize'")
             .nth(1)
             .expect("the sysprep invocation");
         let success_branch = after_sysprep
@@ -439,6 +479,19 @@ mod tests {
         assert!(
             success_branch < undo,
             "the success branch must exit before the marker is removed"
+        );
+
+        // An unknown exit code must also exit before the recovery path. This is the
+        // asymmetry that matters: undoing the marker after a sysprep that in fact
+        // worked produces a machine that generalizes itself on every boot, while
+        // leaving it after one that failed produces a machine somebody retries by
+        // hand. Only one of those is recoverable without a console.
+        let unknown = after_sysprep
+            .find("if ($null -eq $code) {")
+            .expect("the unknown-exit-code branch");
+        assert!(
+            unknown < undo,
+            "an unknown exit code must not reach the marker removal"
         );
     }
 
