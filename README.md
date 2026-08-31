@@ -155,6 +155,64 @@ detach it whenever it is convenient.
 
 ---
 
+## Making a golden image
+
+A golden image is a Windows image you can stamp out copies of. Instead of running the
+installer every time, you install once, strip the machine of its identity, and turn
+that into an image the rack can create new instances from in a couple of minutes.
+
+The whole thing is one command:
+
+```
+oxwin golden ~/path/to/windows.iso --run=ws2022 --project=<your project> \
+  --user=oxide --password=… --ssh-key="$(cat ~/.ssh/id_ed25519.pub)"
+```
+
+It takes about half an hour, most of it spent watching an install that nobody has to
+sit through. It builds the media, uploads it, creates a temporary instance, waits for
+Windows to install and shut itself down, snapshots the disk, turns the snapshot into
+an image, and deletes everything temporary. What is left is the image, named after
+`--run`.
+
+**If it stops — a laptop lid, a lost connection, a Ctrl-C — run exactly the same
+command again.** It works out what already exists on the rack and carries on from
+there. Nothing is kept on your machine, so it does not matter which machine you resume
+from, and nothing is ever deleted because something went wrong: a failure prints what
+exists and how to continue.
+
+`--keep=` controls what survives. The default keeps the image and removes the rest;
+`--keep=all` removes nothing, which is what you want when something has gone wrong and
+you would like to look at it.
+
+### Checking that it worked
+
+```
+oxwin golden … --verify-clone
+```
+
+Adds a last step: create an instance from the finished image and require it to come up
+**and stay up**. Staying up is the point. A broken golden image comes up fine and then
+powers itself off a minute later, so a check that stopped as soon as the machine
+answered would pass on exactly the image that is broken.
+
+One thing this cannot check for you. Log into the clone and confirm its computer name
+differs from the machine the image came from:
+
+```
+hostname
+```
+
+If two clones share a name they share a Windows security identifier as well, and that
+is the collision the whole exercise exists to prevent.
+
+### If you would rather drive it yourself
+
+The steps are separate commands too — `oxwin upload`, `instance`, `watch`, `snapshot`,
+`image`, `teardown` and `verify` — all taking the same `--run` name. `oxwin --help`
+lists them.
+
+---
+
 ## If something goes wrong
 
 **Remote Desktop times out, but SSH works.**
@@ -218,8 +276,8 @@ been tested on each.
 
 ## Where things are
 
-- `crates/` — the app: `oxwin-core` the engine, `oxwin-gui` the desktop app,
-  `oxwin-cli` the command-line one
+- `crates/` — the app: `oxwin-core` the engine, `oxwin-rack` the rack client,
+  `oxwin-gui` the desktop app, `oxwin-cli` the command-line one
 - `assets/` — third-party payload, downloaded by `tools/fetch-payload.sh`, not committed
 - `DEVELOPMENT.md` — how it works inside, and how to work on it
 - `PLAN.md` — what is built, and what is coming
