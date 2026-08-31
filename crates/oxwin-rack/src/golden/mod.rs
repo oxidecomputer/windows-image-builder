@@ -149,6 +149,17 @@ impl Rack {
     ) -> Result<Vec<Resource>> {
         let mut stuck = Vec::new();
         for resource in keep.to_delete(names) {
+            // An instance has to be stopped before it can be deleted, and its disks
+            // cannot be deleted while it exists to hold them attached. So this is
+            // not a nicety: skip it and the whole teardown fails, one resource at a
+            // time, for a reason that reads like a rack fault.
+            if let Resource::Instance(name) = &resource
+                && let Err(e) = self.stop_and_wait(name, reporter)
+            {
+                reporter.log(format!("could not stop {name}: {e:#}"));
+                stuck.push(resource);
+                continue;
+            }
             reporter.phase("teardown", format!("deleting {resource:?}"));
             match self.delete_with_retry(&resource, reporter) {
                 Ok(()) => {}

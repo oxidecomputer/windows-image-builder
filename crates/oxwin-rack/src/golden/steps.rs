@@ -242,6 +242,55 @@ impl Rack {
         Ok(())
     }
 
+    /// Stop an instance and wait until the control plane agrees it is stopped.
+    ///
+    /// **A running instance cannot be deleted**, and stopping is not instant, so a
+    /// teardown that goes straight to the delete fails with "instance is running or
+    /// has not yet fully stopped" and then cannot remove the disks either, because
+    /// they are still attached to the instance that would not die.
+    ///
+    /// This was invisible in the golden cycle, where the guest shuts *itself* down
+    /// and the instance is already stopped by the time teardown runs. It is not
+    /// invisible for `--verify-clone`, which deliberately leaves a clone running.
+    ///
+    /// Already stopped, or already gone, is success.
+    pub fn stop_and_wait(
+        &self,
+        instance: &str,
+        reporter: &Reporter,
+    ) -> Result<()> {
+        const ATTEMPTS: usize = 40;
+        const DELAY: Duration = Duration::from_secs(3);
+
+        match self.instance_state(instance)? {
+            None | Some(InstanceState::Stopped) => return Ok(()),
+            Some(_) => {}
+        }
+
+        reporter.phase("teardown", format!("stopping {instance}"));
+        // A refusal here is not fatal on its own: it may already be stopping, and
+        // the poll below is what actually decides.
+        let _ = self.block_on(
+            self.client()
+                .instance_stop()
+                .project(self.project())
+                .instance(instance)
+                .send(),
+        );
+
+        for _ in 0..ATTEMPTS {
+            match self.instance_state(instance)? {
+                None | Some(InstanceState::Stopped) => return Ok(()),
+                Some(_) => std::thread::sleep(DELAY),
+            }
+        }
+        anyhow::bail!(
+            "{instance} did not stop within {}s, so it cannot be deleted and \
+             neither can its disks",
+            ATTEMPTS as u64 * DELAY.as_secs()
+        )
+    }
+
     /// A disk whose contents are a finished image. The clone's system disk.
     pub fn create_disk_from_image(
         &self,

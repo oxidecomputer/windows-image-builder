@@ -925,7 +925,14 @@ fn teardown(args: &[String]) -> Result<()> {
 
     let stuck = result?;
     if stuck.is_empty() {
-        println!("cleaned up; {} remains", names.image());
+        // Only claim the image survives if it is actually there. `teardown` is
+        // usable on a run that never got as far as making one, and saying "g5
+        // remains" about an image that does not exist is a small lie that costs
+        // someone a confused look at `oxide image list`.
+        match rack.image_exists(&names.image()) {
+            Ok(true) => println!("cleaned up; image {} remains", names.image()),
+            _ => println!("cleaned up"),
+        }
         return Ok(());
     }
     eprintln!("\nthese could not be removed and are still there:");
