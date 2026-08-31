@@ -701,9 +701,9 @@ impl App {
             .show(ui, |ui| {
                 hint(
                     ui,
-                    "Three ways to get this onto a rack, and they are alternatives. Saving the \
-                     file needs no network at all; uploading needs the login you \
-                     already have.",
+                    "Alternatives, not steps -- pick one. Saving the file needs no \
+                     network at all; everything else needs the login you already \
+                     have.",
                 );
 
                 section(ui, "Save the image file");

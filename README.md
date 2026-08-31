@@ -102,7 +102,7 @@ you are curious or something looks wrong.
 
 ### 4. Export
 
-Three ways to get the image onto a rack. They are alternatives — pick one.
+Ways to get the image onto a rack. They are alternatives — pick one.
 
 - **Save the image file.** Writes the image wherever you want. Use this if your rack
   is airgapped, or if someone else does uploads. Nothing else is needed from this app.
@@ -112,6 +112,10 @@ Three ways to get the image onto a rack. They are alternatives — pick one.
 - **Upload it and build the instance.** The same upload, and then the blank system disk
   and the instance, booting from the installer with an external IP so you can reach it.
   This is the whole of stage 5 done for you.
+- **Build a golden image.** All of the above, and then it waits for Windows to install
+  and generalize itself, snapshots the disk, turns that into an image and clears up
+  after itself. About an hour. Only offered for media built as a golden image — see
+  [Making a golden image](#making-a-golden-image).
 
 The equivalent commands are still there under "Or run it yourself". Nothing on this
 screen depends on the app being able to reach your rack.
