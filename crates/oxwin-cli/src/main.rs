@@ -37,6 +37,7 @@ fn main() -> Result<()> {
         "snapshot" => snapshot(&args[1..]),
         "image" => image(&args[1..]),
         "teardown" => teardown(&args[1..]),
+        "golden" => golden(&args[1..]),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())
@@ -57,6 +58,7 @@ usage: oxwin doctor
        oxwin snapshot <run> --project=<p>
        oxwin image <run> --project=<p> [--image-version=<v>]
        oxwin teardown <run> --project=<p> [--keep=image]
+       oxwin golden <iso-or-mount-or-img> --run=<name> --project=<p>
 
   --name=<hostname>      computer name, or * for a golden image
   --generalize           after the install finishes, sysprep /generalize and
@@ -137,26 +139,39 @@ snapshot/image/teardown options:
   A golden build finishes by shutting itself down, so the signal is the
   instance reaching `stopped`: a guest shutdown stops the instance and a
   guest reboot does not. Port 22 is polled alongside it for one judgement —
-  stopping without it ever having answered means Setup never finished.";
+  stopping without it ever having answered means Setup never finished.
 
-fn build(args: &[String]) -> Result<()> {
-    let positional: Vec<&String> =
-        args.iter().filter(|a| !a.starts_with("--")).collect();
-    let [source, out] = positional.as_slice() else {
-        bail!("build needs a source and an output path\n\n{USAGE}");
-    };
+golden options:
+  --run=<name>           names every resource, and is the whole of the state
+                         this keeps. Re-running the identical command resumes
+                         where it stopped: each step asks the rack what is
+                         already there. Required
+  --project=<name>       Required
+  --image-out=<path>     where to write the built image (default <run>.img)
+  --keep=<level>         as for teardown
+  --timeout=<dur>        how long to wait for the install (default 2h)
+  --image-version=<v>    detected from the media unless the source is an .img
+  --system-disk-gib=<n>  size of the disk Windows installs onto (default 100)
+  --cpus=<n>  --memory-gib=<n>  --profile=<name>
+                         as for instance, plus every build option above
+
+  Given an ISO or a mount, golden builds the media itself and sets the
+  golden-image options rather than trusting a flag: media built without them
+  installs perfectly and never shuts down, which the watcher cannot tell
+  apart from a hang. Given an .img it cannot know, so build that with
+  --name=* or --generalize.";
+
+/// The answer-file config, from flags.
+///
+/// Shared by `build` and `golden` so the two cannot drift: `golden` differs only in
+/// forcing the golden-image options, and duplicating forty lines to express that
+/// would be an invitation for one copy to gain an option the other lacks.
+fn config_from_args(args: &[String]) -> Result<Config> {
     let opt = |name: &str| -> Option<String> {
         let prefix = format!("--{name}=");
         args.iter().find_map(|a| a.strip_prefix(&prefix).map(str::to_string))
     };
     let flag = |name: &str| args.iter().any(|a| a == &format!("--{name}"));
-
-    let source = PathBuf::from(source);
-    let media = if source.is_dir() {
-        Media::Directory(source)
-    } else {
-        Media::Iso(source)
-    };
 
     let release = match opt("windows").as_deref().unwrap_or("ws2022") {
         "ws2022" => WindowsRelease::Server2022,
@@ -202,16 +217,46 @@ fn build(args: &[String]) -> Result<()> {
             .collect(),
         enable_ssh: opt("ssh").as_deref() != Some("0"),
     };
+    Ok(config)
+}
 
-    // Embedded unless told otherwise. `--assets` beats `OXWIN_ASSETS` because an
-    // explicit flag should win over an inherited environment.
-    let assets = match opt("assets") {
+/// The payload, embedded unless told otherwise.
+///
+/// `--assets` beats `OXWIN_ASSETS` because an explicit flag should win over an
+/// inherited environment.
+fn assets_from_args(args: &[String]) -> Result<oxwin_core::Assets> {
+    let dir = args.iter().find_map(|a| a.strip_prefix("--assets="));
+    let assets = match dir {
         Some(dir) => oxwin_core::Assets::Directory(PathBuf::from(dir)),
         None => oxwin_core::Assets::discover(),
     };
     if let Some(problem) = assets.problem() {
         bail!("{problem}");
     }
+    Ok(assets)
+}
+
+fn build(args: &[String]) -> Result<()> {
+    let positional: Vec<&String> =
+        args.iter().filter(|a| !a.starts_with("--")).collect();
+    let [source, out] = positional.as_slice() else {
+        bail!("build needs a source and an output path\n\n{USAGE}");
+    };
+    let opt = |name: &str| -> Option<String> {
+        let prefix = format!("--{name}=");
+        args.iter().find_map(|a| a.strip_prefix(&prefix).map(str::to_string))
+    };
+    let flag = |name: &str| args.iter().any(|a| a == &format!("--{name}"));
+
+    let source = PathBuf::from(source);
+    let media = if source.is_dir() {
+        Media::Directory(source)
+    } else {
+        Media::Iso(source)
+    };
+
+    let config = config_from_args(args)?;
+    let assets = assets_from_args(args)?;
 
     let request = Request {
         media,
@@ -469,6 +514,195 @@ fn watch(args: &[String]) -> Result<()> {
     result?;
     println!("{instance} is generalized and stopped; it is ready to snapshot");
     Ok(())
+}
+
+/// The whole cycle: media in, a reusable image on the rack out.
+///
+/// Takes about an hour, most of it waiting for a guest nobody can see, and is
+/// resumable by re-running the identical command.
+fn golden(args: &[String]) -> Result<()> {
+    let positional: Vec<&String> =
+        args.iter().filter(|a| !a.starts_with("--")).collect();
+    let [source] = positional.as_slice() else {
+        bail!(
+            "golden needs exactly one source: an ISO, a mount, or an .img\n\n\
+             {USAGE}"
+        );
+    };
+    let opt = |key: &str| -> Option<String> {
+        let prefix = format!("--{key}=");
+        args.iter().find_map(|a| a.strip_prefix(&prefix).map(str::to_string))
+    };
+    let run =
+        opt("run").context("--run is required: it names every resource")?;
+    let names = oxwin_rack::Names::new(&run)?;
+    let project = opt("project").context("--project is required")?;
+    let quiet = flag_in(args, "quiet");
+
+    let source = PathBuf::from(source);
+    // An .img is already built. Anything else is media, and gets built first --
+    // which is also the first reconcile: an image file already there is not rebuilt.
+    let is_image = source.extension().is_some_and(|e| e == "img");
+    let (image_path, version) = if is_image {
+        (
+            source.clone(),
+            opt("image-version").unwrap_or_else(|| "unknown".into()),
+        )
+    } else {
+        let out = opt("image-out")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("{run}.img")));
+        let detected = build_for_golden(&source, &out, args, quiet)?;
+        (out, opt("image-version").unwrap_or(detected))
+    };
+
+    let mut spec = oxwin_rack::golden::GoldenSpec {
+        names: names.clone(),
+        image_path,
+        keep: match opt("keep") {
+            Some(v) => v.parse()?,
+            None => oxwin_rack::Keep::default(),
+        },
+        watch: oxwin_rack::golden::WatchOptions::default(),
+        system_disk_gib: 100,
+        ncpus: 4,
+        memory_gib: 8,
+        os: opt("os").unwrap_or_else(|| "windows".into()),
+        version,
+    };
+    if let Some(v) = opt("timeout") {
+        spec.watch.timeout = oxwin_rack::golden::watch::parse_duration(&v)?;
+    }
+    if let Some(v) = opt("poll") {
+        spec.watch.poll = oxwin_rack::golden::watch::parse_duration(&v)?;
+    }
+    if let Some(v) = opt("system-disk-gib") {
+        spec.system_disk_gib =
+            v.parse().context("--system-disk-gib must be a number")?;
+    }
+    if let Some(v) = opt("cpus") {
+        spec.ncpus = v.parse().context("--cpus must be a number")?;
+    }
+    if let Some(v) = opt("memory-gib") {
+        spec.memory_gib = v.parse().context("--memory-gib must be a number")?;
+    }
+
+    let selector = match opt("profile") {
+        Some(profile) => oxwin_rack::Selector::Profile(profile),
+        None => oxwin_rack::Selector::Environment,
+    };
+    let cancel = cancel_on_interrupt();
+    let rack = oxwin_rack::Rack::connect(&selector, &project)?;
+    let (reporter, printer) = printer(quiet, "working");
+    let result = rack.run_golden(&spec, &reporter, &cancel);
+    drop(reporter);
+    printer.join().ok();
+
+    match result {
+        Ok(golden) => {
+            println!("\nimage {} is ready in project {project}", golden.image);
+            if !golden.leftovers.is_empty() {
+                // Not a failure: the image exists. Say so, so nobody goes looking
+                // for a problem with an image that is fine.
+                println!(
+                    "\nthe image is finished; these could not be tidied away:"
+                );
+                for resource in &golden.leftovers {
+                    println!("  {}", resource.delete_command(&project));
+                }
+            }
+            Ok(())
+        }
+        Err(failure) => {
+            // Nothing is torn down. Name what exists instead, then the one command
+            // that carries on from here.
+            if !failure.leftovers.is_empty() {
+                eprintln!(
+                    "\nthese exist on the rack and have been left in place:"
+                );
+                for instance in &failure.leftovers.instances {
+                    eprintln!("  instance {instance}");
+                }
+                for disk in &failure.leftovers.disks {
+                    eprintln!("  disk     {disk}");
+                }
+                for snapshot in &failure.leftovers.snapshots {
+                    eprintln!("  snapshot {snapshot}");
+                }
+                for image in &failure.leftovers.images {
+                    eprintln!("  image    {image}");
+                }
+            }
+            eprintln!(
+                "\n{}",
+                oxwin_rack::golden::resume_hint(&names, &project)
+            );
+            if !failure.leftovers.is_empty() {
+                eprintln!("\nor to start over, remove them:");
+                for command in failure.leftovers.cleanup_commands(&project) {
+                    eprintln!("  {command}");
+                }
+            }
+            Err(failure.error)
+        }
+    }
+}
+
+/// Build media for a golden run, and report the release the media turned out to be.
+///
+/// `generalize` is set here, not taken from a flag. Media built without it installs
+/// perfectly and never shuts down, and the watcher cannot tell that apart from a
+/// hang -- it would spend its whole timeout on an install that worked.
+///
+/// Skips the build when the image is already there, which is what makes a resume
+/// after the upload cost nothing rather than several minutes.
+fn build_for_golden(
+    source: &std::path::Path,
+    out: &std::path::Path,
+    args: &[String],
+    quiet: bool,
+) -> Result<String> {
+    let mut config = config_from_args(args)?;
+    config.generalize = true;
+    config.computer_name = "*".into();
+
+    let media = if source.is_dir() {
+        Media::Directory(source.to_path_buf())
+    } else {
+        Media::Iso(source.to_path_buf())
+    };
+    let request = Request {
+        media,
+        out: out.to_path_buf(),
+        config,
+        edition_hint: args
+            .iter()
+            .find_map(|a| a.strip_prefix("--edition-hint="))
+            .map(str::to_string),
+        ei_channel: args
+            .iter()
+            .find_map(|a| a.strip_prefix("--ei-channel="))
+            .map(str::to_string),
+        bare: false,
+        assets: assets_from_args(args)?,
+    };
+
+    let (reporter, printer) = printer(quiet, "copying");
+    let result = builder::build(&request, &reporter, &cancel_on_interrupt());
+    drop(reporter);
+    printer.join().ok();
+    let output = result?;
+    if !quiet {
+        println!(
+            "built {} ({}), {:.2} GiB copied",
+            output.image_index,
+            output.edition_id,
+            output.copied_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+    }
+    // The label, not the slug: this becomes the image's version string, which
+    // someone reads in `oxide image list` months later.
+    Ok(output.release.label().to_string())
 }
 
 /// Snapshot the system disk of a stopped, generalized instance.
