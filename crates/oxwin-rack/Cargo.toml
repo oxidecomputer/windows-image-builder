@@ -18,5 +18,8 @@ tokio = { version = "1", features = ["rt"] }
 toml = "0.9"
 # Only for the token-expiry check. Already in the SDK's tree, so it adds nothing.
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# Resource ids, for creating an image from a snapshot. Already in the SDK's
+# tree, so it adds nothing.
+uuid = "1"
 serde.workspace = true
 futures = "0.3.34"

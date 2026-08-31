@@ -73,14 +73,20 @@ pub struct Chunk {
 
 /// How many bulk writes are in flight at once.
 ///
-/// **This is the difference between five minutes and fifty.** Sent serially, each 512 KiB
-/// write costs a full round trip, measured at roughly 220 ms to a rack in on example, which
-/// works out at about 2.3 MiB/s no matter how fast the link is, because nearly all of that
-/// time is spent waiting rather than transferring. The upload is latency-bound, not
-/// bandwidth-bound, and the only fix is to keep many requests outstanding.
+/// **Sent one at a time, an upload goes only as fast as the round trip allows.** Each
+/// 512 KiB write waits for its own response, so throughput is a function of network
+/// latency rather than of bandwidth, and adding link capacity does not help at all. The
+/// only fix is to keep many requests outstanding.
+///
+/// This was measured over a long-haul connection — the operator was a continent away
+/// from the rack — where the effect is at its most obvious: serial writes managed a small
+/// fraction of what sixteen concurrent ones did over the identical link. That is a
+/// property of the distance, not of the rack; a rack on the same network has far less
+/// round-trip time to hide. Concurrency still wins there, just less dramatically, and
+/// designing for the high-latency case is what makes the app usable from anywhere.
 ///
 /// 16 costs at most `16 * CHUNK` = 8 MiB of buffers. Override with
-/// `OXWIN_UPLOAD_CONCURRENCY`.
+/// `OXWIN_UPLOAD_CONCURRENCY` — worth raising on a link with a lot of latency to cover.
 pub const CONCURRENCY: usize = 16;
 
 fn concurrency() -> usize {
