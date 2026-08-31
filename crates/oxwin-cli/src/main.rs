@@ -34,6 +34,9 @@ fn main() -> Result<()> {
         "upload" => upload(&args[1..]),
         "instance" => instance(&args[1..]),
         "watch" => watch(&args[1..]),
+        "snapshot" => snapshot(&args[1..]),
+        "image" => image(&args[1..]),
+        "teardown" => teardown(&args[1..]),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())
@@ -51,6 +54,9 @@ usage: oxwin doctor
        oxwin upload <image.img> --project=<p> --disk=<name> [--opt=value]
        oxwin instance <name> --project=<p> --installer-disk=<d> [--opt=value]
        oxwin watch <instance> --project=<p> [--timeout=2h] [--poll=15s]
+       oxwin snapshot <run> --project=<p>
+       oxwin image <run> --project=<p> [--image-version=<v>]
+       oxwin teardown <run> --project=<p> [--keep=image]
 
   --name=<hostname>      computer name, or * for a golden image
   --generalize           after the install finishes, sysprep /generalize and
@@ -114,6 +120,19 @@ watch options:
                          2025 and 11 are slower
   --poll=<dur>           how often to look (default 15s)
   --profile=<name>       as for upload
+
+snapshot/image/teardown options:
+  --project=<name>       Required
+  --profile=<name>       as for upload
+  --image-version=<v>    what the finished image reports as its version
+  --os=<name>            and its OS family (default windows)
+  --keep=<level>         image (default), snapshot, disks or all. Cumulative:
+                         `snapshot` keeps the image too. There is no `none` --
+                         the image is what the run is for
+
+  These take a run name, not a resource name: every resource is derived from
+  it, as <run>-installer, <run>-system, the instance <run>, <run>-snap and
+  the image <run>. All three are idempotent, so re-running one is safe.
 
   A golden build finishes by shutting itself down, so the signal is the
   instance reaching `stopped`: a guest shutdown stops the instance and a
@@ -450,6 +469,100 @@ fn watch(args: &[String]) -> Result<()> {
     result?;
     println!("{instance} is generalized and stopped; it is ready to snapshot");
     Ok(())
+}
+
+/// Snapshot the system disk of a stopped, generalized instance.
+fn snapshot(args: &[String]) -> Result<()> {
+    let (names, project, selector, quiet) = golden_common(args, "snapshot")?;
+    let rack = oxwin_rack::Rack::connect(&selector, &project)?;
+    let (reporter, printer) = printer(quiet, "snapshotting");
+    let result = rack.snapshot_step(&names, &reporter);
+    drop(reporter);
+    printer.join().ok();
+    result?;
+    println!("snapshot {} ready in project {project}", names.snapshot());
+    Ok(())
+}
+
+/// Turn the snapshot into an image. The product of the cycle.
+fn image(args: &[String]) -> Result<()> {
+    let (names, project, selector, quiet) = golden_common(args, "image")?;
+    let opt = |key: &str| -> Option<String> {
+        let prefix = format!("--{key}=");
+        args.iter().find_map(|a| a.strip_prefix(&prefix).map(str::to_string))
+    };
+    let rack = oxwin_rack::Rack::connect(&selector, &project)?;
+    let (reporter, printer) = printer(quiet, "imaging");
+    let result = rack.image_step(
+        &names,
+        &opt("os").unwrap_or_else(|| "windows".into()),
+        &opt("image-version").unwrap_or_else(|| "unknown".into()),
+        &reporter,
+    );
+    drop(reporter);
+    printer.join().ok();
+    result?;
+    println!("image {} ready in project {project}", names.image());
+    Ok(())
+}
+
+/// Remove what a finished run no longer needs.
+fn teardown(args: &[String]) -> Result<()> {
+    let (names, project, selector, quiet) = golden_common(args, "teardown")?;
+    let opt = |key: &str| -> Option<String> {
+        let prefix = format!("--{key}=");
+        args.iter().find_map(|a| a.strip_prefix(&prefix).map(str::to_string))
+    };
+    let keep: oxwin_rack::Keep = match opt("keep") {
+        Some(v) => v.parse()?,
+        None => oxwin_rack::Keep::default(),
+    };
+    let rack = oxwin_rack::Rack::connect(&selector, &project)?;
+    let (reporter, printer) = printer(quiet, "deleting");
+    let result = rack.teardown_step(&names, keep, &reporter);
+    drop(reporter);
+    printer.join().ok();
+
+    let stuck = result?;
+    if stuck.is_empty() {
+        println!("cleaned up; {} remains", names.image());
+        return Ok(());
+    }
+    eprintln!("\nthese could not be removed and are still there:");
+    for resource in &stuck {
+        eprintln!("  {}", resource.delete_command(&project));
+    }
+    Ok(())
+}
+
+/// The four things every golden subcommand needs.
+///
+/// One run name in, every resource name derived from it — so these subcommands take
+/// the same argument as `golden` and operate on the same run.
+fn golden_common(
+    args: &[String],
+    command: &str,
+) -> Result<(oxwin_rack::Names, String, oxwin_rack::Selector, bool)> {
+    let positional: Vec<&String> =
+        args.iter().filter(|a| !a.starts_with("--")).collect();
+    let [run] = positional.as_slice() else {
+        bail!("{command} needs exactly one run name\n\n{USAGE}");
+    };
+    let opt = |key: &str| -> Option<String> {
+        let prefix = format!("--{key}=");
+        args.iter().find_map(|a| a.strip_prefix(&prefix).map(str::to_string))
+    };
+    let project = opt("project").context("--project is required")?;
+    let selector = match opt("profile") {
+        Some(profile) => oxwin_rack::Selector::Profile(profile),
+        None => oxwin_rack::Selector::Environment,
+    };
+    Ok((
+        oxwin_rack::Names::new(run)?,
+        project,
+        selector,
+        flag_in(args, "quiet"),
+    ))
 }
 
 /// A [`Cancel`] wired to Ctrl-C.
