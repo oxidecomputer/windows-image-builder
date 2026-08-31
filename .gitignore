@@ -19,3 +19,7 @@
 .claude/settings.local.json
 
 .DS_Store
+
+# Working notes, kept locally rather than in the repository.
+CLAUDE.md
+PLAN.md
