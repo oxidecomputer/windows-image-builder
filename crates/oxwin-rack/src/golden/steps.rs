@@ -320,6 +320,13 @@ impl Rack {
         // Looked up once it exists, then cached: an instance has its address from
         // creation, and re-listing every fifteen seconds buys nothing.
         let mut address: Option<IpAddr> = None;
+        // The tick exists so an hour-long wait does not read as a hang, and that
+        // needs far less than one line per poll. Measured on a real install: 88
+        // lines in 22 minutes, which over a full timeout is around 480 — enough
+        // that the milestones scroll away among them. A state change always
+        // prints; otherwise once a minute.
+        let mut last_tick: Option<std::time::Instant> = None;
+        let mut last_state: Option<InstanceState> = None;
 
         loop {
             cancel.check()?;
@@ -367,11 +374,20 @@ impl Rack {
                 }
             }
 
-            // Progress that moves, so an hour-long wait does not read as a hang.
-            reporter.log(format!(
-                "  {instance}: {state} after {}",
-                elapsed(started)
-            ));
+            // Progress that moves, so an hour-long wait does not read as a hang —
+            // but not on every poll. A state change always prints; otherwise once
+            // a minute.
+            let changed = last_state != Some(state);
+            let due = last_tick
+                .is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
+            if changed || due {
+                reporter.log(format!(
+                    "  {instance}: {state} after {}",
+                    elapsed(started)
+                ));
+                last_tick = Some(std::time::Instant::now());
+            }
+            last_state = Some(state);
             std::thread::sleep(opts.poll);
         }
     }
