@@ -83,6 +83,13 @@ pub struct Output {
     pub image_index: u32,
     pub edition_id: String,
     pub media_files: usize,
+    /// The release the *media* turned out to be, not the one the caller asserted.
+    ///
+    /// Read from `config`, which `assemble` has already overwritten with the
+    /// detected release -- never from `request.config`, which carries the
+    /// assertion. Callers that need to label the result, such as the version
+    /// string on a golden image, want what the media said it was.
+    pub release: crate::settings::WindowsRelease,
 }
 
 /// The disk layout, in sectors. Separated out because it is arithmetic worth testing on
@@ -494,6 +501,7 @@ fn assemble(
         image_index: chosen.index,
         edition_id: chosen.edition_id,
         media_files: media_files.len(),
+        release: config.release,
     })
 }
 
@@ -865,8 +873,21 @@ mod whole_image {
             let wrong = scratch.join("wrong-release.img");
             let mut request = request_for(mount_media(), &wrong);
             request.config.release = WindowsRelease::Windows11;
-            build(&request, &Reporter::silent(), &crate::engine::Cancel::new())
-                .expect("native build with a wrong asserted release");
+            let output = build(
+                &request,
+                &Reporter::silent(),
+                &crate::engine::Cancel::new(),
+            )
+            .expect("native build with a wrong asserted release");
+            // And the release it reports is the media's, not the assertion's.
+            // Anything labelling the result -- the version string on a golden
+            // image, a log line -- reads this, so reporting the caller's claim
+            // would name the wrong release with total confidence.
+            assert_eq!(
+                output.release,
+                WindowsRelease::Server2022,
+                "Output::release must be the detected release, not the asserted one"
+            );
             assert_identical(&rs, &wrong);
             let _ = std::fs::remove_file(&wrong);
         }

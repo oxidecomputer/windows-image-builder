@@ -20,11 +20,50 @@ pub use keep::{Keep, Resource};
 pub use names::Names;
 pub use reconcile::{DiskStatus, Existing, Step, next_step};
 pub use steps::{pick_address, port_open};
-pub use watch::{Action, Milestone, Watch};
+pub use watch::{Action, Milestone, Watch, WatchOptions};
 
-use crate::upload::Rack;
+use crate::upload::{DiskSpec, Rack};
 use anyhow::Result;
+use oxwin_core::engine::Cancel;
 use oxwin_core::progress::Reporter;
+
+/// What one golden run needs to know.
+#[derive(Debug, Clone)]
+pub struct GoldenSpec {
+    pub names: Names,
+    /// The already-built image. The CLI resolves an ISO to one of these before
+    /// calling in; this crate does not build.
+    pub image_path: std::path::PathBuf,
+    pub keep: Keep,
+    pub watch: watch::WatchOptions,
+    pub system_disk_gib: u64,
+    pub ncpus: u16,
+    pub memory_gib: u64,
+    /// What the finished image reports about itself.
+    pub os: String,
+    pub version: String,
+}
+
+/// A finished run.
+#[derive(Debug, Clone)]
+pub struct Golden {
+    pub image: String,
+    /// What teardown could not remove. Not a failure — the image exists.
+    pub leftovers: Vec<Resource>,
+}
+
+/// The one command that resumes a run, which is the command that was just run.
+///
+/// This is the payoff for reconciling against the rack instead of keeping a
+/// journal: the recovery instruction after any failure is one line, and it is
+/// always correct.
+pub fn resume_hint(names: &Names, project: &str) -> String {
+    format!(
+        "to carry on where this stopped, run exactly the same command again:\n  \
+         oxwin golden <source> --run={} --project={project}",
+        names.run()
+    )
+}
 
 impl Rack {
     /// Snapshot the system disk of a stopped, generalized instance.
@@ -118,10 +157,239 @@ impl Rack {
         }
         Ok(stuck)
     }
+
+    /// Build the golden image: upload, install, generalize, snapshot, image, tidy.
+    ///
+    /// Resumable by construction. Every pass round the loop asks the rack what
+    /// already exists and does only the next thing that is missing, so running this
+    /// twice with the same `--run` continues rather than collides — and that is why
+    /// there is no journal.
+    pub fn run_golden(
+        &self,
+        spec: &GoldenSpec,
+        reporter: &Reporter,
+        cancel: &Cancel,
+    ) -> std::result::Result<Golden, crate::instance::Failure> {
+        let names = &spec.names;
+        let mut leftovers = crate::instance::Leftovers::default();
+        // Guards against a step that "succeeds" without changing anything, which
+        // would otherwise be an infinite loop against the control plane.
+        let mut previous: Option<(Step, Existing)> = None;
+
+        macro_rules! fail {
+            ($e:expr) => {
+                return Err(crate::instance::Failure {
+                    error: $e,
+                    leftovers: leftovers.clone(),
+                })
+            };
+        }
+
+        loop {
+            if let Err(e) = cancel.check() {
+                fail!(e);
+            }
+
+            let existing = match self.survey(names) {
+                Ok(e) => e,
+                Err(e) => fail!(e),
+            };
+            // Everything the survey found exists, so the failure report is accurate
+            // whichever step fails next.
+            leftovers = leftovers_from(names, &existing);
+
+            let step = match next_step(&existing) {
+                Ok(step) => step,
+                Err(e) => fail!(e),
+            };
+
+            if previous.as_ref() == Some(&(step, existing.clone())) {
+                fail!(anyhow::anyhow!(
+                    "{step:?} ran but changed nothing on the rack. Stopping \
+                     rather than retrying it forever"
+                ));
+            }
+            previous = Some((step, existing.clone()));
+
+            match step {
+                Step::Upload => {
+                    let disk = DiskSpec {
+                        name: names.installer_disk(),
+                        description: format!(
+                            "Windows installer for golden run {}",
+                            names.run()
+                        ),
+                        block_size: crate::upload::INSTALLER_BLOCK_SIZE,
+                    };
+                    if let Err(e) = self.upload_image(
+                        &spec.image_path,
+                        &disk,
+                        reporter,
+                        cancel,
+                    ) {
+                        fail!(e);
+                    }
+                }
+                Step::CreateInstance => {
+                    let mut instance = crate::InstanceSpec::for_installer(
+                        &names.instance(),
+                        &names.installer_disk(),
+                    );
+                    instance.system_disk = names.system_disk();
+                    instance.system_disk_gib = spec.system_disk_gib;
+                    instance.ncpus = spec.ncpus;
+                    instance.memory_gib = spec.memory_gib;
+                    if let Err(mut failure) =
+                        self.create_instance(&instance, reporter)
+                    {
+                        // Fold in what the survey already knew about, so the report
+                        // is everything that exists rather than only what this step
+                        // made.
+                        failure.leftovers = leftovers.clone();
+                        return Err(failure);
+                    }
+                }
+                Step::Watch => {
+                    if let Err(e) = self.watch_install(
+                        &names.instance(),
+                        &spec.watch,
+                        reporter,
+                        cancel,
+                    ) {
+                        fail!(e);
+                    }
+                }
+                Step::Snapshot => {
+                    if let Err(e) = self.snapshot_step(names, reporter) {
+                        fail!(e);
+                    }
+                }
+                Step::CreateImage => {
+                    if let Err(e) = self.image_step(
+                        names,
+                        &spec.os,
+                        &spec.version,
+                        reporter,
+                    ) {
+                        fail!(e);
+                    }
+                }
+                Step::Teardown => {
+                    let stuck =
+                        match self.teardown_step(names, spec.keep, reporter) {
+                            Ok(stuck) => stuck,
+                            Err(e) => fail!(e),
+                        };
+                    return Ok(Golden {
+                        image: names.image(),
+                        leftovers: stuck,
+                    });
+                }
+            }
+        }
+    }
+
+    /// What this run's names currently point at.
+    fn survey(&self, names: &Names) -> Result<Existing> {
+        Ok(Existing {
+            installer: self
+                .disk_state(&names.installer_disk())?
+                .as_ref()
+                .map(DiskStatus::of),
+            system: self
+                .disk_state(&names.system_disk())?
+                .as_ref()
+                .map(DiskStatus::of),
+            instance: self.instance_state(&names.instance())?,
+            snapshot: self.snapshot_id(&names.snapshot())?.is_some(),
+            image: self.image_exists(&names.image())?,
+        })
+    }
+}
+
+/// Everything that exists, named, so a failure can list it.
+fn leftovers_from(
+    names: &Names,
+    existing: &Existing,
+) -> crate::instance::Leftovers {
+    let mut l = crate::instance::Leftovers::default();
+    if existing.instance.is_some() {
+        l.instances.push(names.instance());
+    }
+    if existing.installer.is_some() {
+        l.disks.push(names.installer_disk());
+    }
+    if existing.system.is_some() {
+        l.disks.push(names.system_disk());
+    }
+    if existing.snapshot {
+        l.snapshots.push(names.snapshot());
+    }
+    if existing.image {
+        l.images.push(names.image());
+    }
+    l
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Teardown must never be reachable from a failure path. The image is the
+    /// product of an hour, and a transient error must not discard the work.
+    #[test]
+    fn teardown_is_only_called_after_the_image_exists() {
+        let source = include_str!("mod.rs");
+        let run = source
+            .split("pub fn run_golden(")
+            .nth(1)
+            .expect("the sequencer is missing");
+        let image_at =
+            run.find("image_step").expect("no image step in the sequencer");
+        let teardown_at =
+            run.find("teardown_step").expect("no teardown in the sequencer");
+        assert!(
+            image_at < teardown_at,
+            "teardown must come after the image is made, not before"
+        );
+    }
+
+    /// Every failure has to hand back the one command that resumes, and that
+    /// command is the command they just ran. It is the payoff for reconciling
+    /// instead of journalling, and worth pinning so nobody replaces it with a list
+    /// of manual steps later.
+    #[test]
+    fn the_failure_message_names_the_resume_command() {
+        let names = Names::new("g").unwrap();
+        let text = resume_hint(&names, "danb");
+        assert!(text.contains("oxwin golden"), "{text}");
+        assert!(text.contains("--run=g"), "{text}");
+        assert!(text.contains("--project=danb"), "{text}");
+    }
+
+    /// A failure has to name everything that exists, not only what the failing
+    /// step made. Otherwise a run that dies during the watch reports no leftovers
+    /// at all, and the user is told nothing about the two disks and the instance
+    /// sitting on their rack.
+    #[test]
+    fn leftovers_name_everything_the_survey_found() {
+        let names = Names::new("g").unwrap();
+        let all = Existing {
+            installer: Some(DiskStatus::Usable),
+            system: Some(DiskStatus::Usable),
+            instance: Some(oxide::types::InstanceState::Stopped),
+            snapshot: true,
+            image: true,
+        };
+        let l = leftovers_from(&names, &all);
+        assert_eq!(l.instances, vec!["g"]);
+        assert_eq!(l.disks, vec!["g-installer", "g-system"]);
+        assert_eq!(l.snapshots, vec!["g-snap"]);
+        assert_eq!(l.images, vec!["g"]);
+
+        assert!(leftovers_from(&names, &Existing::default()).is_empty());
+    }
+
     /// Both step functions must consult the rack before creating, or a resume makes
     /// a second snapshot with a name that already exists and fails on a run that had
     /// already succeeded.
