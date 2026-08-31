@@ -102,7 +102,8 @@ you are curious or something looks wrong.
 
 ### 4. Export
 
-Ways to get the image onto a rack. They are alternatives — pick one.
+Ways to get the image onto a rack. Each is a complete route on its own rather than a
+step in a sequence, so whichever suits you is all you need.
 
 - **Save the image file.** Writes the image wherever you want. Use this if your rack
   is airgapped, or if someone else does uploads. Nothing else is needed from this app.

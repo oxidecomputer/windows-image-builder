@@ -701,9 +701,9 @@ impl App {
             .show(ui, |ui| {
                 hint(
                     ui,
-                    "Alternatives, not steps -- pick one. Saving the file needs no \
-                     network at all; everything else needs the login you already \
-                     have.",
+                    "Each of these is a complete route on its own, rather than a \
+                     step in a sequence. Saving the file needs no network at all; \
+                     the others use the login you already have.",
                 );
 
                 section(ui, "Save the image file");
