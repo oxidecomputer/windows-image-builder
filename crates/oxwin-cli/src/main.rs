@@ -612,7 +612,7 @@ fn golden(args: &[String]) -> Result<()> {
                 // After the image, never instead of it: a clone that fails to come
                 // up is a fact about the image, and the image is still what the run
                 // produced.
-                verify(args)?;
+                verify_named(&names, &project, &selector, quiet, args)?;
             }
             if !golden.leftovers.is_empty() {
                 // Not a failure: the image exists. Say so, so nobody goes looking
@@ -723,6 +723,22 @@ fn build_for_golden(
 /// Until this has been run, "golden image" is a claim rather than a feature.
 fn verify(args: &[String]) -> Result<()> {
     let (names, project, selector, quiet) = golden_common(args, "verify")?;
+    verify_named(&names, &project, &selector, quiet, args)
+}
+
+/// The clone check, given a run that has already been resolved.
+///
+/// Separate from [`verify`] because `golden --verify-clone` reaches it with the
+/// *source path* as its positional argument, not a run name -- so re-parsing the
+/// arguments there would try to make a resource name out of an ISO path and fail
+/// immediately, at the end of an hour-long run.
+fn verify_named(
+    names: &oxwin_rack::Names,
+    project: &str,
+    selector: &oxwin_rack::Selector,
+    quiet: bool,
+    args: &[String],
+) -> Result<()> {
     let opt = |key: &str| -> Option<String> {
         let prefix = format!("--{key}=");
         args.iter().find_map(|a| a.strip_prefix(&prefix).map(str::to_string))
