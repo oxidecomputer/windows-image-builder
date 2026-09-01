@@ -214,7 +214,7 @@ impl Rack {
     /// Remove what `keep` says need not survive.
     ///
     /// **Only ever called after the image exists.** Never on a failure path: a
-    /// transient error forty minutes into an hour-long run must not discard the
+    /// transient error fifteen minutes into a twenty-minute run must not discard the
     /// work, and a rollback that itself fails leaves a state harder to reason about
     /// than a named resource left in place.
     ///

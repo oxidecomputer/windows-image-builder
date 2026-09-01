@@ -501,7 +501,7 @@ impl Rack {
         // Looked up once it exists, then cached: an instance has its address from
         // creation, and re-listing every fifteen seconds buys nothing.
         let mut address: Option<IpAddr> = None;
-        // The tick exists so an hour-long wait does not read as a hang, and that
+        // The tick exists so a long wait does not read as a hang, and that
         // needs far less than one line per poll. Measured on a real install: 88
         // lines in 22 minutes, which over a full timeout is around 480 — enough
         // that the milestones scroll away among them. A state change always
@@ -567,7 +567,7 @@ impl Rack {
                 }
             }
 
-            // Progress that moves, so an hour-long wait does not read as a hang —
+            // Progress that moves, so a long wait does not read as a hang —
             // but not on every poll. A state change always prints; otherwise once
             // a minute.
             let changed = last_state != Some(state);

@@ -256,7 +256,7 @@ pub struct WatchOptions {
     /// default; two hours is well past anything observed and still finite, which is
     /// what makes this usable from a script.
     pub timeout: Duration,
-    /// Coarse on purpose. Every 15 s is plenty across an hour-long wait, and a
+    /// Coarse on purpose. Every 15 s is plenty across a wait this long, and a
     /// tighter loop against a control plane is rude for no benefit.
     pub poll: Duration,
     /// How much serial console to fetch when something has gone wrong.
@@ -329,7 +329,8 @@ mod tests {
 
     /// The judgement the whole watcher exists to make. A guest that dies during
     /// Setup also stops the machine, so `stopped` alone cannot mean "finished" —
-    /// and the wrong answer here costs an hour and produces an image of a broken
+    /// and the wrong answer here throws away the whole run and produces an image
+    /// of a broken
     /// install.
     #[test]
     fn stopping_without_ever_answering_on_22_is_a_failed_install() {
@@ -479,7 +480,7 @@ mod tests {
     fn the_defaults_are_the_ones_the_spec_argued_for() {
         let o = WatchOptions::default();
         assert_eq!(o.timeout, Duration::from_secs(2 * 60 * 60));
-        // 15s is plenty for an hour-long wait, and a tighter loop is rude to the
+        // 15s is plenty for a wait this long, and a tighter loop is rude to the
         // control plane for no benefit.
         assert_eq!(o.poll, Duration::from_secs(15));
         assert!(

@@ -566,7 +566,8 @@ fn instance(args: &[String]) -> Result<()> {
 
 /// Wait for a golden install to finish and shut itself down.
 ///
-/// Takes an hour or more, and prints a line per poll so it is visibly alive: a UI
+/// Minutes to tens of minutes, depending on the release, and it prints a line a
+/// minute so it is visibly alive: a UI
 /// that does not move is a UI that has frozen as far as anyone watching it can
 /// tell, and the natural response is to kill it.
 fn watch(args: &[String]) -> Result<()> {
@@ -759,7 +760,7 @@ fn golden(args: &[String]) -> Result<()> {
 /// The tempting alternative -- skip when the file exists -- cannot tell a finished
 /// image from one an interrupted build left half-written, because both are just a
 /// file of the right name. Uploading a truncated installer produces media that fails
-/// somewhere inside Setup, an hour later, for no visible reason. A rebuild costs a
+/// somewhere inside Setup, long afterwards, for no visible reason. A rebuild costs a
 /// few minutes against a cycle measured in the tens, so the cheap answer is also the
 /// wrong one here.
 fn build_for_golden(

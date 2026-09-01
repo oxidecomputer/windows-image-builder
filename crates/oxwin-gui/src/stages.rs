@@ -889,7 +889,8 @@ impl App {
         match &self.upload {
             Upload::Running(run) => {
                 let golden = self.upload_goal == UploadGoal::GoldenImage;
-                // Over an hour the phase matters more than the fraction, which is
+                // Over twenty minutes the phase matters more than the fraction,
+                // which is
                 // only meaningful while the upload is running. So the phase and the
                 // elapsed time lead, and the bar appears only when there is
                 // genuinely a fraction to show.

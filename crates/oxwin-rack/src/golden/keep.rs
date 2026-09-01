@@ -7,7 +7,7 @@
 //! What survives a successful run.
 //!
 //! Levels are cumulative and there is deliberately no `none`: the image is the
-//! product of an hour of wall clock, and a level that deletes it has no use.
+//! product of a twenty-minute run, and a level that deletes it has no use.
 //!
 //! This runs **only after the image exists**, never on a failure path. A transient
 //! error forty minutes in must not discard the work, and a rollback that itself
@@ -163,7 +163,7 @@ mod tests {
         assert!(Keep::All.to_delete(&n).is_empty());
     }
 
-    /// The image is the product of an hour-long run. No level deletes it.
+    /// The image is the product of the whole run. No level deletes it.
     #[test]
     fn no_level_ever_deletes_the_image() {
         let n = names();

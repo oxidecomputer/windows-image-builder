@@ -427,8 +427,8 @@ worked — that collision is the entire reason for generalizing.
 Every failure prints what exists on the rack and the one command that resumes, which
 is the command that was just run. If you would rather start over it also prints the
 `oxide … delete` lines in the order that works. **Nothing is ever deleted
-automatically:** an hour-long run must not discard its own work over a transient
-error.
+automatically:** a run that has already spent twenty minutes must not discard its
+own work over a transient error.
 
 ## Known-good baseline
 
