@@ -178,11 +178,14 @@ oxwin golden ~/path/to/windows.iso --run=ws2022 --project=<your project> \
   --user=oxide --password=… --ssh-key="$(cat ~/.ssh/id_ed25519.pub)"
 ```
 
-It takes about half an hour, most of it spent watching an install that nobody has to
-sit through. It builds the media, uploads it, creates a temporary instance, waits for
-Windows to install and shut itself down, snapshots the disk, turns the snapshot into
-an image, and deletes everything temporary. What is left is the image, named after
-`--run`.
+It builds the media, uploads it, creates a temporary instance, waits for Windows to
+install and shut itself down, snapshots the disk, turns the snapshot into an image,
+and deletes everything temporary. What is left is the image, named after `--run`.
+
+Measured against a rack on the same network: **eighteen and a half minutes** -- ten
+uploading, six installing, two for sysprep and the shutdown. The upload is the biggest
+part and the one that depends on where you are, so expect longer over a slow link and
+plan around that rather than around the install.
 
 **If it stops — a laptop lid, a lost connection, a Ctrl-C — run exactly the same
 command again.** It works out what already exists on the rack and carries on from
