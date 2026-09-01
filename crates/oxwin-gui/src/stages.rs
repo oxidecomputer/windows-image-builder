@@ -1086,8 +1086,9 @@ impl App {
         hint(
             ui,
             "Installs Windows once, generalizes it, and turns the result into an \
-             image the rack can stamp copies from. About an hour, almost all of it \
-             waiting for Setup.",
+             image the rack can stamp copies from. Around twenty minutes on a rack \
+             nearby, of which the upload is the longest part -- so longer if the \
+             rack is far away.",
         );
         ui.horizontal(|ui| {
             ui.label("Run name");
@@ -1127,7 +1128,7 @@ impl App {
         if self.verify_clone {
             hint(
                 ui,
-                "Adds about ten minutes, and leaves the clone running so you can log \
+                "Adds about six minutes, and leaves the clone running so you can log \
                  in and check its computer name differs from the original. That is \
                  the one thing this cannot check for you.",
             );

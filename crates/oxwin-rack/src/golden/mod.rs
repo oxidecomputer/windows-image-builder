@@ -76,13 +76,27 @@ impl Rack {
         names: &Names,
         reporter: &Reporter,
     ) -> Result<uuid::Uuid> {
-        if let Some(id) = self.snapshot_id(&names.snapshot())? {
+        // How long a snapshot may take to appear and become ready.
+        //
+        // Generous on purpose. On a real rack a snapshot took long enough that the
+        // SDK's own request timed out at the transport layer while the control plane
+        // was still working -- and it landed afterwards. So "the request failed" and
+        // "the snapshot was not created" are different statements here, and treating
+        // them as one throws away a finished install for a snapshot that is on its
+        // way.
+        const PATIENCE: std::time::Duration =
+            std::time::Duration::from_secs(20 * 60);
+        const POLL: std::time::Duration = std::time::Duration::from_secs(10);
+
+        if self.snapshot_status(&names.snapshot())?.is_some() {
             reporter.phase(
                 "snapshot",
                 format!("{} already exists; using it", names.snapshot()),
             );
-            return Ok(id);
+            return self
+                .wait_for_ready_snapshot(names, PATIENCE, POLL, reporter);
         }
+
         reporter.phase(
             "snapshot",
             format!(
@@ -91,7 +105,64 @@ impl Rack {
                 names.snapshot()
             ),
         );
-        self.create_snapshot(&names.system_disk(), &names.snapshot())
+        if let Err(e) =
+            self.create_snapshot(&names.system_disk(), &names.snapshot())
+        {
+            // **The request failing does not mean the snapshot was not created.**
+            // Retrying the create here would collide with one already in flight, so
+            // the only safe move is to ask the rack and keep asking.
+            reporter.log(format!(
+                "the snapshot request did not come back cleanly ({e:#}). That does \
+                 not mean it failed, so waiting to see whether {} appears",
+                names.snapshot()
+            ));
+        }
+        self.wait_for_ready_snapshot(names, PATIENCE, POLL, reporter)
+    }
+
+    /// Wait for the snapshot to exist and reach `ready`.
+    fn wait_for_ready_snapshot(
+        &self,
+        names: &Names,
+        patience: std::time::Duration,
+        poll: std::time::Duration,
+        reporter: &Reporter,
+    ) -> Result<uuid::Uuid> {
+        use oxide::types::SnapshotState;
+        let started = std::time::Instant::now();
+        let mut announced = false;
+
+        while started.elapsed() < patience {
+            match self.snapshot_status(&names.snapshot())? {
+                Some((id, SnapshotState::Ready)) => return Ok(id),
+                Some((_, SnapshotState::Creating)) => {
+                    if !announced {
+                        reporter.log(format!(
+                            "  {} is being created; waiting for it to be ready",
+                            names.snapshot()
+                        ));
+                        announced = true;
+                    }
+                }
+                Some((_, state @ SnapshotState::Faulted))
+                | Some((_, state @ SnapshotState::Destroyed)) => {
+                    anyhow::bail!(
+                        "{} is in state `{state}`, so it cannot be made into an \
+                         image. Delete it and run the same command again",
+                        names.snapshot()
+                    )
+                }
+                None => {}
+            }
+            std::thread::sleep(poll);
+        }
+        anyhow::bail!(
+            "{} did not become ready within {} minutes. The install is finished and \
+             the instance is stopped, so running the same command again resumes \
+             here rather than starting over",
+            names.snapshot(),
+            patience.as_secs() / 60
+        )
     }
 
     /// Make the image. The product of the whole cycle.
@@ -114,12 +185,21 @@ impl Rack {
             );
             return Ok(());
         }
-        let id = self.snapshot_id(&names.snapshot())?.ok_or_else(|| {
-            anyhow::anyhow!(
+        // Ready, not merely present: a snapshot exists as `creating` before it is
+        // usable, and an image made from one in that state is a bug that shows up
+        // only on a rack slow enough to be caught mid-flight -- which this one is.
+        let id = match self.snapshot_status(&names.snapshot())? {
+            Some((id, oxide::types::SnapshotState::Ready)) => id,
+            Some((_, state)) => anyhow::bail!(
+                "the snapshot {} is in state `{state}`, not ready, so an image \
+                 cannot be made from it yet",
+                names.snapshot()
+            ),
+            None => anyhow::bail!(
                 "there is no snapshot called {} to make an image from",
                 names.snapshot()
-            )
-        })?;
+            ),
+        };
         reporter.phase(
             "image",
             format!(
@@ -458,8 +538,10 @@ mod tests {
     #[test]
     fn the_steps_check_before_they_create() {
         let source = include_str!("mod.rs");
+        // `snapshot_status`, not `snapshot_id`: both steps need the state as well
+        // as the id, because a snapshot exists as `creating` before it can be used.
         for (function, check) in [
-            ("fn snapshot_step", "snapshot_id"),
+            ("fn snapshot_step", "snapshot_status"),
             ("fn image_step", "image_exists"),
         ] {
             let body = source

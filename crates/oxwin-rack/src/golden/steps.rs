@@ -106,6 +106,33 @@ impl Rack {
         }
     }
 
+    /// The snapshot's id **and its state**, or `None` if there is no such snapshot.
+    ///
+    /// The state matters: a snapshot exists as `creating` before it is `ready`, and
+    /// an id alone says nothing about which. Handing a `creating` snapshot to
+    /// `image_create` is a bug that would only appear on a rack slow enough to be
+    /// caught mid-flight.
+    pub fn snapshot_status(
+        &self,
+        name: &str,
+    ) -> Result<Option<(uuid::Uuid, oxide::types::SnapshotState)>> {
+        match self.block_on(
+            self.client()
+                .snapshot_view()
+                .project(self.project())
+                .snapshot(name)
+                .send(),
+        ) {
+            Ok(view) => {
+                let snapshot = view.into_inner();
+                Ok(Some((snapshot.id, snapshot.state)))
+            }
+            Err(e) if is_not_found(&e) => Ok(None),
+            Err(e) => Err(anyhow::anyhow!("{e}"))
+                .with_context(|| format!("reading snapshot {name}")),
+        }
+    }
+
     /// The snapshot's id, which is what `image_create` wants, or `None`.
     pub fn snapshot_id(&self, name: &str) -> Result<Option<uuid::Uuid>> {
         match self.block_on(

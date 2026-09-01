@@ -606,8 +606,9 @@ fn watch(args: &[String]) -> Result<()> {
 
 /// The whole cycle: media in, a reusable image on the rack out.
 ///
-/// Takes about an hour, most of it waiting for a guest nobody can see, and is
-/// resumable by re-running the identical command.
+/// Around twenty minutes against a nearby rack -- ten of them uploading, which is
+/// the part that depends on where you are -- and resumable by re-running the
+/// identical command.
 fn golden(args: &[String]) -> Result<()> {
     let positional: Vec<&String> =
         args.iter().filter(|a| !a.starts_with("--")).collect();
@@ -823,7 +824,7 @@ fn verify(args: &[String]) -> Result<()> {
 /// Separate from [`verify`] because `golden --verify-clone` reaches it with the
 /// *source path* as its positional argument, not a run name -- so re-parsing the
 /// arguments there would try to make a resource name out of an ISO path and fail
-/// immediately, at the end of an hour-long run.
+/// immediately, at the very end of the run.
 fn verify_named(
     names: &oxwin_rack::Names,
     project: &str,
