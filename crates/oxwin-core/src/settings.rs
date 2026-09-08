@@ -4,18 +4,14 @@
 
 // Copyright 2026 Oxide Computer Company
 
-//! What the user chose, independent of how it is rendered or how it is built.
-//!
-//! This is the whole reason the core crate exists: the GUI, the eventual CLI, and
-//! the byte-compare test harness all need to agree on what a build *is*, and none
-//! of them should own that definition.
+//! User selection and image options.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Is this image for one specific machine, or a template many machines clone?
 ///
-/// This is not just a hostname switch. A golden image is copied, so anything
+/// This is not just a hostname switch. A golden image is sysprepped then copied, so anything
 /// unique baked into it stops being unique the moment it is cloned, which is why
 /// [`Credentials`] is constrained by this choice rather than sitting beside it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,10 +21,8 @@ pub enum Deployment {
     /// Sets `<ComputerName>*</ComputerName>`, so Setup picks a random name instead of a
     /// fixed one. **That is all it does, and on its own it is not enough.** `*` is
     /// resolved once, during `specialize`; a clone of the resulting disk keeps the name
-    /// that was picked, and the machine SID with it. Windows re-runs `specialize` — and
-    /// so re-resolves `*` — only after `sysprep /generalize`, which nothing in this
-    /// workspace runs. Automating that is v0.4; until then it is the user's step, and
-    /// the UI says so rather than letting a cloned fleet discover it.
+    /// that was picked, and the machine SID with it. Windows re-runs `specialize`, and
+    /// so re-resolves `*` only after `sysprep /generalize`.
     GoldenImage,
     /// One machine that keeps the name it is given.
     Named { hostname: String },
@@ -49,14 +43,13 @@ impl Deployment {
     }
 }
 
-/// How the first administrator signs in.
+/// Creds for how the first administrator signs in.
 ///
-/// A password is not optional on Windows, however much we might prefer keys. The
-/// serial console (SAC) and Remote Desktop both authenticate with a password and
-/// have no notion of an SSH key, so a key-only account produces a machine reachable
-/// over SSH and nowhere else, including from the serial console, which is the one
-/// way in when something has gone wrong. SSH keys are therefore additive: they make
-/// SSH passwordless, they do not replace the password.
+/// A password is not optional on Windows. The serial console (SAC) and Remote Desktop
+///  both authenticate with a password and have no notion of an SSH key, so a key-only
+/// account produces a machine reachable over SSH and nowhere else, including from the
+/// serial console, which is the one way in when something has gone wrong. Perhaps
+/// eventually worth allowing that if cloudinit works well, and users request it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Credentials {
     pub username: String,
@@ -110,9 +103,12 @@ pub fn generate_password() -> String {
 /// reads it. A user-asserted release is unchecked by anything, and picking the wrong one
 /// fails the way everything here fails, the build succeeds and the install looks fine,
 /// with the hardware-check bypasses in the wrong state and server edition names on client
-/// media.
+/// media. Server 2012 R2 and below use a different setup system, and struggle more with
+/// NVMe. They are also EOL, currently they are not targetted for support. 2016 goes EOL
+/// Jan 2027 anyway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WindowsRelease {
+    Server2016,
     Server2019,
     Server2022,
     Server2025,
@@ -124,6 +120,7 @@ impl WindowsRelease {
     /// The builder's `--windows=` token.
     pub fn token(self) -> &'static str {
         match self {
+            WindowsRelease::Server2016 => "ws2016",
             WindowsRelease::Server2019 => "ws2019",
             WindowsRelease::Server2022 => "ws2022",
             WindowsRelease::Server2025 => "ws2025",
@@ -134,6 +131,7 @@ impl WindowsRelease {
 
     pub fn label(self) -> &'static str {
         match self {
+            WindowsRelease::Server2016 => "Windows Server 2016",
             WindowsRelease::Server2019 => "Windows Server 2019",
             WindowsRelease::Server2022 => "Windows Server 2022",
             WindowsRelease::Server2025 => "Windows Server 2025",
@@ -148,7 +146,8 @@ impl WindowsRelease {
     /// Kept in step with the hardware table in `TESTED-MEDIA.md`, which is the record.
     /// Server 2025 and Windows 11 are absent deliberately: both build correctly and
     /// neither has installed on a rack, blocked on propolis#1199 and on an NVMe
-    /// controller fault on the rack itself.
+    /// controller fault on the rack itself. Server 2016 is absent because it has NVMe
+    /// controller issues, and currently isnt fully supported.
     pub fn verified_on_hardware(self) -> bool {
         matches!(
             self,
@@ -160,7 +159,7 @@ impl WindowsRelease {
 
     /// Client (Windows 10/11) rather than server.
     ///
-    /// The media's own signal for this is `PRODUCTTYPE` — `WinNT` against `ServerNT` —
+    /// The media's own signal for this is `PRODUCTTYPE`:`WinNT` against `ServerNT`,
     /// never a substring of an edition name, which is a marketing string and translated
     /// on localised media.
     pub fn is_client(self) -> bool {
@@ -173,10 +172,14 @@ impl WindowsRelease {
     /// The one place this mapping lives. It used to exist twice: a `match` in
     /// `builder.rs` whose `_` arm handed 2k22 drivers to everything that was not Windows
     /// 11, and a field in `unattend::Target` that nothing read. `tools/fetch-payload.sh`
-    /// fetches exactly these five names, and a test asserts the embedded payload carries
+    /// fetches exactly these names, and a test asserts the embedded payload carries
     /// every one of them.
+    ///
+    /// In virtio-win 0.1.285 `2k16` is byte-identical to `2k19`, `2k22` and `w10` — 38
+    /// files, same names, same hashes.
     pub fn driver_dir(self) -> &'static str {
         match self {
+            WindowsRelease::Server2016 => "2k16",
             WindowsRelease::Server2019 => "2k19",
             WindowsRelease::Server2022 => "2k22",
             WindowsRelease::Server2025 => "2k25",
@@ -195,6 +198,7 @@ impl WindowsRelease {
     /// nothing may key on the build alone. `is_client` is what separates them.
     pub fn base_builds(self) -> &'static [u32] {
         match self {
+            WindowsRelease::Server2016 => &[14393],
             WindowsRelease::Server2019 => &[17763],
             WindowsRelease::Server2022 => &[20348],
             WindowsRelease::Server2025 => &[26100],
@@ -206,6 +210,7 @@ impl WindowsRelease {
     /// Every release this workspace knows how to build. Iterate this, never a literal
     /// list, so adding a variant cannot leave a table half-filled.
     pub const ALL: &'static [WindowsRelease] = &[
+        WindowsRelease::Server2016,
         WindowsRelease::Server2019,
         WindowsRelease::Server2022,
         WindowsRelease::Server2025,
@@ -426,6 +431,7 @@ fn hostname_problem(hostname: &str) -> Vec<Problem> {
     v
 }
 
+/// Dont want to make the system mad.
 fn is_reserved_username(name: &str) -> bool {
     const RESERVED: &[&str] = &[
         "administrator",

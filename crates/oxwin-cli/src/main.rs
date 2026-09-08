@@ -16,7 +16,7 @@
 //!
 //! This file is allowed to print. `oxwin-core` is not — see DEVELOPMENT.md.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use oxwin_core::builder::{self, Request};
 use oxwin_core::engine::Cancel;
 use oxwin_core::media::Media;
@@ -85,7 +85,7 @@ usage: oxwin doctor
                          no console, OnError is an infinite hang
   --ssh=0                do not install OpenSSH in the guest
   --rdp=0                do not enable RDP
-  --windows=<ws2019|ws2022|ws2025|win10|win11>
+  --windows=<ws2016|ws2019|ws2022|ws2025|win10|win11>
                          advisory: the media's own release overrides it
   --edition=<hint>       datacenter, standard, an index, or an EDITIONID;
                          omitted, the media's own list picks a sensible default
@@ -262,9 +262,22 @@ fn config_from_args(args: &[String]) -> Result<Config> {
     };
     let flag = |name: &str| args.iter().any(|a| a == &format!("--{name}"));
 
-    let release = match opt("windows").as_deref().unwrap_or("ws2022") {
-        "ws2022" => WindowsRelease::Server2022,
-        other => bail!("unknown --windows={other}; this build supports ws2022"),
+    // Iterated rather than matched, so a release added to `ALL` is accepted here without
+    // anyone remembering to extend a literal list, which is how this arm came to accept
+    // only ws2022 while the help text above advertised five tokens.
+    //
+    // The default is a starting point and almost always overwritten: `builder::assemble`
+    // replaces it with the release read out of the media, and warns when the two disagree.
+    let release = match opt("windows") {
+        None => WindowsRelease::Server2022,
+        Some(token) => *WindowsRelease::ALL
+            .iter()
+            .find(|r| r.token() == token)
+            .ok_or_else(|| {
+                let known: Vec<&str> =
+                    WindowsRelease::ALL.iter().map(|r| r.token()).collect();
+                anyhow!("unknown --windows={token}; known: {}", known.join(" "))
+            })?,
     };
     let password = password_from_args(args)?;
 
@@ -426,7 +439,8 @@ fn printer(
 /// Upload an already-built image to a rack as a disk.
 ///
 /// Everything is a flag, and nothing is prompted for: this has to work over SSH, in CI,
-/// and from a script that has no terminal at all.
+/// and from a script that has no terminal at all. We can do things to optimize the upload
+/// making this an actually useful feature.
 fn upload(args: &[String]) -> Result<()> {
     let positional: Vec<&String> =
         args.iter().filter(|a| !a.starts_with("--")).collect();
@@ -567,9 +581,9 @@ fn instance(args: &[String]) -> Result<()> {
 /// Wait for a golden install to finish and shut itself down.
 ///
 /// Minutes to tens of minutes, depending on the release, and it prints a line a
-/// minute so it is visibly alive: a UI
-/// that does not move is a UI that has frozen as far as anyone watching it can
-/// tell, and the natural response is to kill it.
+/// minute so it is visibly alive: a UI that does not move is a UI that has
+/// frozen as far as anyone watching it can tell, and the natural response is
+/// to kill it.
 fn watch(args: &[String]) -> Result<()> {
     let positional: Vec<&String> =
         args.iter().filter(|a| !a.starts_with("--")).collect();
@@ -928,7 +942,7 @@ fn teardown(args: &[String]) -> Result<()> {
     let stuck = result?;
     if stuck.is_empty() {
         // Only claim the image survives if it is actually there. `teardown` is
-        // usable on a run that never got as far as making one, and saying "g5
+        // usable on a run that never got as far as making one, and saying "image
         // remains" about an image that does not exist is a small lie that costs
         // someone a confused look at `oxide image list`.
         match rack.image_exists(&names.image()) {

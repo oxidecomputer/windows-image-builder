@@ -38,7 +38,7 @@ impl App {
         self.saved_to = None;
 
         // Read the media now rather than at build time. It costs about ten milliseconds
-        // — a UDF walk and two seeks — and it is what lets stage 2 offer the editions
+        // (a UDF walk and two seeks) and it is what lets stage 2 offer the editions
         // this ISO actually carries instead of a list someone typed into a table.
         self.media = None;
         self.media_error = None;
@@ -220,7 +220,7 @@ impl App {
     /// Two radio groups used to stand here: the Windows release, and Desktop against
     /// Core. Both were assertions nothing checked. The release is now read off the ISO
     /// and only displayed, and Core-ness is a property of the row picked rather than a
-    /// switch beside it — which also means client media, where nothing is Core and there
+    /// switch beside it: which also means client media, where nothing is Core and there
     /// are eleven images rather than four, needs no special case.
     fn ui_edition_picker(&mut self, ui: &mut Ui) {
         let Some(info) = &self.media else {
@@ -467,9 +467,9 @@ impl App {
                     egui::TextEdit::multiline(&mut self.draft.keys_text)
                         .desired_rows(3)
                         .desired_width(f32::INFINITY)
-                        .hint_text("ssh-ed25519 AAAAC3Nza… you@laptop"),
+                        .hint_text("ssh-ed25519 AAAAC3Nza... you@laptop"),
                 );
-                if ui.button("Load from ~/.ssh…").clicked() {
+                if ui.button("Load from ~/.ssh...").clicked() {
                     let start = dirs_ssh();
                     let mut dlg = rfd::FileDialog::new().add_filter("public key", &["pub"]);
                     if let Some(d) = start {
@@ -712,7 +712,7 @@ impl App {
                     "For airgapped racks, or when someone else does the upload.",
                 );
                 ui.horizontal(|ui| {
-                    if ui.button("Save a copy…").clicked() {
+                    if ui.button("Save a copy...").clicked() {
                         let name = file_name(&artifact);
                         if let Some(dest) = rfd::FileDialog::new().set_file_name(&name).save_file()
                         {
@@ -745,9 +745,9 @@ impl App {
             });
     }
 
-    /// The upload path: pick a login, name things, and go.
+    /// The upload path: pick a login, name things.
     ///
-    /// No disabled button with an unexplained reason — whatever is missing is said next
+    /// No disabled button with an unexplained reason. Whatever is missing is said next
     /// to the control, because the reason may otherwise be scrolled out of sight.
     fn ui_upload(&mut self, ui: &mut Ui, artifact: &Path) {
         use crate::app::{Upload, UploadGoal};

@@ -8,7 +8,7 @@
 //!
 //! A `.png` committed next to the source is a blob nobody can review: it arrives in a
 //! diff as "binary files differ", its provenance rests on whoever exported it, and it is
-//! the one artefact in this repository that cannot be checked by reading. Forty lines of
+//! the one artifact in this repository that cannot be checked by reading. Forty lines of
 //! arithmetic can be.
 //!
 //! The mark is three stacked bars, brightening upwards. That is the thing being built:

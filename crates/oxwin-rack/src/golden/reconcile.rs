@@ -6,9 +6,9 @@
 
 //! What exists on the rack, and therefore what happens next.
 //!
-//! This is resumability. There is no journal recording where a run got to, because
-//! a journal is an assertion nothing checks — delete a disk by hand and it still
-//! claims the disk is there. The rack knows, so the rack is asked.
+//! This is resumability. There is no journal recording where a run got to, so
+//! we check disks on the rack. This process doesnt take a ton of time, so
+//! resuming is a best effort here.
 //!
 //! Ordered latest-first: the furthest-along evidence wins, so a run resumed after
 //! the image was made does the teardown rather than starting over.

@@ -14,7 +14,7 @@
 //!
 //! No decompression and no WIM support proper is needed. The header carries a resource
 //! descriptor pointing at an XML blob, and that blob is stored uncompressed as UTF-16LE.
-//! Two reads, decode, done — about 12 KB, so there is nothing worth caching.
+//! Two reads, decode, done: about 12 KB, so there is nothing worth caching.
 //!
 //! Header layout (see \[MS-WIM\]):
 //!
@@ -37,9 +37,9 @@ const XML_RESOURCE_OFFSET: usize = 72;
 ///
 /// The last four fields are what let the media identify itself rather than be asserted
 /// by whoever picked the ISO. They are per-image on the wire, and on every ISO read so
-/// far every image agrees, but nothing in the format promises that — so they stay per
+/// far every image agrees, but nothing in the format promises that: so they stay per
 /// image here and a caller that wants one answer for the media has to say what it does
-/// when they disagree.
+/// when they disagree. Tested server 2016-2025, Win 10+11.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Image {
     pub index: u32,
@@ -150,7 +150,7 @@ fn attribute(attrs: &str, name: &str) -> Option<String> {
     Some(attrs[at..at + end].to_string())
 }
 
-/// The first `<TAG>…</TAG>` in `body`, trimmed. Empty when absent: a missing element and
+/// The first `<TAG>...</TAG>` in `body`, trimmed. Empty when absent: a missing element and
 /// an empty one are treated alike, which is what the goldens pin.
 fn element(body: &str, tag: &str) -> String {
     let open = format!("<{tag}>");
@@ -165,7 +165,7 @@ fn element(body: &str, tag: &str) -> String {
     body[from..from + end].trim().to_string()
 }
 
-/// The first `<TAG>…</TAG>` as a number. `None` covers absent, empty and unparseable
+/// The first `<TAG>...</TAG>` as a number. `None` covers absent, empty and unparseable
 /// alike: all three mean "the media did not tell us", and there is no numeric value that
 /// could stand in for that — build 0 and architecture 0 are both nonsense.
 fn number(body: &str, tag: &str) -> Option<u32> {
@@ -223,7 +223,7 @@ fn ends_with_core(s: &str) -> bool {
     s.len() >= 4 && s[s.len() - 4..].eq_ignore_ascii_case("core")
 }
 
-/// Choose the image matching a loose hint — an index, an `EDITIONID`, or any substring
+/// Choose the image matching a loose hint: an index, an `EDITIONID`, or any substring
 /// of the name or description. Returns `None` when nothing matches, so a caller can
 /// show what is actually available instead of failing opaquely.
 ///
@@ -274,7 +274,7 @@ mod tests {
 
     /// The real image list from Server 2022 evaluation media, `INSTALLATIONTYPE` and all.
     ///
-    /// Note the casing split between `EDITIONID` and `FLAGS` — `ServerDatacenterEval`
+    /// Note the casing split between `EDITIONID` and `FLAGS`: `ServerDatacenterEval`
     /// against `ServerDataCenterEvalCore`. That is verbatim from the media, identically on
     /// 2019, 2022 and 2025, and it is why every comparison here lowercases first.
     fn server_2022() -> Vec<Image> {

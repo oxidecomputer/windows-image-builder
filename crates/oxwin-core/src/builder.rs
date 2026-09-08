@@ -19,7 +19,7 @@
 //!   p2  FAT32  64 MiB at the end: UEFI Shell + startup.nsh chooser + UEFI:NTFS
 //! ```
 //!
-//! Windows Setup insists `install.wim` sit on the volume it booted from — point
+//! Windows Setup insists `install.wim` sit on the volume it booted from, point
 //! `<InstallFrom><Path>` at a second partition and it fails to resolve the licence
 //! terms, and omit the path and it looks only on the boot volume. So the whole media has
 //! to be one volume, and since `install.wim` is over FAT32's 4 GiB file limit, that
@@ -27,7 +27,7 @@
 //! usual dead end; Rufus's UEFI:NTFS solves it with a tiny FAT partition whose
 //! bootloader loads a filesystem driver for the big one.
 //!
-//! There is only an exFAT path. The builder this was ported from also had a FAT32
+//! There is only an exFAT path. Earlier attempts this was ported from also had a FAT32
 //! diagnostic mode that replaced `install.wim` with `wimlib`-split `.swm` parts; it was
 //! not carried over because it needs an external tool, it answered a question `ei.cfg`
 //! has since answered, and no media anyone booted came out of it.
@@ -126,13 +126,13 @@ impl Layout {
 /// - **The whole image is rounded up to a whole GiB.** Oxide disks must be at least
 ///   1 GiB and a whole multiple of it; a 6 GiB volume plus the 1 MiB MBR gap and the
 ///   64 MiB boot partition is 6.064 GiB, which Nexus rejects. Padding here means the
-///   artefact uploads as it is, and the trailing zeros cost nothing to transfer because
+///   artifact uploads as it is, and the trailing zeros cost nothing to transfer because
 ///   the importer skips all-zero blocks.
 pub fn plan(payload_bytes: u64) -> Result<Layout> {
     let p1_start: u32 = 2048;
     // Deliberately f64. Integer arithmetic would be tidier and would round differently
-    // wherever 1.1 is not exact, which would change the volume size — and the goldens,
-    // and every image anyone has already booted. Left alone on purpose.
+    // wherever 1.1 is not exact, which would change the volume size, and the goldens,
+    // and every image anyone has already booted.
     let p1_gib = ((payload_bytes as f64 * 1.1) / GIB as f64).ceil();
     let p1_sectors = u32::try_from((p1_gib as u64) * GIB / SECTOR)
         .map_err(|_| anyhow::anyhow!("media volume is too large to address"))?;
@@ -173,7 +173,7 @@ pub fn plan(payload_bytes: u64) -> Result<Layout> {
 ///   Windows 10 22H2 eval      Eval
 /// ```
 ///
-/// **No media carries a `Retail` directory** — not the retail Windows 11 ISO either. This
+/// **No media carries a `Retail` directory**, not the retail Windows 11 ISO either. This
 /// used to emit `Retail` for anything without an `Eval` suffix, which named a directory
 /// that has never existed on any media examined, and would have produced exactly the
 /// error above on volume-licensing and retail media. `_Default` is Microsoft's catch-all
@@ -279,8 +279,8 @@ fn assemble(
 
     let mut config = request.config.clone();
     config.image_index = Some(chosen.index);
-    // The media outranks the caller. `config.release` is an assertion — a radio button in
-    // the GUI, a flag in the CLI — and it is wrong the moment someone picks a different
+    // The media outranks the caller. `config.release` is an assertion, a radio button in
+    // the GUI, a flag in the CLI. It is wrong the moment someone picks a different
     // ISO without revisiting it; what the media reports is a fact. Getting this wrong
     // means the wrong drivers and the hardware-check bypasses in the wrong state, neither
     // of which surfaces until the guest is on a rack.
@@ -381,7 +381,7 @@ fn assemble(
     // or do not, and the guest comes up without a network on a rack.
     // `config`, never `request.config`: the former is the release the media reported,
     // the latter is what the caller asserted. Reading the wrong one here sent the answer
-    // file the detected release and the drivers the asserted one — so Server 2025 media
+    // file the detected release and the drivers the asserted one. Server 2025 media
     // shipped with Server 2022 drivers while every log line said 2025. Nothing below
     // this point may consult `request.config`.
     let driver_dir = config.release.driver_dir();
@@ -508,8 +508,8 @@ fn assemble(
 /// The UEFI Shell chooser script.
 ///
 /// This is what makes the media safe to leave attached. An Oxide instance boots only its
-/// configured `boot_disk` and never falls through to another disk — proven on real
-/// hardware — so with the installer as `boot_disk` the reboot Setup performs after
+/// configured `boot_disk` and never falls through to another disk, proven on real
+/// hardware, so with the installer as `boot_disk` the reboot Setup performs after
 /// applying the image lands back in Setup, which wipes the half-installed Windows and
 /// starts over, forever.
 ///
@@ -527,7 +527,7 @@ pub fn chooser_script() -> String {
         "    echo OXIDE-CHOOSER: BOOT-INSTALLED %d",
         "    echo OXIDE-CHOOSER: BOOT-INSTALLED %d",
         // The launched image clears the screen immediately, and the serial console is a
-        // screen scrape — so without a pause the one line saying which branch was taken
+        // screen scrape, so without a pause the one line saying which branch was taken
         // is overwritten before anything can read it. That cost a run's worth of
         // ambiguity. `stall` takes microseconds; three seconds survives.
         "    stall 3000000",
@@ -566,7 +566,7 @@ pub fn boot_partition(
     p2.add_file("/EFI/BOOT/BOOTX64.EFI", efi("shellx64.efi")?)?;
     p2.add_file("/EFI/BOOT/uefintfs.efi", efi("uefintfs.efi")?)?;
     // UEFI:NTFS loads its filesystem driver at runtime from this exact path and fails
-    // with "[14] Not Found" if it is missing — it never embeds one. Rufus's
+    // with "[14] Not Found" if it is missing, it never embeds one. Rufus's
     // uefi-ntfs.img ships it alongside the loader in EFI/Rufus, which is easy to miss.
     p2.add_file("/EFI/Rufus/exfat_x64.efi", efi("exfat_x64.efi")?)?;
     p2.add_file("/startup.nsh", chooser_script().into_bytes())?;
@@ -584,7 +584,7 @@ mod tests {
     fn the_licence_channel_names_a_directory_the_media_has() {
         // Evaluation media carries only `Eval`. Note there is no Core spelling here:
         // `ServerDataCenterEvalCore` is a `FLAGS` value, and the Core and Desktop images
-        // share one `EDITIONID` — which is the field the licence directory is keyed by,
+        // share one `EDITIONID`, which is the field the licence directory is keyed by,
         // and the field this takes.
         for id in
             ["ServerDatacenterEval", "ServerStandardEval", "EnterpriseEval"]
@@ -761,17 +761,17 @@ mod whole_image {
     /// Needs a mounted ISO, the fetched payload, and ~21 GiB of scratch space, so it is
     /// behind an environment variable.
     ///
-    /// This used to diff against the JavaScript builder this was ported from, which was
+    /// This used to diff against the JavaScript tests this was ported from, which was
     /// the reference the port was built against. That builder stayed behind; the
-    /// individual structures it covered — the answer file, the bootstrap script, both
-    /// filesystems, the MBR — are each pinned by committed goldens in their own modules,
+    /// individual structures it covered. The answer file, the bootstrap script, both
+    /// filesystems, the MBR. These are each pinned by committed goldens in their own modules,
     /// so what is left for this test is the part no golden can hold: that the sizing,
     /// the file ordering, the partition offsets and the streamed copy compose the same
     /// way every time and by every route.
     ///
     /// Determinism is the property under test. Three separate bugs of exactly that
-    /// shape have been found here — local-time getters in both filesystem builders and
-    /// `readdir` ordering of the media list — so any difference between these builds is
+    /// shape have been found here, local-time getters in both filesystem builders and
+    /// `readdir` ordering of the media list, so any difference between these builds is
     /// a bug, not noise.
     #[test]
     fn builds_the_same_image_by_every_route() {
@@ -847,8 +847,8 @@ mod whole_image {
         let _ = std::fs::remove_file(&again);
 
         // And from the ISO itself, which is the path that needs no mount at all. Two
-        // completely different readers — UDF parsing versus the kernel's mount — have to
-        // agree on the file list, its order, and every byte of content.
+        // completely different readers, UDF parsing versus the kernel's mount. These have
+        // to agree on the file list, its order, and every byte of content.
         if let Ok(iso) = std::env::var("OXWIN_TEST_ISO") {
             let from_iso = scratch.join("iso.img");
             build(
@@ -868,7 +868,7 @@ mod whole_image {
         // This exists because it did not. The detected release was applied to the answer
         // file but the driver directory still read the caller's, so Server 2025 media
         // built with Server 2022 drivers while every log line said Server 2025. Nothing
-        // failed; the image was simply wrong, which is this project's whole failure mode.
+        // failed; the image was simply wrong, now we test.
         {
             let wrong = scratch.join("wrong-release.img");
             let mut request = request_for(mount_media(), &wrong);

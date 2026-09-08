@@ -6,10 +6,9 @@
 
 //! Every resource a golden run touches, named from one run name.
 //!
-//! This is what makes the cycle resumable without a journal. A journal is an
-//! assertion nothing checks — delete a disk by hand and it still claims the disk
-//! exists — so instead the names are a function of `--run`, every step asks the
-//! rack what is already there, and resuming is re-running the identical command.
+//! This is what makes the cycle resumable without a journal. Instead the names
+//! are a function of `--run`, every step asks the rack what is already there,
+//! and resuming is re-running the identical command.
 //!
 //! Validation happens here, before anything is created, and it validates the
 //! *derived* names rather than the one that was typed. A long run name is legal

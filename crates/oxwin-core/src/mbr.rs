@@ -8,9 +8,9 @@
 //!
 //! MBR rather than GPT, and only two entries: an exFAT media volume and a small FAT32
 //! EFI System Partition. The ESP is the bootable one, which looks backwards until you
-//! remember that UEFI firmware can only read FAT — it cannot see the exFAT volume at
+//! remember that UEFI firmware can only read FAT, it cannot see the exFAT volume at
 //! all, so the thing it boots is the little partition carrying a filesystem driver for
-//! the big one.
+//! the big one. Windows is also picky about which drives it loads from and their order.
 //!
 //! Verified against the first 512 bytes of an image that installed Windows on real
 //! Oxide hardware; see the test at the bottom.

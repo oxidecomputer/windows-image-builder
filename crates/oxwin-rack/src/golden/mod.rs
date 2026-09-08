@@ -6,9 +6,8 @@
 
 //! The golden-image cycle: media in, a reusable Windows image out.
 //!
-//! Seven steps — build, upload, instance, watch, snapshot, image, teardown — each
-//! idempotent, each reconciled against the rack before it runs. See
-//! `docs/superpowers/specs/2026-08-31-golden-image-automation-design.md`.
+//! Seven steps: build, upload, instance, watch, snapshot, image, teardown. Each
+//! idempotent, each reconciled against the rack before it runs.
 
 pub mod keep;
 pub mod names;
@@ -48,7 +47,7 @@ pub struct GoldenSpec {
 #[derive(Debug, Clone)]
 pub struct Golden {
     pub image: String,
-    /// What teardown could not remove. Not a failure — the image exists.
+    /// What teardown could not remove. Not a failure, the image exists.
     pub leftovers: Vec<Resource>,
 }
 
@@ -219,7 +218,7 @@ impl Rack {
     /// than a named resource left in place.
     ///
     /// Returns what it could not remove rather than failing. By this point the run
-    /// has succeeded — the image is made — and reporting a leftover disk as a
+    /// has succeeded, the image is made, and reporting a leftover disk as a
     /// failed run would send someone looking for a problem with their image.
     pub fn teardown_step(
         &self,
@@ -298,7 +297,7 @@ impl Rack {
     ///
     /// Resumable by construction. Every pass round the loop asks the rack what
     /// already exists and does only the next thing that is missing, so running this
-    /// twice with the same `--run` continues rather than collides — and that is why
+    /// twice with the same `--run` continues rather than collides, and that is why
     /// there is no journal.
     pub fn run_golden(
         &self,
@@ -533,7 +532,7 @@ mod tests {
     /// There is no rack in `cargo test`, so this pins the shape rather than the
     /// behaviour: each step's source contains its existence check. A source-text
     /// test is weak evidence and is here only because the strong evidence needs an
-    /// hour of rack time — the real check is running the same command twice, which
+    /// hour of rack time, the real check is running the same command twice, which
     /// is what the rack procedure in DEVELOPMENT.md asks for.
     #[test]
     fn the_steps_check_before_they_create() {

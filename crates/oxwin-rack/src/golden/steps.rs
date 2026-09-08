@@ -7,10 +7,7 @@
 //! The rack calls a golden run makes.
 //!
 //! Deliberately thin: no decisions live here, because nothing here can be tested
-//! without a rack. What comes back is normalised so the deciding code
-//! ([`super::watch`], [`super::reconcile`]) sees plain values — chiefly, **a
-//! resource that does not exist is `None`, not an error**, since "not there yet" is
-//! the normal state of every one of these during a run.
+//! without a rack.
 
 use crate::golden::keep::Resource;
 use crate::golden::names::Names;
@@ -567,7 +564,7 @@ impl Rack {
                 }
             }
 
-            // Progress that moves, so a long wait does not read as a hang —
+            // Progress that moves, so a long wait does not read as a hang,
             // but not on every poll. A state change always prints; otherwise once
             // a minute.
             let changed = last_state != Some(state);

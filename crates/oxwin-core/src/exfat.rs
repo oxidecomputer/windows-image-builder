@@ -7,8 +7,8 @@
 //! exFAT volume construction.
 //!
 //! This builds p1, the media volume WinPE reads. exFAT rather than FAT32 because
-//! `install.wim` is over FAT32's 4 GiB per-file limit on every current Windows release
-//! — 4.04 GiB on Server 2022, 4.75 GiB on Windows 11 22H2 — so it can be copied byte
+//! `install.wim` is over FAT32's 4 GiB per-file limit on every current Windows release:
+//! 4.04 GiB on Server 2022, 4.75 GiB on Windows 11 22H2, so it can be copied byte
 //! for byte with no WIM tooling, no splitting, and no risk of altering Microsoft's
 //! payload. The firmware never reads this partition; it boots the small FAT32 one,
 //! which loads a driver for this one.

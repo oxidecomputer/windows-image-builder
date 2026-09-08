@@ -58,7 +58,7 @@ UEFI_NTFS_URL="https://github.com/pbatard/uefi-ntfs/releases/download/${UEFI_NTF
 
 # virtio-win's directory name for each Windows release we support. Every one of these
 # must exist in the ISO or this script fails — see the loop below for why.
-TARGETS=(2k19 2k22 2k25 w10 w11)
+TARGETS=(2k16 2k19 2k22 2k25 w10 w11)
 
 # Drivers worth carrying. NetKVM is the one that actually matters (Oxide NICs are
 # virtio-net); viostor/vioscsi are insurance in case guest disks are not NVMe, and

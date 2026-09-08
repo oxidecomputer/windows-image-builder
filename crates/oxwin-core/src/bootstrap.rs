@@ -13,7 +13,7 @@
 //! - **Drivers, as a second attempt.** `DriverPaths` should have handled them, but a
 //!   driver missed there leaves the guest with no network and no way to fix it.
 //! - **OpenSSH.** Server 2022 has it only as a Feature on Demand, and
-//!   `Add-WindowsCapability` needs Windows Update or an FoD source — an air-gapped rack
+//!   `Add-WindowsCapability` needs Windows Update or an FoD source, an air-gapped rack
 //!   has neither. So the payload rides along on the media, and its Authenticode
 //!   signature is checked on the machine itself before anything is installed.
 //! - **The ESP fallback bootloader.** Windows registers itself in NVRAM and does not
@@ -87,7 +87,7 @@ Log "Oxide guest bootstrap starting"
     if config.inject_drivers {
         push(
             &mut lines,
-            r#"# Belt and braces: the DriverPaths in the unattend should already have
+            r#"# Belt and suspenders: the DriverPaths in the unattend should already have
 # handled these, but a driver missed there leaves the guest unreachable.
 if (Test-Path "$root\drivers") {
   Log "Installing drivers from $root\drivers"
@@ -217,8 +217,8 @@ if (Get-Service -Name sshd -ErrorAction SilentlyContinue) {
     //
     // Windows registers itself with an NVRAM entry pointing at
     // \EFI\Microsoft\Boot\bootmgfw.efi and does not reliably create
-    // \EFI\BOOT\BOOTX64.EFI. That is fine where firmware honours guest NVRAM (QEMU
-    // does), but an Oxide instance drives boot order from its configured boot_disk —
+    // \EFI\BOOT\BOOTX64.EFI. That is fine where firmware follows guest NVRAM (QEMU
+    // does), but an Oxide instance drives boot order from its configured boot_disk,
     // proven on real hardware: pointing boot_disk at a disk with no bootloader at the
     // fallback path drops to the EFI shell rather than trying anything else.
     //

@@ -6,20 +6,13 @@
 
 //! Reading the source media, and asking it what it is.
 //!
-//! Two things live here. [`Source`] is the reader every other module goes through — an
-//! ISO read without mounting it, or a directory someone already mounted — and
-//! [`inspect`] is the one entry point that answers "what is this?".
-//!
-//! Detection exists because the alternative is a radio button, and a radio button is an
-//! assertion nothing checks. Pick "Server 2022", hand the app a Windows 11 ISO, and the
-//! answer file carries server edition names with the hardware-check bypasses switched off.
-//! It fails the way everything in this project fails: the build succeeds and the install
-//! looks fine.
+//! Two things live here. [`Source`] is the reader every other module goes through. Read an
+//! ISO without mounting it, or use a directory someone already mounted.
 //!
 //! The media already knows. Every `<IMAGE>` in the WIM's XML resource carries `ARCH`,
 //! `PRODUCTTYPE`, `BUILD` and `INSTALLATIONTYPE`, and we already read that resource to
-//! choose an edition. So this is a UDF walk and two seeks — sub-second on every ISO
-//! tested — and it runs when the media is picked, not when the build starts, because
+//! choose an edition. So this is a UDF walk and two seeks, sub-second on every ISO
+//! tested, and it runs when the media is picked, not when the build starts, because
 //! stage 2 can only offer real choices if the media has already been read.
 
 use crate::settings::{Problem, WindowsRelease};
@@ -31,9 +24,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Where the media comes from: an ISO read directly, or a directory it is mounted at.
-///
-/// The directory case is not legacy: it is how an ISO someone has already mounted, or a
-/// tree they have edited by hand, gets built without being repacked first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Media {
     Iso(PathBuf),
@@ -63,9 +53,7 @@ impl Media {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaInfo {
     pub media: Media,
-    /// Size of `sources/install.wim`. The cheapest identity field there is: a customer
-    /// can report it without hashing five gigabytes, and it distinguishes ISOs of the
-    /// same release. It is also what pins our goldens to one specific Server 2022 ISO.
+    /// Size of `sources/install.wim`. The cheapest identity field there is.
     pub wim_size: u64,
     /// Every installable image, in the media's own order.
     pub images: Vec<wim::Image>,
@@ -74,7 +62,11 @@ pub struct MediaInfo {
     /// Windows 11 retail and the Server 2022 volume-licensing DVD. We write our own
     /// either way, so this describes what Setup would have done unaided.
     pub ei_cfg: Option<String>,
+    /// Oxide Rack is currently only x86_64, but Windows now ships ARM images and we
+    /// need to check.
     pub arch: Option<u32>,
+    /// Useful for ID, but also not a source of truth, Windows Desktop and server share
+    /// build numbers.
     pub build: Option<u32>,
     pub product_type: String,
     /// The release the media reports, or the nearest one we know when the build is
@@ -135,9 +127,9 @@ pub fn inspect(media: &Media) -> Result<MediaInfo> {
 /// 24H2 are both build 26100**, so a build-only match installs the wrong answer file with
 /// total confidence; and `PRODUCTTYPE` alone cannot tell 2019 from 2025.
 ///
-/// An unfamiliar build still yields a release — the nearest known one of the same kind —
-/// because Server 2016, or whatever ships in 2027, should not be walled off by a table
-/// nobody updated. The caller learns it was a guess from the second return value.
+/// An unfamiliar build still yields a release, the nearest known one of the same kind.
+/// Server 2016, or whatever ships in 2027. The caller learns it was a guess from the
+/// second return value.
 fn detect_release(image: &wim::Image) -> (Option<WindowsRelease>, bool) {
     // Without a build there is nothing to match, and without either kind field there is
     // no way to know whether to match it against the server or the client releases.
@@ -186,9 +178,6 @@ impl MediaInfo {
         self.images.first().is_some_and(wim::is_client_image)
     }
 
-    /// Evaluation media, which rejects retail and KMS product keys. Read from `EDITIONID`
-    /// rather than from the presence of `ei.cfg`: the suffix is the field that actually
-    /// moves, and it is what picks the `ei.cfg` channel we generate.
     pub fn is_evaluation(&self) -> bool {
         self.images
             .iter()
@@ -231,9 +220,9 @@ pub fn problems_for(images: &[wim::Image]) -> Vec<Problem> {
             Some(wim::ARCH_AMD64) => {}
             Some(wim::ARCH_ARM64) => v.push(Problem::block(
                 "media",
-                "This is Arm64 media. Everything here is amd64 — the virtio drivers, and \
-                 processorArchitecture in the answer file — so the image would build and \
-                 then not boot.",
+                "This is Arm64 media. The Oxide rack and supporting materials are amd64 \
+                 drivers and processorArchitecture in the answer file. Please present \
+                 x86_64 media.",
             )),
             Some(other) => v.push(Problem::block(
                 "media",
@@ -291,7 +280,7 @@ pub fn problems_for(images: &[wim::Image]) -> Vec<Problem> {
         (None, _) => v.push(Problem::warn(
             "media",
             "This media does not say which Windows release it is. Every \
-             release-dependent choice — drivers, and the hardware-check bypasses — \
+             release-dependent choice: drivers, and the hardware-check bypasses \
              has to be set by hand.",
         )),
     }
@@ -306,8 +295,7 @@ pub fn problems_for(images: &[wim::Image]) -> Vec<Problem> {
 /// Core image, which is a real choice rather than a default.
 ///
 /// This exists because "no hint" used to mean "the first image", and the first image on
-/// the Windows 11 retail ISO is Home. A default that quietly picks the one edition RDP
-/// cannot reach is the sort of thing nobody notices until a rack.
+/// the Windows 11 retail ISO is Home. Home doesnt have RDP server.
 pub fn default_image(images: &[wim::Image]) -> Option<&wim::Image> {
     for hint in ["datacenter", "pro"] {
         if let Some(image) = wim::select_image(images, hint) {
@@ -317,7 +305,7 @@ pub fn default_image(images: &[wim::Image]) -> Option<&wim::Image> {
     images.iter().find(|i| !wim::is_core_image(i)).or_else(|| images.first())
 }
 
-/// Everything worth saying about the image the user actually chose.
+/// Everything about the image the user actually chose.
 ///
 /// Separate from [`problems_for`] because it depends on a choice rather than on the
 /// media: the same ISO is fine or not depending on which of its eleven images is picked.
@@ -549,7 +537,7 @@ impl Source {
 /// so the two cannot disagree about what the media contains.
 ///
 /// Nothing is known to be broken by this today: `install.wim` is lowercase on all six
-/// ISOs to hand, which is luck rather than a guarantee.
+/// ISOs on hand.
 fn resolve_ignoring_case(root: &Path, volume_path: &str) -> Option<PathBuf> {
     let mut at = root.to_path_buf();
     for want in volume_path.trim_matches('/').split('/') {
@@ -699,14 +687,28 @@ mod tests {
         assert!(!exact);
     }
 
-    /// Older than the table — Server 2016 is build 14393, below every entry. It still
+    /// Older than the table: Server 2012 R2 is build 9600, below every entry. It still
     /// resolves, to the oldest release we know, rather than being walled off.
+    ///
+    /// 2012 R2 is out of scope deliberately: it went out of support in October 2023 and
+    /// predates components the answer file relies on. One day someone may ask for it
+    /// for some legacy support, but if that day comes, then we can cross that road.
     #[test]
     fn an_unknown_older_build_falls_back_to_the_oldest_release() {
         let (release, exact) =
-            detect_release(&image("ServerNT", 14393, "Server"));
-        assert_eq!(release, Some(WindowsRelease::Server2019));
+            detect_release(&image("ServerNT", 9600, "Server"));
+        assert_eq!(release, Some(WindowsRelease::Server2016));
         assert!(!exact);
+    }
+
+    /// Server 2016 is build 14393 and is now a release in its own right, not the
+    /// nearest-neighbour guess to Server 2019 it used to resolve to.
+    #[test]
+    fn server_2016_is_an_exact_match_rather_than_a_guess() {
+        let (release, exact) =
+            detect_release(&image("ServerNT", 14393, "Server"));
+        assert_eq!(release, Some(WindowsRelease::Server2016));
+        assert!(exact);
     }
 
     /// A server build must never resolve to a client release, or the answer file carries
@@ -832,10 +834,11 @@ mod tests {
         }
     }
 
-    /// Home has no RDP host, and RDP is one of only three ways into a guest. Picking it
-    /// with Remote Desktop switched on has to say so here rather than on a rack.
+    /// Home has no RDP server, and RDP is one of only three ways into a guest. Picking it
+    /// with Remote Desktop switched on has to say so here rather than on a rack. Client
+    /// editions ALSO dont have serial output, which makes it an issue.
     ///
-    /// The whole Home family is `EDITIONID` beginning `Core` — the same value that fooled
+    /// The whole Home family is `EDITIONID` beginning `Core`. The same value that fooled
     /// the old Core-image test. Here it is load-bearing, but only because client-ness has
     /// already been established.
     #[test]

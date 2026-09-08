@@ -10,7 +10,7 @@
 //!
 //! A golden build ends by shutting itself down: `OxideGeneralize` syspreps and
 //! powers off. **A guest shutdown transitions the instance to `Stopped`; a guest
-//! reboot does not** — and Windows Setup reboots several times while the instance
+//! reboot does not**: and Windows Setup reboots several times while the instance
 //! stays `Running`. So `Stopped` is the tell, it works on every release, and it
 //! needs no external IP and no firewall rule.
 //!

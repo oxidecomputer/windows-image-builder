@@ -6,9 +6,10 @@
 
 //! Build progress, as data.
 //!
-//! The engine never prints and never blocks on a human — it emits these. That is
+//! The engine never prints and never blocks on a human, it emits these. That is
 //! what lets the same engine drive a GUI progress bar, a CLI spinner, and a test
-//! that just collects the events and asserts on them.
+//! that just collects the events and asserts on them. Really want the system to
+//! not feel frozen when doing longer running events.
 
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;

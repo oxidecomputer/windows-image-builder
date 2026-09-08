@@ -8,12 +8,11 @@
 //!
 //! Why this exists rather than a crate or a shell out to `hdiutil`:
 //!
-//! A Windows Server ISO is a UDF-bridge disc. Its ISO9660 layer is a stub — on the
+//! A Windows Server ISO is a UDF-bridge disc. Its ISO9660 layer is a stub, on the
 //! Server 2022 media the entire ISO9660 root directory contains one file,
 //! `README.TXT`. Everything real, including the 4.04 GiB `sources/install.wim`, lives
 //! only in the UDF filesystem. That file is also larger than ISO9660's 4 GiB per-file
-//! ceiling, so it could not be represented there anyway. Every ISO9660-only Rust crate
-//! is therefore useless for this job, and no maintained Rust crate reads UDF.
+//! ceiling, so it could not be represented there anyway.
 //!
 //! Scope is deliberately narrow: read-only, physical (Type 1) partitions, the
 //! structures a mastered ISO actually uses. Anything outside that is a clear error
@@ -384,7 +383,7 @@ impl UdfImage {
         Ok(out)
     }
 
-    /// Read a whole file into memory. Only for the small ones — the media files that
+    /// Read a whole file into memory. Only for the small ones, the media files that
     /// get rewritten, not `install.wim`.
     pub fn read_file(&mut self, entry: &Entry) -> Result<Vec<u8>> {
         let mut v = Vec::with_capacity(entry.size as usize);

@@ -9,8 +9,7 @@
 //! This builds the 64 MiB EFI System Partition the firmware actually boots: p2 of the
 //! install image, carrying the UEFI Shell, the `startup.nsh` chooser and the UEFI:NTFS
 //! loader with its exFAT driver. FAT is the only filesystem UEFI firmware is required
-//! to read, which is why the big exFAT media volume needs this small partition in front
-//! of it at all.
+//! to read, which is why the big exFAT media volume needs this small partition.
 //!
 //! Clusters are handed out by a bump allocator, so every chain is contiguous. The image
 //! is built once and never modified, so there is nothing to gain from a free-list, and
@@ -57,7 +56,7 @@ const LFN_SLOTS: [usize; LFN_CHARS_PER_ENTRY] =
     [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30];
 
 /// FAT32 is only FAT32 with at least this many clusters. Below it, firmware reads the
-/// volume as FAT16 and finds nothing — which is why the boot partition is 64 MiB and
+/// volume as FAT16 and finds nothing, which is why the boot partition is 64 MiB and
 /// not the 1 MiB it would otherwise need.
 const MIN_FAT32_CLUSTERS: u32 = 65525;
 

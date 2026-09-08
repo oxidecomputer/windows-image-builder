@@ -11,8 +11,8 @@
 //! checksums and never committed.
 //!
 //! Normally it is compiled in, so a release binary is one file with nothing to locate at
-//! runtime. A directory can be substituted, which is how a driver version is tried
-//! without a rebuild.
+//! runtime, and is easier to run. A directory can be substituted, which is how a driver
+//! version is tried without a rebuild.
 
 use anyhow::{Context, Result, bail};
 use std::borrow::Cow;
@@ -38,9 +38,7 @@ impl Assets {
     /// What to use unless told otherwise: the embedded payload, or a directory named by
     /// `OXWIN_ASSETS`.
     ///
-    /// Deliberately infallible. A build with no payload is still worth starting — the UI
-    /// reports it through [`Assets::problem`] on the first screen — and failing here
-    /// would mean the app could not open at all.
+    /// The system will still start without a payload, mostly for testing, it will flag.
     pub fn discover() -> Self {
         match std::env::var_os("OXWIN_ASSETS") {
             Some(dir) => Self::Directory(PathBuf::from(dir)),
@@ -51,7 +49,7 @@ impl Assets {
     /// Why this payload cannot build an image, if it cannot.
     ///
     /// Checked up front rather than at the point of use, because the alternative is
-    /// discovering it several minutes into a 4 GiB copy.
+    /// discovering it several minutes into a 4+ GiB copy.
     pub fn problem(&self) -> Option<String> {
         match self {
             Self::Embedded if EMBEDDED.is_empty() => Some(
@@ -210,7 +208,7 @@ mod tests {
         assert!(checked > 0, "the manifest lists no drivers at all");
 
         // The OpenSSH payload and the three EFI binaries, which are named rather than
-        // listed — a manifest that had lost a block would otherwise pass.
+        // listed, a manifest that had lost a block would otherwise pass.
         let ssh = manifest["openSsh"].as_str().expect("openSsh");
         assert!(!assets.read(ssh).expect("openssh payload").is_empty());
         for name in ["shellx64.efi", "uefintfs.efi", "exfat_x64.efi"] {
@@ -222,7 +220,7 @@ mod tests {
 
         // Every release this workspace can build must have drivers in the payload it
         // shipped with. Without this, a release whose `driver_dir` names a directory
-        // `fetch-payload.sh` does not fetch fails at build time on a user's machine —
+        // `fetch-payload.sh` does not fetch fails at build time on a user's machine,
         // and the NetKVM case fails later still, as a guest with no network on a rack.
         for release in crate::settings::WindowsRelease::ALL {
             let dir = release.driver_dir();
@@ -236,7 +234,8 @@ mod tests {
                     )
                 });
             // NetKVM specifically: it is the network driver, and its absence is the one
-            // failure that looks like a successful install until someone tries to ssh in.
+            // failure that looks like a successful install until someone tries to ssh/rdp
+            // in.
             assert!(
                 drivers.iter().any(|d| d["driver"]
                     .as_str()

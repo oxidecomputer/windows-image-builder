@@ -4,13 +4,12 @@
 
 // Copyright 2026 Oxide Computer Company
 
-//! What does this ISO actually contain?
+//! Get contents of ISO, and the WIM inside.
 //!
 //! Prints everything detection reads off a piece of media: the architecture, the release
 //! and how confidently it was identified, every installable image, and whether the media
 //! ships an `ei.cfg`. Those are the fields [TESTED-MEDIA.md] identifies media by, so this
-//! is what to run before adding a row — filenames vary, and what is inside the ISO is the
-//! only thing that does not.
+//! is what to run before adding a row, filenames vary, depending on the image provided.
 //!
 //! ```text
 //! cargo run --release -p oxwin-cli --example wimlist -- ~/Storage/ISOs/*.iso

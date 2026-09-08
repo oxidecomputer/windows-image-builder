@@ -1,11 +1,11 @@
 # Windows Image Builder
 
-Get Windows Server running on an Oxide rack, from your laptop.
+Get Windows running on an Oxide rack.
 
 The Oxide rack requires a serial console, and VirtIO drivers installed within a
 Windows image for that image to function. This repo contains an applications which
-can take a Windows install ISO, and then convert it into a format compatible with
-the rack and its normal operating mode.
+can take a Windows install ISO, add drivers, and then convert it into a format
+compatible with the Oxide hypervisor.
 
 ![App](./windows-app.png)
 
@@ -13,7 +13,7 @@ the rack and its normal operating mode.
 
 ## What you need before you start
 
-- **A Windows ISO.** Server 2019, 2022 or 2025, or Windows 10 or 11. Microsoft's
+- **A Windows ISO.** Server 2019, 2022, or Windows 10. Microsoft's
   evaluation ISOs work fine and need no product key. The app reads the ISO to find out
   which release it is, so there is nothing to select — see
   [Which Windows versions work](#which-windows-versions-work) for what has been verified.
@@ -39,9 +39,6 @@ the rack and its normal operating mode.
 
 ## The five stages
 
-The app walks you left to right along the top of the window. A circle turns green when
-that stage is finished. You can click back to any green stage to change something.
-
 ### 1. Image Selection
 
 Drag your Windows ISO anywhere onto the window, or click the box to pick one. The app
@@ -60,8 +57,7 @@ You can also start the app with a file: `cargo run -p oxwin-gui -- path/to/windo
   **A golden image ends powered off, and that is the point.** Once the install
   finishes, the machine generalizes itself with sysprep and shuts down. That is what
   makes it cloneable — without it every clone would keep this machine's name *and* its
-  SID, which is the problem a golden image exists to avoid. Take your snapshot once it
-  has stopped. Clones do not generalize themselves again.
+  SID, which is the problem a golden image exists to avoid.
 - **One specific machine** — you type the computer name, and it keeps it. Up to 15
   characters, letters, digits and hyphens.
 
@@ -71,10 +67,6 @@ Set a username and a password. **Windows needs a password** — there is no way 
 it. The serial console and Remote Desktop both sign in with one, and neither knows
 anything about SSH keys, so an account with only a key would be reachable over SSH and
 nowhere else, including from the serial console you need when something has gone wrong.
-
-Use **Generate** if you would rather not invent one; it produces a 20-character
-password that satisfies Windows' complexity rules, and **Copy** puts it on your
-clipboard. Write it down before you move on.
 
 SSH public keys are optional and additive: add one and SSH stops asking for the
 password. The password still exists for everything else.
@@ -96,9 +88,7 @@ understanding:
 
 ### 3. Processing
 
-The app builds the image. It copies several gigabytes, so this takes a few minutes.
-You can leave it running and come back. "Show details" reveals what it is doing if
-you are curious or something looks wrong.
+The app builds the image. It copies several gigabytes, this takes a few minutes.
 
 ### 4. Export
 
@@ -124,7 +114,7 @@ screen depends on the app being able to reach your rack.
 If you would rather script it, the CLI does the same three things:
 
 ```
-oxwin build <iso> out.img --password=… --name=…
+oxwin build <iso> out.img --password=... --name=...
 oxwin upload out.img --project=<p> --disk=<name>
 oxwin instance <name> --project=<p> --installer-disk=<name>
 ```
@@ -175,7 +165,7 @@ The whole thing is also one command:
 
 ```
 oxwin golden ~/path/to/windows.iso --run=ws2022 --project=<your project> \
-  --user=oxide --password=… --ssh-key="$(cat ~/.ssh/id_ed25519.pub)"
+  --user=oxide --password=... --ssh-key="$(cat ~/.ssh/id_ed25519.pub)"
 ```
 
 It builds the media, uploads it, creates a temporary instance, waits for Windows to
@@ -200,7 +190,7 @@ you would like to look at it.
 ### Checking that it worked
 
 ```
-oxwin golden … --verify-clone
+oxwin golden ... --verify-clone
 ```
 
 Adds a last step: create an instance from the finished image and require it to come up
@@ -235,10 +225,10 @@ Turning on RDP in this app is necessary but not sufficient — you also need a V
 firewall rule allowing inbound `tcp/3389`. Add that and it will work.
 
 **The uploaded disk will not boot at all.**
-Check the block size. The image's partition table is laid out in 512-byte sectors, so
-the disk has to be imported with `--disk-block-size 512`. With larger blocks every
-partition offset lands in the wrong place and the firmware finds nothing to boot. The
-command the app gives you already includes the flag; a hand-written one might not.
+Check the block size. The installers image's partition table is laid out in 512-byte
+sectors, the disk has to be imported with `--disk-block-size 512`. With larger blocks
+every partition offset lands in the wrong place and the firmware finds nothing to boot.
+The command the app gives you already includes the flag; a hand-written one might not.
 
 **Windows installed but has no network.**
 The virtio drivers were not injected. Rebuild with that box ticked.
@@ -252,7 +242,7 @@ Check that both disks are attached and that the installer is the boot disk. The
 installer only hands over once it can see a working Windows on another disk.
 
 **Nothing happens for a few minutes after the installer starts.**
-Expected. The screen stays blank between the boot menu and Setup appearing — usually
+Expected. The screen stays blank between the boot menu and Setup appearing: usually
 two or three minutes. The media says so before it hands over. Nothing needs your
 input at any point, and the machine reboots itself several times before it is done.
 Resetting it during that window is the one way to turn a working install into a
@@ -272,18 +262,15 @@ a payload directory instead of rebuilding, set `OXWIN_ASSETS` to it.
 | --- | --- |
 | Windows Server 2022 | **Verified** — installed on real Oxide hardware, with networking, SSH and RDP confirmed working |
 | Windows Server 2019 | **Verified** — installed on real Oxide hardware, with networking, SSH and RDP confirmed working |
-| Windows Server 2025 | Builds, but does not yet install — see [the two blockers](TESTED-MEDIA.md#hardware-verification-status) |
+| Windows Server 2016 | Builds and installs, but never tried on a rack, and it carries a known NVMe risk — see below |
+| Windows Server 2025 | Builds, but does not yet install — see [the blocker](TESTED-MEDIA.md#hardware-verification-status) |
 | Windows 10 | **Verified** — installed on real Oxide hardware, with networking, SSH and RDP confirmed working |
 | Windows 11 | Builds, but does not yet install — same two blockers as Server 2025 |
 | Any Arm64 release | Refused, with a message saying why. The drivers and answer file are amd64 only |
 
-**You do not tell the app which Windows you have — it reads the ISO and works it out.**
-That is deliberate: a version picker is a claim nobody checks, and choosing wrongly used
-to produce an image that built cleanly and then installed a machine with no network. If
-the release you selected disagrees with the media, the media wins and the log says so.
+**Server 2016 is not supported** See [Issues with Server 2016](TESTED-MEDIA.md#server2016andnvme), **if you actually need Server 2016, please open an issue**.
 
-Windows versions come with many different versions of media, see [TESTED-MEDIA.md](TESTED-MEDIA.md) for exactly what has
-been tested on each.
+Windows versions come with many different versions of media, see [TESTED-MEDIA.md](TESTED-MEDIA.md) for exactly what has been tested on each.
 
 ---
 
@@ -293,5 +280,4 @@ been tested on each.
   `oxwin-gui` the desktop app, `oxwin-cli` the command-line one
 - `assets/` — third-party payload, downloaded by `tools/fetch-payload.sh`, not committed
 - `DEVELOPMENT.md` — how it works inside, and how to work on it
-- `PLAN.md` — what is built, and what is coming
 - `TESTED-MEDIA.md` — which Windows ISOs this has actually been run against

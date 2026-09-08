@@ -20,7 +20,7 @@ function Log($m) {
 
 Log "Oxide guest bootstrap starting"
 
-# Belt and braces: the DriverPaths in the unattend should already have
+# Belt and suspenders: the DriverPaths in the unattend should already have
 # handled these, but a driver missed there leaves the guest unreachable.
 if (Test-Path "$root\drivers") {
   Log "Installing drivers from $root\drivers"
