@@ -123,12 +123,14 @@ try {
     if (-not $esp.DriveLetter) { $esp | Set-Partition -NewDriveLetter $letter } else { $letter = $esp.DriveLetter }
     $src2 = "${letter}:\EFI\Microsoft\Boot\bootmgfw.efi"
     $dstDir = "${letter}:\EFI\BOOT"
-    if ((Test-Path $src2) -and -not (Test-Path "$dstDir\BOOTX64.EFI")) {
+    if (-not (Test-Path $src2)) {
+      Log "WARNING: ESP fallback: no bootmgfw.efi at $src2"
+    } elseif (Test-Path "$dstDir\BOOTX64.EFI") {
+      Log "ESP fallback bootloader: Windows already wrote \EFI\BOOT\BOOTX64.EFI"
+    } else {
       New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
       Copy-Item -Path $src2 -Destination "$dstDir\BOOTX64.EFI" -Force
       Log "ESP fallback bootloader installed at \EFI\BOOT\BOOTX64.EFI"
-    } else {
-      Log "ESP fallback bootloader: already present or bootmgfw missing"
     }
   } else { Log "WARNING: no EFI system partition found" }
 } catch { Log "WARNING: ESP fallback copy failed: $_" }

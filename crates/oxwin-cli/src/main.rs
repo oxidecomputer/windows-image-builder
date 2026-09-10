@@ -13,6 +13,8 @@
 //!   racks this machine is logged into, and whether those logins have expired.
 //! - `build` produces an image. Same engine the GUI uses, driven by flags instead of by
 //!   a wizard, which is what makes it usable from a script and from a test harness.
+//! - `licenses` prints the third-party notices. The payload includes GPL'd EFI binaries,
+//!   so an artifact has to be able to state its own terms without a network.
 //!
 //! This file is allowed to print. `oxwin-core` is not — see DEVELOPMENT.md.
 
@@ -39,6 +41,7 @@ fn main() -> Result<()> {
         "teardown" => teardown(&args[1..]),
         "golden" => golden(&args[1..]),
         "verify" => verify(&args[1..]),
+        "licenses" => licenses(&args[1..]),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())
@@ -61,6 +64,7 @@ usage: oxwin doctor
        oxwin teardown <run> --project=<p> [--keep=image]
        oxwin golden <iso-or-mount-or-img> --run=<name> --project=<p>
        oxwin verify <run> --project=<p>
+       oxwin licenses [--full]
 
   --name=<hostname>      computer name, or * for a golden image
   --generalize           after the install finishes, sysprep /generalize and
@@ -1126,6 +1130,28 @@ fn doctor() -> Result<()> {
         std::process::exit(1);
     }
     println!("\neverything needed to build an image is present");
+    Ok(())
+}
+
+/// The third-party notices, which a release has to convey rather than merely have.
+///
+/// Two of the EFI binaries the media carries are GPL'd, so this is an obligation and not
+/// a courtesy — see `oxwin_core::notices` for why the terms live in the tree instead of
+/// in the payload manifest. `--full` adds the license texts, which is what someone
+/// auditing an artifact wants and what nobody wants in the middle of a build log.
+fn licenses(args: &[String]) -> Result<()> {
+    let full = args.iter().any(|a| a == "--full");
+    if let Some(bad) = args.iter().find(|a| *a != "--full") {
+        bail!("licenses takes only --full, not {bad:?}\n\n{USAGE}");
+    }
+    print!(
+        "{}",
+        if full {
+            oxwin_core::notices::full()
+        } else {
+            oxwin_core::notices::summary()
+        }
+    );
     Ok(())
 }
 

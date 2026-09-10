@@ -12,6 +12,7 @@ pub mod exfat;
 pub mod fat32;
 pub mod mbr;
 pub mod media;
+pub mod notices;
 pub mod progress;
 pub mod settings;
 pub mod sparse;

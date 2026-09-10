@@ -428,3 +428,38 @@ Two things QEMU cannot test, so do not trust a local pass as proof:
   **structurally cannot exercise the chooser's second branch**. Only real hardware can.
 - The VPC firewall does not exist locally, so RDP appears to work in QEMU and then times
   out on a rack.
+
+## Open question: the ESP fallback copy in `bootstrap`
+
+`bootstrap.rs` copies `\EFI\Microsoft\Boot\bootmgfw.efi` to `\EFI\BOOT\BOOTX64.EFI` on the
+installed system's ESP, because Oxide boots the configured `boot_disk` by the
+removable-media fallback path and ignores guest NVRAM — a system disk with nothing at that
+path drops to the EFI shell, and a clone has no installer media and no chooser to save it.
+
+**Windows appears to write that file itself, so the copy has never run.** The log line was
+originally `already present or bootmgfw missing`, which is the `else` of a compound
+condition and so could not tell the two apart; the branches now log separately, and Server
+2022 says:
+
+```
+2026-09-10T09:44:12.9735602-07:00  ESP fallback bootloader: Windows already wrote \EFI\BOOT\BOOTX64.EFI
+```
+
+Two data points — 2022 confirmed, and a 2025 run consistent with it under the old message.
+Neither covers the Windows 10/11 client media in the release table.
+
+Left in place rather than deleted, because the two errors are not symmetric: a redundant
+`Copy-Item` costs nothing, while a missing fallback loader is a clone in the EFI shell with
+no console to recover from.
+
+**It is not inert when it skips.** To reach the `Test-Path` checks it assigns the ESP a
+drive letter, and nothing removes it:
+
+```powershell
+if (-not $esp.DriveLetter) { $esp | Set-Partition -NewDriveLetter $letter } else { … }
+```
+
+An ESP normally has no letter, so every image ships with it mounted as `S:` — visible in
+Explorer and Disk Management on every clone, writable by anything running as admin. That
+is the only effect this block has actually had. Whoever picks this up: either remove the
+letter in a `finally`, or drop the block once the client media has been checked.
