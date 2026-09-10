@@ -429,6 +429,77 @@ Two things QEMU cannot test, so do not trust a local pass as proof:
 - The VPC firewall does not exist locally, so RDP appears to work in QEMU and then times
   out on a rack.
 
+## The firmware cannot read exFAT
+
+The whole two-partition layout rests on this, and it was an inference from the UEFI spec
+until it was measured. `map -b` at the UEFI Shell on a rack, with only the installer
+disk attached:
+
+```text
+Shell> map -b
+Mapping table
+      FS0: Alias(s):HD0c:;BLK2:
+          PciRoot(0x0)/Pci(0x10,0x0)/NVMe(0x1,00-…)/HD(2,MBR,0x27A1A4B2,0xC00800,0x20000)
+      FS1: Alias(s):F1:;BLK3:
+          PciRoot(0x0)/Pci(0x18,0x0)
+     BLK0: Alias(s):
+          PciRoot(0x0)/Pci(0x10,0x0)/NVMe(0x1,00-…)
+     BLK1: Alias(s):
+          PciRoot(0x0)/Pci(0x10,0x0)/NVMe(0x1,00-…)/HD(1,MBR,0x27A1A4B2,0x800,0xC00000)
+```
+
+- **`BLK1` is p1** — LBA 0x800 (2048), 0xC00000 sectors (6 GiB), the exFAT media volume.
+  It has a block handle and **no `FS` alias**: the firmware produced no
+  `SimpleFileSystem` for it. That is the claim, as a measurement.
+- **`FS0` is p2** — LBA 0xC00800, 0x20000 sectors (64 MiB), our FAT32 ESP. The only
+  volume on the disk the firmware can open, which is why it is the bootable entry and
+  why the exFAT driver has to be reachable from it.
+- **`FS1` is not a partition.** `PciRoot(0x0)/Pci(0x18,0x0)` has no `HD()` node at all.
+  Unidentified; `dh -d` on that handle would say. It is a reminder that the `fs`
+  numbers the chooser walks name slots, not disks — the `BOOT-INSTALLED fs1` in the
+  baseline above was the installed system disk's ESP in a different configuration.
+  Nothing depends on the numbering, because the chooser scans `fs0`..`fs7`.
+
+Shipping an exFAT driver in firmware is not normal and is not becoming normal: UEFI
+requires FAT12/16/32 and nothing more.
+
+## Secure Boot would stop this media dead
+
+Not a current constraint — Secure Boot is not in play on the rack, and nothing in this
+tree mentions it — but the answer is worth writing down before someone assumes it is a
+detail. None of the three binaries we load are signed:
+
+```
+$ osslsigncode verify -in shellx64.efi     # and uefintfs.efi, and exfat_x64.efi
+No signature found
+```
+
+With Secure Boot on, the firmware refuses `\EFI\BOOT\BOOTX64.EFI` with a security
+violation and the media never boots. Pointing the fallback path straight at
+`uefintfs.efi` fails identically, and the `LoadImage` of `exfat_x64.efi` is gated too,
+so all three would need signatures.
+
+What is *not* affected: an installed Windows boots fine, because `bootmgfw.efi` is
+Microsoft-signed and the ESP fallback copy `bootstrap.rs` makes is that same signed
+binary. So a golden image and its clones are unaffected; only the installer media is.
+The virtio drivers are gated by Windows' own kernel-mode signing, a different mechanism.
+
+Three ways out, if it ever matters:
+
+- **Toggle it off for the install and on afterwards.** We own the whole install, so this
+  is a control-plane action either side of a cycle that already has well-defined start
+  and end points. Cheapest by a wide margin.
+- **An Oxide key in `db`, and sign the loaders ourselves.** The binaries are pinned by
+  SHA-256 in `fetch-payload.sh` already, so signing them is a build step, not a trust
+  decision we would be making for the first time.
+- **Remove the need.** Make p1 FAT32 and split `install.wim` into `install.swm` under
+  the 4 GiB ceiling; Setup reads split WIMs natively. That drops the exFAT driver and
+  UEFI:NTFS entirely and lets the media's own Microsoft-signed `\efi\boot\bootx64.efi`
+  be the boot target. The chooser has no answer on this path — it *is* the UEFI Shell,
+  and Microsoft will not sign a shell, because a shell that loads arbitrary images is a
+  Secure Boot bypass. That would push the decision back to flipping `boot_disk` from
+  outside, which `builder::chooser_script` explains why we avoided.
+
 ## Open question: the ESP fallback copy in `bootstrap`
 
 `bootstrap.rs` copies `\EFI\Microsoft\Boot\bootmgfw.efi` to `\EFI\BOOT\BOOTX64.EFI` on the

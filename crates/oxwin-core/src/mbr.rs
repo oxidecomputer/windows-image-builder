@@ -12,6 +12,10 @@
 //! all, so the thing it boots is the little partition carrying a filesystem driver for
 //! the big one. Windows is also picky about which drives it loads from and their order.
 //!
+//! That the firmware cannot see p1 is measured, not assumed: `map -b` at the rack's
+//! UEFI Shell lists p1 as `BLK1` with no `FS` alias, while p2 is `FS0`. See
+//! DEVELOPMENT.md, "The firmware cannot read exFAT".
+//!
 //! Verified against the first 512 bytes of an image that installed Windows on real
 //! Oxide hardware; see the test at the bottom.
 
@@ -118,8 +122,9 @@ mod tests {
 
     #[test]
     fn the_esp_is_the_bootable_partition() {
-        // Backwards-looking but essential: firmware cannot read exFAT, so booting p1
-        // is impossible. If this ever flips, nothing boots at all.
+        // Backwards-looking but essential: firmware cannot read exFAT — `map -b` on a
+        // rack gives p1 a block handle and no filesystem — so booting p1 is
+        // impossible. If this ever flips, nothing boots at all.
         let mbr = boot_sector(&reference_partitions());
         assert_eq!(mbr[446], 0x00, "p1 must not be bootable");
         assert_eq!(mbr[446 + 16], 0x80, "p2 must be bootable");

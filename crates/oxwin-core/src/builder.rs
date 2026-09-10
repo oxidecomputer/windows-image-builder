@@ -516,8 +516,14 @@ fn assemble(
 /// Rather than have an external tool race that reboot to flip `boot_disk`, the media
 /// decides for itself: if any FAT volume already has an installed Windows, boot it;
 /// otherwise run Setup. That keeps the media self-sufficient, which matters most for an
-/// air-gapped operator with only a serial console. p1 is exFAT and invisible to the
-/// firmware, so its own `\efi` tree cannot produce a false positive.
+/// air-gapped operator with only a serial console.
+///
+/// Two independent reasons the media's own `\efi` tree cannot produce a false positive,
+/// and the second is the one to rely on. p1 is exFAT and the firmware cannot mount it,
+/// measured with `map -b` on a rack. But more simply, **Windows media has no
+/// `\EFI\Microsoft\Boot\bootmgfw.efi`** — it carries `bcd`, `cdboot.efi` and the fonts
+/// under that directory, and its bootloader is `\efi\boot\bootx64.efi` — so the path
+/// probed below cannot match there whatever the firmware can read.
 pub fn chooser_script() -> String {
     [
         "@echo -off",
