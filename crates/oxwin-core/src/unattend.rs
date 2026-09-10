@@ -954,8 +954,10 @@ mod tests {
             // What each pins is the `/IMAGE/NAME` string Setup matches on. Getting it
             // wrong matches nothing, and Setup then shows an empty edition list and
             // waits: on a rack, forever.
-            // 2016 boots, but the NVMe driver has issues, leaving this here but its not
-            // "supported" really at this time, its also near EOL.
+            // 2016's edition vocabulary is right and its media detects correctly, so
+            // the table stays. It is not supported at this time: its NVMe namespace
+            // enumeration has known trouble, characterised under QEMU because a rack
+            // attempt showed nothing on serial — see `TESTED-MEDIA.md`. EOL Jan 2027.
             (
                 "release-server-2016",
                 "server 2016 edition table",

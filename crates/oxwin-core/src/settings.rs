@@ -103,9 +103,10 @@ pub fn generate_password() -> String {
 /// reads it. A user-asserted release is unchecked by anything, and picking the wrong one
 /// fails the way everything here fails, the build succeeds and the install looks fine,
 /// with the hardware-check bypasses in the wrong state and server edition names on client
-/// media. Server 2012 R2 and below use a different setup system, and struggle more with
-/// NVMe. They are also EOL, currently they are not targetted for support. 2016 goes EOL
-/// Jan 2027 anyway.
+/// media. Server 2012 R2 and below are out of scope: some of the answer-file primitives
+/// this relies on do not work that far back, the NVMe trouble already seen on 2016 only
+/// gets worse the older the release, and they are out of support. Server 2016 itself
+/// goes end of life in January 2027.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WindowsRelease {
     Server2016,
@@ -146,8 +147,12 @@ impl WindowsRelease {
     /// Kept in step with the hardware table in `TESTED-MEDIA.md`, which is the record.
     /// Server 2025 and Windows 11 are absent deliberately: both build correctly and
     /// neither has installed on a rack, blocked on propolis#1199 and on an NVMe
-    /// controller fault on the rack itself. Server 2016 is absent because it has NVMe
-    /// controller issues, and currently isnt fully supported.
+    /// controller fault on the rack itself. Server 2016 is absent because nobody has
+    /// watched it finish: a rack attempt was given up on after fifteen minutes, since
+    /// 2016's Setup writes nothing to the serial console and the guest has no
+    /// framebuffer, so a slow install and a stuck one look identical from outside. It
+    /// was characterised under QEMU instead — see `TESTED-MEDIA.md` — and is not
+    /// supported at this time.
     pub fn verified_on_hardware(self) -> bool {
         matches!(
             self,

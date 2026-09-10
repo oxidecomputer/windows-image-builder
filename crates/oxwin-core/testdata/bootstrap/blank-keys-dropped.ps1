@@ -6,9 +6,9 @@ $root = (Split-Path -Parent $src).TrimEnd('\')
 
 # Log to the installer media as well as the system drive. The media is the only
 # copy anyone can read without getting into the guest: on the rack the console is
-# serial-only, and off the rack a Windows NTFS volume is awkward to read (macOS
-# 26 dropped NTFS support entirely). Detach the installer disk afterwards and the
-# log is right there on a volume every OS can mount.
+# serial-only, and off the rack the system drive is NTFS, which needs support the
+# reading machine may not have - macOS mounts it read-only at best. Detach the
+# installer disk afterwards and the log is on exFAT, which every OS mounts.
 $log = "$env:SystemDrive\oxide-bootstrap.log"
 $mediaLog = "$root\oxide-bootstrap.log"
 function Log($m) {
@@ -33,11 +33,12 @@ if (Test-Path "$root\drivers") {
   Log "virtio NIC present: $([bool]$nic)"
 }
 
-# Server 2025 ships OpenSSH Server preinstalled. Server 2022 and Windows 11
-# have it only as a Feature on Demand, and Add-WindowsCapability needs
-# Windows Update or an FoD source - an air-gapped rack has neither, and the
-# payload is not on the install media. So: use whatever is already present,
-# and fall back to the copy riding along on this disk.
+# Only Server 2025 ships OpenSSH Server preinstalled. Server 2019, Server
+# 2022, Windows 10 and Windows 11 have it as a Feature on Demand only, and
+# Add-WindowsCapability needs Windows Update or an FoD source - an air-gapped
+# rack has neither, and the payload is not on the install media. So: use
+# whatever is already present, and fall back to the copy riding along on this
+# disk. Nothing below is keyed on the release; it probes for what is there.
 if (-not (Get-Service -Name sshd -ErrorAction SilentlyContinue)) {
   $inbox = "$env:SystemRoot\System32\OpenSSH\sshd.exe"
   $zip = Get-ChildItem -Path "$root\openssh" -Filter 'OpenSSH-Win64*.zip' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -112,8 +113,9 @@ if (Get-Service -Name sshd -ErrorAction SilentlyContinue) {
   Log "WARNING: sshd service not registered; SSH is not configured"
 }
 
-# See docs/windows-install-status.md: Oxide boots the configured boot_disk and
-# does not fall through, so the ESP needs the fallback path populated.
+# Oxide boots the configured boot_disk and does not fall through to another
+# disk, so the ESP needs the removable-media fallback path populated or the
+# installed system drops to the EFI shell.
 try {
   $esp = (Get-Partition | Where-Object { $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' } | Select-Object -First 1)
   if ($esp) {

@@ -384,8 +384,9 @@ impl Source {
     /// Sorted because the order decides the order clusters are handed out in, and so
     /// decides the bytes of the volume. `read_dir` and a UDF directory both return
     /// whatever order the source happens to hold, which is not the same order on a
-    /// mounted ISO, an APFS copy and a Linux host. The sort key is the path the file
-    /// will have on the volume, which is the only thing stable across all three.
+    /// mounted ISO, a copy of one on a host filesystem, or the same copy on another
+    /// host. The sort key is the path the file will have on the volume, which is the
+    /// only thing stable across all of them.
     pub(crate) fn list(&mut self) -> Result<Vec<MediaFile>> {
         let mut files = match self {
             Self::Iso(udf) => udf
@@ -556,7 +557,7 @@ fn resolve_ignoring_case(root: &Path, volume_path: &str) -> Option<PathBuf> {
 /// The one entry of `dir` whose name matches `want` apart from case.
 ///
 /// Compares the names this side rather than leaning on the filesystem, so it behaves the
-/// same on a case-sensitive UDF mount and a case-insensitive APFS copy.
+/// same on a case-sensitive UDF mount and a case-insensitive host filesystem.
 fn find_ignoring_case(dir: &Path, want: &str) -> Option<PathBuf> {
     std::fs::read_dir(dir)
         .ok()?
@@ -890,9 +891,9 @@ mod tests {
     ///
     /// `find_ignoring_case` is tested rather than the whole lookup, deliberately: it does
     /// the comparison itself instead of asking the filesystem, so this proves the same
-    /// thing on a case-insensitive APFS volume as on a case-sensitive UDF mount. A test
-    /// that leaned on `Path::exists` would pass on macOS whether the code was right or
-    /// not.
+    /// thing on a case-insensitive host filesystem as on a case-sensitive UDF mount. A
+    /// test that leaned on `Path::exists` would pass on a case-insensitive host whether
+    /// the code was right or not.
     #[test]
     fn a_mounted_path_resolves_whatever_its_casing() {
         let dir = std::env::temp_dir()

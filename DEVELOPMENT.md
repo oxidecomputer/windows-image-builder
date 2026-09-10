@@ -151,7 +151,8 @@ Worth knowing, because the same shapes recur.
 ### The orchestration
 
 - **File ordering was the third reproducibility bug.** The walk returned files in
-  `readdir` order, which differs between a mounted ISO, an APFS copy and a Linux host —
+  `readdir` order, which differs between a mounted ISO, a copy of one on a host
+  filesystem, and another host again —
   and that order decides the order clusters are handed out in, so it decides the bytes of
   the volume. The sort key is now the path the file will have *on the volume*, not the
   host path, so a Windows host's backslashes cannot produce a different order either.
@@ -264,7 +265,7 @@ Two things worth noting:
 ## Testing
 
 ```
-cargo test              # 183 tests, no rack, ISO or payload download required
+cargo test              # whole suite; no rack, ISO or payload download required
 cargo clippy --all-targets
 
 # The gated ones, when the artifacts are to hand:
@@ -288,8 +289,8 @@ ones.
 the "a test that skips is a test that lies" rule cannot be applied: there is genuinely no
 ISO in CI. The consequence is real and worth stating: **a green suite is consistent with
 the image being broken.** Building an image from a real ISO is a separate, manual gate, and
-it is the only thing that exercises a release binary against real media. Perhaps we change
-this in the future but I didnt want to introduce Windows media in CI.
+it is the only thing that exercises a release binary against real media. This may change,
+but we did not want to introduce Windows media into CI.
 
 Recorded mutations, so the comparisons are not taken on trust: a trailing space in
 `<Organization>` fails all 15 unattend cases; a Core edition collapsing to Desktop fails
@@ -311,9 +312,9 @@ Worth noting, the most common failure points are: first, serial says "Starting W
 Setup. The screen stays blank for a few minutes." and the system never does anything else.
 Most likely what happened is the installer failed to read the setup information, and is
 stuck trying to go through the installer. This happened with driver issues in testing.
-Second, the install happens, reboots, but then you cant SSH or RDP into it. Then the
-nic driver may not be installed, you can use the serial console on Server editions to
-start a cmd, and see if there are any IPs.
+Second, the install happens and reboots, but nothing answers on SSH or RDP. The NIC
+driver is the likely culprit; on Server editions the serial console will start a `cmd`,
+which is enough to check whether the guest has an address at all.
 
 A finished cycle proves nothing on its own. **Check the artifact at each milestone,
 not the outcome at the end.**

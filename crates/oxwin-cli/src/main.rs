@@ -1026,6 +1026,18 @@ fn flag_in(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == &format!("--{name}"))
 }
 
+/// Report whether this machine can build an image, and whether it can upload one.
+///
+/// Prints one line per check, prefixed `ok`, `warn` or `FAIL`, and exits 1 if anything
+/// failed. The split between the last two is the whole point of the command: a **`FAIL`
+/// means no image can be built from this binary at all** — the payload is missing or a
+/// boot asset is truncated, neither of which is fixable by anything the user does at
+/// run time — while a **`warn` means only the rack half is unavailable**, because
+/// building and saving an image to a file never touches a network or the oxide CLI.
+///
+/// Everything here is deliberately passive: assets are read, `oxide` is looked up on
+/// `PATH` rather than run, and credentials are inspected rather than exercised. Running
+/// `doctor` cannot change anything or require auth, so it is safe to ask for first.
 fn doctor() -> Result<()> {
     let mut failures = 0;
 
