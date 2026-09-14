@@ -21,17 +21,14 @@ use anyhow::{Result, bail};
 
 /// The base block is 4096 bytes, and every cell offset in the hive is relative to
 /// the end of it.
-#[allow(dead_code)]
 pub(crate) const BASE: usize = 4096;
 
-#[allow(dead_code)]
 pub(crate) struct BaseBlock {
     pub root_offset: u32,
     pub bins_size: u32,
 }
 
 /// XOR of the first 127 little-endian u32s. Zero and `!0` are reserved.
-#[allow(dead_code)]
 pub(crate) fn checksum(bytes: &[u8]) -> u32 {
     let mut sum = 0u32;
     for i in 0..127 {
@@ -46,14 +43,12 @@ pub(crate) fn checksum(bytes: &[u8]) -> u32 {
     }
 }
 
-#[allow(dead_code)]
 fn u32_at(bytes: &[u8], at: usize) -> u32 {
     let mut w = [0u8; 4];
     w.copy_from_slice(&bytes[at..at + 4]);
     u32::from_le_bytes(w)
 }
 
-#[allow(dead_code)]
 pub(crate) fn base_block(bytes: &[u8]) -> Result<BaseBlock> {
     if bytes.len() < BASE {
         bail!("not a hive: {} bytes, shorter than a base block", bytes.len());
@@ -79,6 +74,60 @@ pub(crate) fn base_block(bytes: &[u8]) -> Result<BaseBlock> {
         bail!("hive claims {bins_size} bytes of bins, file is too short");
     }
     Ok(BaseBlock { root_offset: u32_at(bytes, 36), bins_size })
+}
+
+pub(crate) struct Cell {
+    /// Absolute offset in the file, at the 4-byte size header.
+    pub at: usize,
+    /// Including the size header. Always a multiple of 8.
+    pub size: usize,
+    pub allocated: bool,
+}
+
+/// Every cell in the hive, in file order.
+///
+/// A bin's cells must tile it exactly: the format has no padding, so a gap means
+/// we have misread something and must not write.
+pub(crate) fn cells(bytes: &[u8]) -> Result<Vec<Cell>> {
+    let head = base_block(bytes)?;
+    let mut out = Vec::new();
+    let mut bin = BASE;
+    let end = BASE + head.bins_size as usize;
+    while bin < end {
+        if bytes.len() < bin + 32 || &bytes[bin..bin + 4] != b"hbin" {
+            bail!("no hbin signature at {bin:#x}");
+        }
+        let bin_size = u32_at(bytes, bin + 8) as usize;
+        if bin_size == 0 || bin_size % BASE != 0 || bin + bin_size > end {
+            bail!("bin at {bin:#x} has an implausible size of {bin_size}");
+        }
+        let mut at = bin + 32;
+        while at < bin + bin_size {
+            let raw = i32::from_le_bytes(
+                bytes[at..at + 4].try_into().expect("4 bytes"),
+            );
+            let size = raw.unsigned_abs() as usize;
+            if size == 0 || size % 8 != 0 {
+                bail!("cell at {at:#x} has size {raw}");
+            }
+            if at + size > bin + bin_size {
+                bail!("cell at {at:#x} runs past the end of its bin");
+            }
+            out.push(Cell { at, size, allocated: raw < 0 });
+            at += size;
+        }
+        if at != bin + bin_size {
+            bail!("cells do not tile the bin at {bin:#x}");
+        }
+        bin += bin_size;
+    }
+    Ok(out)
+}
+
+/// Structural check, run on our own output before we hand it back.
+pub(crate) fn validate(bytes: &[u8]) -> Result<()> {
+    cells(bytes)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -136,5 +185,55 @@ mod tests {
     #[test]
     fn rejects_a_truncated_file() {
         assert!(base_block(&[0u8; 100]).is_err());
+    }
+
+    /// A base block plus one 4096-byte bin holding a single free cell.
+    fn bare_hive_with_free_bin() -> Vec<u8> {
+        let mut v = bare_base(32, 4096);
+        let mut bin = vec![0u8; 4096];
+        bin[0..4].copy_from_slice(b"hbin");
+        bin[4..8].copy_from_slice(&0u32.to_le_bytes()); // offset of this bin
+        bin[8..12].copy_from_slice(&4096u32.to_le_bytes()); // size
+        // One free cell filling the rest of the bin. Positive size = free.
+        let free = 4096i32 - 32;
+        bin[32..36].copy_from_slice(&free.to_le_bytes());
+        v.extend_from_slice(&bin);
+        let sum = checksum(&v);
+        v[508..512].copy_from_slice(&sum.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn walks_one_bin_of_one_free_cell() {
+        let v = bare_hive_with_free_bin();
+        let cells = cells(&v).unwrap();
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].at, BASE + 32);
+        assert_eq!(cells[0].size, 4096 - 32);
+        assert!(!cells[0].allocated);
+    }
+
+    #[test]
+    fn rejects_cells_that_do_not_tile_the_bin() {
+        let mut v = bare_hive_with_free_bin();
+        // Shrink the cell so it no longer reaches the end of the bin.
+        v[BASE + 32..BASE + 36].copy_from_slice(&64i32.to_le_bytes());
+        let sum = checksum(&v);
+        v[508..512].copy_from_slice(&sum.to_le_bytes());
+        assert!(validate(&v).is_err());
+    }
+
+    #[test]
+    fn rejects_a_cell_size_that_is_not_a_multiple_of_eight() {
+        let mut v = bare_hive_with_free_bin();
+        v[BASE + 32..BASE + 36].copy_from_slice(&4060i32.to_le_bytes());
+        let sum = checksum(&v);
+        v[508..512].copy_from_slice(&sum.to_le_bytes());
+        assert!(validate(&v).is_err());
+    }
+
+    #[test]
+    fn a_well_formed_hive_validates() {
+        validate(&bare_hive_with_free_bin()).unwrap();
     }
 }
