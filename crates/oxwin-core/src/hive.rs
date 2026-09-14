@@ -239,8 +239,19 @@ impl Key {
             let nlen = u16::from_le_bytes(
                 b[vk + 6..vk + 8].try_into().expect("2 bytes"),
             ) as usize;
-            let this: String =
-                b[vk + 24..vk + 24 + nlen].iter().map(|&c| c as char).collect();
+            let vk_flags = u16::from_le_bytes(
+                b[vk + 20..vk + 22].try_into().expect("2 bytes"),
+            );
+            let raw_name = &b[vk + 24..vk + 24 + nlen];
+            let this: String = if vk_flags & 0x0001 != 0 {
+                raw_name.iter().map(|&c| c as char).collect()
+            } else {
+                let wide: Vec<u16> = raw_name
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                String::from_utf16_lossy(&wide)
+            };
             if this != name {
                 continue;
             }
@@ -585,14 +596,16 @@ mod tests {
             // Pad to a whole number of bins, leaving EXACTLY `free_tail` bytes
             // free. Any leftover between the last real cell and the free tail
             // becomes an allocated filler cell, so the bin still tiles exactly.
+            // `used` is a sum of cell sizes each rounded up to a multiple of 8
+            // (`Writer::cell`), `free_tail` is asserted to be a multiple of 8
+            // above, and `bin_size` is a multiple of `BASE`, itself a
+            // multiple of 8 — so `slack` can only ever be 0 or >= 8, never a
+            // value too small to hold a cell header. No growth branch is
+            // needed to make room for the filler.
             let used = 32 + w.cells.len();
-            let mut bin_size = (used + free_tail).div_ceil(BASE) * BASE;
-            let mut slack = bin_size - used - free_tail;
-            if slack != 0 && slack < 8 {
-                // Too small to hold a cell header: grow by another bin.
-                bin_size += BASE;
-                slack = bin_size - used - free_tail;
-            }
+            let bin_size = (used + free_tail).div_ceil(BASE) * BASE;
+            let slack = bin_size - used - free_tail;
+            debug_assert!(slack == 0 || slack >= 8, "slack must be 0 or >= 8");
             if slack > 0 {
                 w.cells.extend_from_slice(&(-(slack as i32)).to_le_bytes());
                 w.cells.resize(w.cells.len() + slack - 4, 0);
