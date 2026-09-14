@@ -10,6 +10,7 @@ pub mod builder;
 pub mod engine;
 pub mod exfat;
 pub mod fat32;
+pub(crate) mod hive;
 pub mod mbr;
 pub mod media;
 pub mod notices;
