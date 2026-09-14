@@ -151,6 +151,135 @@ pub(crate) fn validate(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// A key node. Field offsets below are from the cell start, so the signature is
+/// at `at + 4` and everything else follows the documented `nk` layout.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) struct Key {
+    pub at: usize,
+}
+
+#[allow(dead_code)]
+impl Key {
+    pub fn subkey_count(&self, b: &[u8]) -> u32 {
+        u32_at(b, self.at + 24)
+    }
+    pub fn subkey_list(&self, b: &[u8]) -> u32 {
+        u32_at(b, self.at + 32)
+    }
+    pub fn value_count(&self, b: &[u8]) -> u32 {
+        u32_at(b, self.at + 40)
+    }
+    pub fn value_list(&self, b: &[u8]) -> u32 {
+        u32_at(b, self.at + 44)
+    }
+    pub fn security(&self, b: &[u8]) -> u32 {
+        u32_at(b, self.at + 48)
+    }
+    /// The key's own last-written timestamp, which new children inherit so that
+    /// nothing here ever reads a clock.
+    pub fn timestamp(&self, b: &[u8]) -> u64 {
+        u64::from_le_bytes(
+            b[self.at + 8..self.at + 16].try_into().expect("8 bytes"),
+        )
+    }
+
+    pub fn name(&self, b: &[u8]) -> Result<String> {
+        let len = u16::from_le_bytes(
+            b[self.at + 76..self.at + 78].try_into().expect("2 bytes"),
+        ) as usize;
+        let flags = u16::from_le_bytes(
+            b[self.at + 6..self.at + 8].try_into().expect("2 bytes"),
+        );
+        let raw = &b[self.at + 80..self.at + 80 + len];
+        if flags & 0x0020 != 0 {
+            Ok(raw.iter().map(|&c| c as char).collect())
+        } else {
+            let wide: Vec<u16> = raw
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            Ok(String::from_utf16_lossy(&wide))
+        }
+    }
+
+    pub fn subkeys(&self, b: &[u8]) -> Result<Vec<(String, Key)>> {
+        let list = self.subkey_list(b);
+        if self.subkey_count(b) == 0 || list == u32::MAX {
+            return Ok(Vec::new());
+        }
+        let at = BASE + list as usize;
+        let sig = &b[at + 4..at + 6];
+        if sig != b"lf" && sig != b"lh" {
+            bail!(
+                "subkey list at {at:#x} is {}, which this does not edit",
+                String::from_utf8_lossy(sig)
+            );
+        }
+        let count =
+            u16::from_le_bytes(b[at + 6..at + 8].try_into().expect("2 bytes"))
+                as usize;
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            let off = u32_at(b, at + 8 + i * 8) as usize;
+            let key = Key { at: BASE + off };
+            out.push((key.name(b)?, key));
+        }
+        Ok(out)
+    }
+
+    pub fn value(&self, b: &[u8], name: &str) -> Result<Option<Vec<u8>>> {
+        let count = self.value_count(b) as usize;
+        if count == 0 {
+            return Ok(None);
+        }
+        let list = BASE + self.value_list(b) as usize;
+        for i in 0..count {
+            let vk = BASE + u32_at(b, list + 4 + i * 4) as usize;
+            let nlen = u16::from_le_bytes(
+                b[vk + 6..vk + 8].try_into().expect("2 bytes"),
+            ) as usize;
+            let this: String =
+                b[vk + 24..vk + 24 + nlen].iter().map(|&c| c as char).collect();
+            if this != name {
+                continue;
+            }
+            let raw = u32_at(b, vk + 8);
+            let len = (raw & 0x7fff_ffff) as usize;
+            if raw & 0x8000_0000 != 0 {
+                // Four bytes or fewer live in the offset field itself.
+                return Ok(Some(b[vk + 12..vk + 12 + len.min(4)].to_vec()));
+            }
+            let data = BASE + u32_at(b, vk + 12) as usize + 4;
+            return Ok(Some(b[data..data + len].to_vec()));
+        }
+        Ok(None)
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn root(b: &[u8]) -> Result<Key> {
+    Ok(Key { at: BASE + base_block(b)?.root_offset as usize })
+}
+
+/// Walks a path of subkey names from the root. `Ok(None)` means a name was not
+/// found, which is a fact about the hive rather than an error.
+#[allow(dead_code)]
+pub(crate) fn find(b: &[u8], path: &[&str]) -> Result<Option<Key>> {
+    let mut key = root(b)?;
+    for want in path {
+        let next = key
+            .subkeys(b)?
+            .into_iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(want));
+        match next {
+            Some((_, k)) => key = k,
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(key))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +415,269 @@ mod tests {
     #[test]
     fn a_well_formed_hive_validates() {
         validate(&bare_hive_with_free_bin()).unwrap();
+    }
+
+    /// Builds a hive shaped like a real BCD store. `free_tail` is how many bytes
+    /// of free cell to leave, so a caller can produce one with room to grow and
+    /// one without.
+    mod fixture {
+        use super::super::BASE;
+
+        pub const EMS_GUID: &str = "{0ce4991b-e6b3-4b16-b23c-5e0d9250e5d9}";
+
+        struct Writer {
+            cells: Vec<u8>, // everything after the 32-byte bin header
+        }
+
+        impl Writer {
+            fn new() -> Self {
+                Writer { cells: Vec::new() }
+            }
+
+            /// Appends a cell with `body` after the 4-byte size header, returns
+            /// the hive offset (relative to the end of the base block).
+            fn cell(&mut self, body: &[u8]) -> u32 {
+                let size = (4 + body.len()).div_ceil(8) * 8;
+                let at = 32 + self.cells.len();
+                self.cells.extend_from_slice(&(-(size as i32)).to_le_bytes());
+                self.cells.extend_from_slice(body);
+                self.cells.resize(at - 32 + size, 0);
+                at as u32
+            }
+
+            fn sk(&mut self) -> u32 {
+                let mut b = Vec::new();
+                b.extend_from_slice(b"sk");
+                b.extend_from_slice(&0u16.to_le_bytes()); // reserved
+                b.extend_from_slice(&0u32.to_le_bytes()); // flink
+                b.extend_from_slice(&0u32.to_le_bytes()); // blink
+                b.extend_from_slice(&1u32.to_le_bytes()); // reference count
+                b.extend_from_slice(&4u32.to_le_bytes()); // descriptor size
+                b.extend_from_slice(&[0u8; 4]); // a stub descriptor
+                self.cell(&b)
+            }
+
+            /// One `vk` named "Element" holding `data` as REG_BINARY, plus its
+            /// data cell and a one-entry value list. Returns the list offset.
+            fn element_value(&mut self, data: &[u8]) -> u32 {
+                let data_at = {
+                    let mut b = Vec::new();
+                    b.extend_from_slice(data);
+                    self.cell(&b)
+                };
+                let vk = {
+                    let name = b"Element";
+                    let mut b = Vec::new();
+                    b.extend_from_slice(b"vk");
+                    b.extend_from_slice(&(name.len() as u16).to_le_bytes());
+                    b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                    b.extend_from_slice(&data_at.to_le_bytes());
+                    b.extend_from_slice(&3u32.to_le_bytes()); // REG_BINARY
+                    b.extend_from_slice(&1u16.to_le_bytes()); // ASCII name
+                    b.extend_from_slice(&0u16.to_le_bytes()); // spare
+                    b.extend_from_slice(name);
+                    self.cell(&b)
+                };
+                self.cell(&vk.to_le_bytes())
+            }
+
+            #[allow(clippy::too_many_arguments)]
+            fn nk(
+                &mut self,
+                name: &str,
+                parent: u32,
+                sk: u32,
+                subkeys: &[u32],
+                subkey_list: u32,
+                values: u32,
+                value_list: u32,
+            ) -> u32 {
+                let mut b = Vec::new();
+                b.extend_from_slice(b"nk");
+                b.extend_from_slice(&0x0020u16.to_le_bytes()); // ASCII name
+                b.extend_from_slice(&0u64.to_le_bytes()); // timestamp
+                b.extend_from_slice(&0u32.to_le_bytes()); // access bits
+                b.extend_from_slice(&parent.to_le_bytes());
+                b.extend_from_slice(&(subkeys.len() as u32).to_le_bytes());
+                b.extend_from_slice(&0u32.to_le_bytes()); // volatile subkeys
+                b.extend_from_slice(&subkey_list.to_le_bytes());
+                b.extend_from_slice(&u32::MAX.to_le_bytes()); // volatile list
+                b.extend_from_slice(&values.to_le_bytes());
+                b.extend_from_slice(&value_list.to_le_bytes());
+                b.extend_from_slice(&sk.to_le_bytes());
+                b.extend_from_slice(&u32::MAX.to_le_bytes()); // class
+                b.extend_from_slice(&[0u8; 20]); // largest-* and workvar
+                b.extend_from_slice(&(name.len() as u16).to_le_bytes());
+                b.extend_from_slice(&0u16.to_le_bytes()); // class length
+                b.extend_from_slice(name.as_bytes());
+                self.cell(&b)
+            }
+
+            /// An `lf` leaf over already-written subkeys, sorted by name.
+            fn lf(&mut self, mut kids: Vec<(String, u32)>) -> u32 {
+                kids.sort_by(|a, b| a.0.cmp(&b.0));
+                let mut b = Vec::new();
+                b.extend_from_slice(b"lf");
+                b.extend_from_slice(&(kids.len() as u16).to_le_bytes());
+                for (name, at) in kids {
+                    b.extend_from_slice(&at.to_le_bytes());
+                    let mut hint = [0u8; 4];
+                    for (i, c) in name.bytes().take(4).enumerate() {
+                        hint[i] = c;
+                    }
+                    b.extend_from_slice(&hint);
+                }
+                self.cell(&b)
+            }
+        }
+
+        /// A hive shaped like a BCD store, with exactly `free_tail` bytes left
+        /// free in the trailing free cell.
+        ///
+        /// Rounding the bin up to a whole 4096-byte multiple can leave more
+        /// slack than `free_tail` asked for — up to 4095 bytes of it — which
+        /// would silently defeat Task 4's test that allocation appends a new
+        /// bin when there is no room. Any slack beyond exactly `free_tail` is
+        /// therefore consumed by an allocated filler cell, so the trailing
+        /// free cell is always precisely the requested size. `free_tail` must
+        /// be a multiple of 8, matching every caller.
+        pub fn bcd_like(free_tail: usize) -> Vec<u8> {
+            assert!(
+                free_tail.is_multiple_of(8),
+                "free_tail must be a multiple of 8, got {free_tail}"
+            );
+            let mut w = Writer::new();
+            let sk = w.sk();
+
+            // \Objects\{emssettings}\Elements\16000020 — bootems, as shipped.
+            let bootems_values = w.element_value(&[1]);
+            let bootems =
+                w.nk("16000020", 0, sk, &[], u32::MAX, 1, bootems_values);
+            let elements_list = w.lf(vec![("16000020".into(), bootems)]);
+            let elements =
+                w.nk("Elements", 0, sk, &[bootems], elements_list, 0, u32::MAX);
+
+            let desc_values = w.element_value(&[0x00, 0x00, 0x10, 0x20]);
+            let description =
+                w.nk("Description", 0, sk, &[], u32::MAX, 1, desc_values);
+
+            let obj_list = w.lf(vec![
+                ("Description".into(), description),
+                ("Elements".into(), elements),
+            ]);
+            let object = w.nk(
+                EMS_GUID,
+                0,
+                sk,
+                &[description, elements],
+                obj_list,
+                0,
+                u32::MAX,
+            );
+
+            let objects_list = w.lf(vec![(EMS_GUID.into(), object)]);
+            let objects =
+                w.nk("Objects", 0, sk, &[object], objects_list, 0, u32::MAX);
+            let root_list = w.lf(vec![("Objects".into(), objects)]);
+            let root =
+                w.nk("System", 0, sk, &[objects], root_list, 0, u32::MAX);
+
+            // Pad to a whole number of bins, leaving EXACTLY `free_tail` bytes
+            // free. Any leftover between the last real cell and the free tail
+            // becomes an allocated filler cell, so the bin still tiles exactly.
+            let used = 32 + w.cells.len();
+            let mut bin_size = (used + free_tail).div_ceil(BASE) * BASE;
+            let mut slack = bin_size - used - free_tail;
+            if slack != 0 && slack < 8 {
+                // Too small to hold a cell header: grow by another bin.
+                bin_size += BASE;
+                slack = bin_size - used - free_tail;
+            }
+            if slack > 0 {
+                w.cells.extend_from_slice(&(-(slack as i32)).to_le_bytes());
+                w.cells.resize(w.cells.len() + slack - 4, 0);
+            }
+            w.cells.extend_from_slice(&(free_tail as i32).to_le_bytes());
+            w.cells.resize(bin_size - 32, 0);
+
+            let mut v = vec![0u8; BASE];
+            v[0..4].copy_from_slice(b"regf");
+            v[4..8].copy_from_slice(&1u32.to_le_bytes());
+            v[8..12].copy_from_slice(&1u32.to_le_bytes());
+            v[20..24].copy_from_slice(&1u32.to_le_bytes());
+            v[24..28].copy_from_slice(&3u32.to_le_bytes());
+            v[28..32].copy_from_slice(&0u32.to_le_bytes());
+            v[32..36].copy_from_slice(&1u32.to_le_bytes());
+            v[36..40].copy_from_slice(&root.to_le_bytes());
+            v[40..44].copy_from_slice(&(bin_size as u32).to_le_bytes());
+
+            let mut bin = vec![0u8; 32];
+            bin[0..4].copy_from_slice(b"hbin");
+            bin[4..8].copy_from_slice(&0u32.to_le_bytes());
+            bin[8..12].copy_from_slice(&(bin_size as u32).to_le_bytes());
+            bin.extend_from_slice(&w.cells);
+            v.extend_from_slice(&bin);
+
+            let sum = super::super::checksum(&v);
+            v[508..512].copy_from_slice(&sum.to_le_bytes());
+            v
+        }
+    }
+
+    #[test]
+    fn the_fixture_is_a_valid_hive() {
+        validate(&fixture::bcd_like(512)).unwrap();
+    }
+
+    #[test]
+    fn walks_to_the_elements_key() {
+        let v = fixture::bcd_like(512);
+        let key = find(&v, &["Objects", fixture::EMS_GUID, "Elements"])
+            .unwrap()
+            .expect("Elements exists");
+        let kids = key.subkeys(&v).unwrap();
+        assert_eq!(kids.len(), 1);
+        assert_eq!(kids[0].0, "16000020");
+    }
+
+    #[test]
+    fn reads_an_element_value() {
+        let v = fixture::bcd_like(512);
+        let key =
+            find(&v, &["Objects", fixture::EMS_GUID, "Elements", "16000020"])
+                .unwrap()
+                .expect("bootems exists");
+        assert_eq!(key.value(&v, "Element").unwrap(), Some(vec![1]));
+    }
+
+    #[test]
+    fn a_missing_path_is_none_not_an_error() {
+        let v = fixture::bcd_like(512);
+        assert!(find(&v, &["Objects", "{nope}"]).unwrap().is_none());
+    }
+
+    /// R4: `bcd_like` must leave EXACTLY `free_tail` bytes free, not "at least".
+    /// Task 4's no-room-to-grow test relies on this being exact, since rounding
+    /// up to a whole bin could otherwise leave thousands of spare bytes and let
+    /// an allocation succeed in place when it should have to append a new bin.
+    #[test]
+    fn free_tail_is_exact() {
+        for free_tail in [512usize, 8] {
+            let v = fixture::bcd_like(free_tail);
+            let free: Vec<_> = cells(&v)
+                .unwrap()
+                .into_iter()
+                .filter(|c| !c.allocated)
+                .collect();
+            assert_eq!(
+                free.len(),
+                1,
+                "expected exactly one free cell for free_tail={free_tail}"
+            );
+            assert_eq!(
+                free[0].size, free_tail,
+                "free cell size should be exactly free_tail={free_tail}"
+            );
+        }
     }
 }
