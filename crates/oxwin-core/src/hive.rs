@@ -119,7 +119,13 @@ pub(crate) fn cells(bytes: &[u8]) -> Result<Vec<Cell>> {
                 bytes[at..at + 4].try_into().expect("4 bytes"),
             );
             let size = raw.unsigned_abs() as usize;
-            if size == 0 || !size.is_multiple_of(8) {
+            if size == 0 {
+                bail!(
+                    "cell at {at:#x} has zero size: bin's cells do not tile \
+                     (gap or misread)"
+                );
+            }
+            if !size.is_multiple_of(8) {
                 bail!("cell at {at:#x} has size {raw}");
             }
             if at + size > bin + bin_size {
@@ -128,9 +134,11 @@ pub(crate) fn cells(bytes: &[u8]) -> Result<Vec<Cell>> {
             out.push(Cell { at, size, allocated: raw < 0 });
             at += size;
         }
-        if at != bin + bin_size {
-            bail!("cells do not tile the bin at {bin:#x}");
-        }
+        debug_assert_eq!(
+            at,
+            bin + bin_size,
+            "loop invariant: cells tile the bin exactly"
+        );
         bin += bin_size;
     }
     Ok(out)
@@ -227,44 +235,42 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_cell_with_a_bad_size_header() {
+    fn rejects_a_cell_that_leaves_a_gap() {
         let mut v = bare_hive_with_free_bin();
-        // Write a cell with size not a multiple of 8.
-        // The residual bytes read as garbage and fail on the non-alignment check.
+        // Write a single cell of 64 bytes instead of the full 4064 bytes.
+        // The residual bytes (4096 - 32 - 64 = 4000 bytes) are unwritten, so the
+        // walk reads them as a cell with size 0 at the gap offset, which is how
+        // cells-do-not-tile is detected: a zero header means the bin is incomplete.
         v[BASE + 32..BASE + 36].copy_from_slice(&64i32.to_le_bytes());
         let sum = checksum(&v);
         v[508..512].copy_from_slice(&sum.to_le_bytes());
         let result = validate(&v);
         assert!(result.is_err());
-        // Verify it fails on the size check (garbage will be read as size 0)
+        // Verify it fails on the gap (zero header) with the gap offset in the message.
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("size"), "should fail on cell size, got: {msg}");
+        assert!(
+            msg.contains("zero size"),
+            "should fail on gap's zero header, got: {msg}"
+        );
     }
 
     #[test]
-    fn rejects_cells_that_do_not_tile_the_bin() {
+    fn rejects_a_cell_that_runs_past_the_bin() {
         let mut v = bare_hive_with_free_bin();
-        // Two cells that sum to less than the bin, leaving a gap.
-        // Cell 1: 2000 bytes at offset BASE + 32
-        v[BASE + 32..BASE + 36].copy_from_slice(&2000i32.to_le_bytes());
-        // Cell 2: 2000 bytes at offset BASE + 2032 (32 + 2000)
-        v[BASE + 2032..BASE + 2036].copy_from_slice(&2000i32.to_le_bytes());
-        // Remaining gap: 96 bytes (4096 - 2032 - 2000 = 64 bytes after cell 2)
-        // Cell 3: only 56 bytes to leave an 8-byte gap
-        v[BASE + 4032..BASE + 4036].copy_from_slice(&56i32.to_le_bytes());
-        // Now the cells don't tile: 32 + 2000 + 2000 + 56 = 4088 < 4096
-        // This creates a final gap of 8 bytes at the end of the bin.
+        // Write a cell whose size extends past the bin boundary.
+        // Cell at offset 32: size 4080 (fills most of the bin)
+        // But the bin is only 4096 bytes (offsets 0-4096 within the bin),
+        // so the cell extends to 4128 + 4080 = 8208, past the bin end at 8192.
+        v[BASE + 32..BASE + 36].copy_from_slice(&4080i32.to_le_bytes());
         let sum = checksum(&v);
         v[508..512].copy_from_slice(&sum.to_le_bytes());
         let result = validate(&v);
         assert!(result.is_err());
-        // The tiling check is hard to reach with zero-initialized padding,
-        // but this test confirms that cells which don't sum to the bin size
-        // are rejected, even if the specific error is on the gap content.
+        // Verify it fails on the overrun check.
         let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("size") || msg.contains("tile"),
-            "should fail on cell validation, got: {msg}"
+            msg.contains("past the end"),
+            "should fail on cell overrun, got: {msg}"
         );
     }
 
