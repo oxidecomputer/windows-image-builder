@@ -268,6 +268,89 @@ impl Key {
     }
 }
 
+/// Cells are a multiple of 8 bytes and include their own 4-byte size header.
+fn cell_size(body: usize) -> usize {
+    (4 + body).div_ceil(8) * 8
+}
+
+/// Allocates a cell with room for `want` bytes of body and returns its hive
+/// offset.
+///
+/// First fit over the free cells in file order — deterministic by
+/// construction, which matters more here than packing efficiency. A
+/// remainder of at least 8 bytes is left behind as a smaller free cell;
+/// anything less is absorbed, because a cell cannot be smaller than its own
+/// header.
+/// This is dead code until Task 6 wires `builder` up as its first
+/// non-test consumer.
+#[allow(dead_code)]
+pub(crate) fn alloc(bytes: &mut Vec<u8>, want: usize) -> Result<u32> {
+    let need = cell_size(want);
+    let found =
+        cells(bytes)?.into_iter().find(|c| !c.allocated && c.size >= need);
+
+    let at = match found {
+        Some(cell) => {
+            let remainder = cell.size - need;
+            if remainder >= 8 {
+                bytes[cell.at..cell.at + 4]
+                    .copy_from_slice(&(-(need as i32)).to_le_bytes());
+                let tail = cell.at + need;
+                bytes[tail..tail + 4]
+                    .copy_from_slice(&(remainder as i32).to_le_bytes());
+            } else {
+                bytes[cell.at..cell.at + 4]
+                    .copy_from_slice(&(-(cell.size as i32)).to_le_bytes());
+            }
+            cell.at
+        }
+        None => {
+            // No room: append a bin. One is always enough, because a single
+            // element is far smaller than 4096 bytes, but size it anyway.
+            let head = base_block(bytes)?;
+            let bin_at = BASE + head.bins_size as usize;
+            let bin_size = (32 + need).div_ceil(BASE) * BASE;
+            let mut bin = vec![0u8; 32];
+            bin[0..4].copy_from_slice(b"hbin");
+            bin[4..8].copy_from_slice(&head.bins_size.to_le_bytes());
+            bin[8..12].copy_from_slice(&(bin_size as u32).to_le_bytes());
+            bin.resize(bin_size, 0);
+            // The whole bin is one free cell; the split below claims part
+            // of it.
+            bin[32..36]
+                .copy_from_slice(&((bin_size - 32) as i32).to_le_bytes());
+            bytes.truncate(bin_at);
+            bytes.extend_from_slice(&bin);
+
+            let new_size = head.bins_size as usize + bin_size;
+            bytes[40..44].copy_from_slice(&(new_size as u32).to_le_bytes());
+
+            let cell_at = bin_at + 32;
+            let remainder = (bin_size - 32) - need;
+            bytes[cell_at..cell_at + 4]
+                .copy_from_slice(&(-(need as i32)).to_le_bytes());
+            if remainder >= 8 {
+                let tail = cell_at + need;
+                bytes[tail..tail + 4]
+                    .copy_from_slice(&(remainder as i32).to_le_bytes());
+            }
+            cell_at
+        }
+    };
+
+    // Zero the body so an allocation never carries stale bytes.
+    let size =
+        i32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"))
+            .unsigned_abs() as usize;
+    for b in &mut bytes[at + 4..at + size] {
+        *b = 0;
+    }
+
+    let sum = checksum(bytes);
+    bytes[508..512].copy_from_slice(&sum.to_le_bytes());
+    Ok((at - BASE) as u32)
+}
+
 #[allow(dead_code)]
 pub(crate) fn root(b: &[u8]) -> Result<Key> {
     Ok(Key { at: BASE + base_block(b)?.root_offset as usize })
@@ -692,5 +775,53 @@ mod tests {
                 "free cell size should be exactly free_tail={free_tail}"
             );
         }
+    }
+
+    #[test]
+    fn allocates_by_splitting_the_free_cell() {
+        let mut v = fixture::bcd_like(512);
+        let before = v.len();
+        let at = alloc(&mut v, 16).unwrap();
+        assert_eq!(v.len(), before, "no bin should have been appended");
+        let cell = cells(&v)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.at == BASE + at as usize)
+            .expect("the new cell exists");
+        assert!(cell.allocated);
+        assert!(cell.size >= 20);
+        validate(&v).unwrap();
+    }
+
+    #[test]
+    fn appends_a_bin_when_there_is_no_room() {
+        // Eight bytes of tail: enough for a free cell header, not for a
+        // request.
+        let mut v = fixture::bcd_like(8);
+        let before = v.len();
+        let at = alloc(&mut v, 256).unwrap();
+        assert_eq!(v.len(), before + BASE, "exactly one bin appended");
+        assert!(at as usize > 0);
+        validate(&v).unwrap();
+    }
+
+    #[test]
+    fn a_split_leaves_the_remainder_free() {
+        let mut v = fixture::bcd_like(512);
+        alloc(&mut v, 16).unwrap();
+        let free: usize =
+            cells(&v).unwrap().iter().filter(|c| !c.allocated).count();
+        assert_eq!(free, 1, "the tail remains as one free cell");
+        validate(&v).unwrap();
+    }
+
+    /// Allocation must not depend on anything but the bytes, or two builds
+    /// of the same image would differ.
+    #[test]
+    fn allocation_is_deterministic() {
+        let mut a = fixture::bcd_like(512);
+        let mut b = fixture::bcd_like(512);
+        assert_eq!(alloc(&mut a, 24).unwrap(), alloc(&mut b, 24).unwrap());
+        assert_eq!(a, b);
     }
 }
