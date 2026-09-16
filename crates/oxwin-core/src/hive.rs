@@ -17,7 +17,7 @@
 //! does not recognise it declines to touch, because the store it would be
 //! corrupting is the one that boots the installer.
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 /// The base block is 4096 bytes, and every cell offset in the hive is relative to
 /// the end of it.
@@ -53,6 +53,30 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
     let mut w = [0u8; 4];
     w.copy_from_slice(&bytes[at..at + 4]);
     u32::from_le_bytes(w)
+}
+
+/// Bounds-checked reads, for offsets that came out of the file rather than
+/// from validated structure. `Key`'s accessors use these so a malformed or
+/// hostile store makes them return `Err` rather than panic — the media this
+/// module reads is third-party bytes nobody has vouched for, and the whole
+/// point of `Outcome` over `Result` in `enable_ems` is that a store we
+/// cannot edit must still boot, which only holds if a bad offset can never
+/// unwind out of the crate.
+fn get(b: &[u8], at: usize, len: usize) -> Result<&[u8]> {
+    b.get(at..at + len)
+        .ok_or_else(|| anyhow!("offset {at:#x}+{len} is out of range"))
+}
+
+fn checked_u16(b: &[u8], at: usize) -> Result<u16> {
+    Ok(u16::from_le_bytes(get(b, at, 2)?.try_into().expect("2 bytes")))
+}
+
+fn checked_u32(b: &[u8], at: usize) -> Result<u32> {
+    Ok(u32::from_le_bytes(get(b, at, 4)?.try_into().expect("4 bytes")))
+}
+
+fn checked_u64(b: &[u8], at: usize) -> Result<u64> {
+    Ok(u64::from_le_bytes(get(b, at, 8)?.try_into().expect("8 bytes")))
 }
 
 #[allow(dead_code)]
@@ -159,39 +183,39 @@ pub(crate) struct Key {
     pub at: usize,
 }
 
+// Every accessor below reads a field out of the file rather than out of
+// something already validated, so every one of them is bounds-checked and
+// returns `Err` instead of panicking. `self.at` itself can be garbage — it
+// usually comes from an offset some other key stored on disk — so even a
+// read of `self.at`'s own well-known fields must not assume it lands
+// in-bounds.
 #[allow(dead_code)]
 impl Key {
-    pub fn subkey_count(&self, b: &[u8]) -> u32 {
-        u32_at(b, self.at + 24)
+    pub fn subkey_count(&self, b: &[u8]) -> Result<u32> {
+        checked_u32(b, self.at + 24)
     }
-    pub fn subkey_list(&self, b: &[u8]) -> u32 {
-        u32_at(b, self.at + 32)
+    pub fn subkey_list(&self, b: &[u8]) -> Result<u32> {
+        checked_u32(b, self.at + 32)
     }
-    pub fn value_count(&self, b: &[u8]) -> u32 {
-        u32_at(b, self.at + 40)
+    pub fn value_count(&self, b: &[u8]) -> Result<u32> {
+        checked_u32(b, self.at + 40)
     }
-    pub fn value_list(&self, b: &[u8]) -> u32 {
-        u32_at(b, self.at + 44)
+    pub fn value_list(&self, b: &[u8]) -> Result<u32> {
+        checked_u32(b, self.at + 44)
     }
-    pub fn security(&self, b: &[u8]) -> u32 {
-        u32_at(b, self.at + 48)
+    pub fn security(&self, b: &[u8]) -> Result<u32> {
+        checked_u32(b, self.at + 48)
     }
-    /// The key's own last-written timestamp, which new children inherit so that
-    /// nothing here ever reads a clock.
-    pub fn timestamp(&self, b: &[u8]) -> u64 {
-        u64::from_le_bytes(
-            b[self.at + 8..self.at + 16].try_into().expect("8 bytes"),
-        )
+    /// The key's own last-written timestamp, which new children inherit so
+    /// that nothing here ever reads a clock.
+    pub fn timestamp(&self, b: &[u8]) -> Result<u64> {
+        checked_u64(b, self.at + 8)
     }
 
     pub fn name(&self, b: &[u8]) -> Result<String> {
-        let len = u16::from_le_bytes(
-            b[self.at + 76..self.at + 78].try_into().expect("2 bytes"),
-        ) as usize;
-        let flags = u16::from_le_bytes(
-            b[self.at + 6..self.at + 8].try_into().expect("2 bytes"),
-        );
-        let raw = &b[self.at + 80..self.at + 80 + len];
+        let len = checked_u16(b, self.at + 76)? as usize;
+        let flags = checked_u16(b, self.at + 6)?;
+        let raw = get(b, self.at + 80, len)?;
         if flags & 0x0020 != 0 {
             Ok(raw.iter().map(|&c| c as char).collect())
         } else {
@@ -204,24 +228,22 @@ impl Key {
     }
 
     pub fn subkeys(&self, b: &[u8]) -> Result<Vec<(String, Key)>> {
-        let list = self.subkey_list(b);
-        if self.subkey_count(b) == 0 || list == u32::MAX {
+        let list = self.subkey_list(b)?;
+        if self.subkey_count(b)? == 0 || list == u32::MAX {
             return Ok(Vec::new());
         }
         let at = BASE + list as usize;
-        let sig = &b[at + 4..at + 6];
+        let sig = get(b, at + 4, 2)?;
         if sig != b"lf" && sig != b"lh" {
             bail!(
                 "subkey list at {at:#x} is {}, which this does not edit",
                 String::from_utf8_lossy(sig)
             );
         }
-        let count =
-            u16::from_le_bytes(b[at + 6..at + 8].try_into().expect("2 bytes"))
-                as usize;
+        let count = checked_u16(b, at + 6)? as usize;
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
-            let off = u32_at(b, at + 8 + i * 8) as usize;
+            let off = checked_u32(b, at + 8 + i * 8)? as usize;
             let key = Key { at: BASE + off };
             out.push((key.name(b)?, key));
         }
@@ -229,20 +251,16 @@ impl Key {
     }
 
     pub fn value(&self, b: &[u8], name: &str) -> Result<Option<Vec<u8>>> {
-        let count = self.value_count(b) as usize;
+        let count = self.value_count(b)? as usize;
         if count == 0 {
             return Ok(None);
         }
-        let list = BASE + self.value_list(b) as usize;
+        let list = BASE + self.value_list(b)? as usize;
         for i in 0..count {
-            let vk = BASE + u32_at(b, list + 4 + i * 4) as usize;
-            let nlen = u16::from_le_bytes(
-                b[vk + 6..vk + 8].try_into().expect("2 bytes"),
-            ) as usize;
-            let vk_flags = u16::from_le_bytes(
-                b[vk + 20..vk + 22].try_into().expect("2 bytes"),
-            );
-            let raw_name = &b[vk + 24..vk + 24 + nlen];
+            let vk = BASE + checked_u32(b, list + 4 + i * 4)? as usize;
+            let nlen = checked_u16(b, vk + 6)? as usize;
+            let vk_flags = checked_u16(b, vk + 20)?;
+            let raw_name = get(b, vk + 24, nlen)?;
             let this: String = if vk_flags & 0x0001 != 0 {
                 raw_name.iter().map(|&c| c as char).collect()
             } else {
@@ -255,14 +273,14 @@ impl Key {
             if this != name {
                 continue;
             }
-            let raw = u32_at(b, vk + 8);
+            let raw = checked_u32(b, vk + 8)?;
             let len = (raw & 0x7fff_ffff) as usize;
             if raw & 0x8000_0000 != 0 {
                 // Four bytes or fewer live in the offset field itself.
-                return Ok(Some(b[vk + 12..vk + 12 + len.min(4)].to_vec()));
+                return Ok(Some(get(b, vk + 12, len.min(4))?.to_vec()));
             }
-            let data = BASE + u32_at(b, vk + 12) as usize + 4;
-            return Ok(Some(b[data..data + len].to_vec()));
+            let data = BASE + checked_u32(b, vk + 12)? as usize + 4;
+            return Ok(Some(get(b, data, len)?.to_vec()));
         }
         Ok(None)
     }
@@ -381,7 +399,8 @@ pub(crate) fn find(b: &[u8], path: &[&str]) -> Result<Option<Key>> {
 pub(crate) enum Outcome {
     /// Edited, and the result has been validated.
     Patched(Vec<u8>),
-    /// The port element was already present. Use the source bytes.
+    /// Both elements were already present with the data we would have
+    /// written. Use the source bytes.
     AlreadySet,
     /// Nothing was changed, for the reason given. Use the source bytes.
     NotApplicable(&'static str),
@@ -415,13 +434,42 @@ pub(crate) fn enable_ems(store: &[u8], port: u64, baud: u64) -> Outcome {
         Ok(kids) => kids,
         Err(_) => return Outcome::NotApplicable("unsupported subkey list"),
     };
-    if existing.iter().any(|(n, _)| n == EMS_PORT) {
+
+    // Filter by name first: a name already present must never be added a
+    // second time, since a duplicate name in a subkey list is exactly what
+    // the kernel's binary search (and `CmCheckRegistry`) does not
+    // tolerate. Only report `AlreadySet` once every wanted name is present
+    // *and* holds the data we would have written — an element present
+    // with different data is left alone rather than silently overwritten
+    // or silently reported as done.
+    let wanted = [(EMS_PORT, port), (EMS_BAUD, baud)];
+    let mut to_add = Vec::new();
+    for (name, value) in wanted {
+        match existing.iter().find(|(n, _)| n == name) {
+            Some((_, key)) => {
+                let read = match key.value(store, "Element") {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return Outcome::NotApplicable(
+                            "existing element could not be read",
+                        );
+                    }
+                };
+                if read != Some(value.to_le_bytes().to_vec()) {
+                    return Outcome::NotApplicable(
+                        "element present with unexpected data",
+                    );
+                }
+            }
+            None => to_add.push((name, value)),
+        }
+    }
+    if to_add.is_empty() {
         return Outcome::AlreadySet;
     }
 
     let mut out = store.to_vec();
-    let added = [(EMS_PORT, port), (EMS_BAUD, baud)];
-    match add_elements(&mut out, elements, &existing, &added) {
+    match add_elements(&mut out, elements, &existing, &to_add) {
         Ok(()) => {}
         Err(_) => return Outcome::NotApplicable("could not be edited"),
     }
@@ -430,7 +478,7 @@ pub(crate) fn enable_ems(store: &[u8], port: u64, baud: u64) -> Outcome {
     if validate(&out).is_err() {
         return Outcome::NotApplicable("edit did not validate");
     }
-    for (name, want) in added {
+    for &(name, want) in &to_add {
         let read = find(&out, &["Objects", EMS_OBJECT, "Elements", name])
             .ok()
             .flatten()
@@ -451,8 +499,8 @@ fn add_elements(
     existing: &[(String, Key)],
     add: &[(&str, u64)],
 ) -> Result<()> {
-    let sk = parent.security(out);
-    let stamp = parent.timestamp(out);
+    let sk = parent.security(out)?;
+    let stamp = parent.timestamp(out)?;
     let mut kids: Vec<(String, u32)> = existing
         .iter()
         .map(|(n, k)| (n.clone(), (k.at - BASE) as u32))
@@ -497,10 +545,20 @@ fn add_elements(
         kids.push((name.to_string(), nk_at));
     }
 
-    // Security descriptors are reference counted, and two more keys now
-    // point at this one.
+    // Security descriptors are reference counted, and `add.len()` more
+    // keys now point at this one. `sk` came straight off the disk via
+    // `parent.security`, so it is checked here before anything is written
+    // through it: an out-of-range offset must not panic, and an in-range
+    // offset that does not point at an `sk` cell must not have four
+    // arbitrary bytes of some unrelated cell overwritten. Both are the
+    // kind of corruption that would pass `validate` (which only checks bin
+    // tiling) and the read-back check (which only checks the two new
+    // elements), so this is the one place that check has to live.
     let sk_at = BASE + sk as usize;
-    let refs = u32_at(out, sk_at + 16) + add.len() as u32;
+    if sk_at + 20 > out.len() || &out[sk_at + 4..sk_at + 6] != b"sk" {
+        bail!("security offset {sk:#x} does not name a security cell");
+    }
+    let refs = checked_u32(out, sk_at + 16)?.saturating_add(add.len() as u32);
     out[sk_at + 16..sk_at + 20].copy_from_slice(&refs.to_le_bytes());
 
     // A fresh leaf rather than growing the old one in place: the old cell
@@ -1101,6 +1159,168 @@ mod tests {
         assert!(matches!(enable_ems(&v, 1, 115200), Outcome::NotApplicable(_)));
     }
 
+    /// R11: an offset read out of the file — here, the `Elements` key's own
+    /// security offset — must never be trusted far enough to panic. Before
+    /// the fix this reached `sk_at = BASE + 0xFFFFFFFF`, then indexed miles
+    /// past the end of the buffer while incrementing the reference count,
+    /// and unwound out of `oxwin-core` instead of returning
+    /// `NotApplicable`.
+    #[test]
+    fn does_not_panic_on_a_garbage_security_offset() {
+        let mut v = fixture::bcd_like(512);
+        let elements = find(&v, &["Objects", fixture::EMS_GUID, "Elements"])
+            .unwrap()
+            .unwrap();
+        v[elements.at + 48..elements.at + 52]
+            .copy_from_slice(&u32::MAX.to_le_bytes());
+        let sum = checksum(&v);
+        v[508..512].copy_from_slice(&sum.to_le_bytes());
+        assert!(matches!(enable_ems(&v, 1, 115200), Outcome::NotApplicable(_)));
+    }
+
+    /// R11: `Key::name` reads its length prefix from the file and, before
+    /// the fix, sliced `self.at + 80 .. self.at + 80 + len` directly. A
+    /// length of `0xffff` on a small fixture reads miles past the end of
+    /// the buffer, which panicked with a slice-index error rather than
+    /// declining. `elements.subkeys(store)` calls `name()` on every child
+    /// it enumerates — including `16000020` here — so this reaches the
+    /// same accessor `enable_ems` depends on throughout the walk.
+    #[test]
+    fn does_not_panic_on_a_garbage_name_length() {
+        let mut v = fixture::bcd_like(512);
+        let bootems =
+            find(&v, &["Objects", fixture::EMS_GUID, "Elements", "16000020"])
+                .unwrap()
+                .unwrap();
+        v[bootems.at + 76..bootems.at + 78]
+            .copy_from_slice(&0xffffu16.to_le_bytes());
+        let sum = checksum(&v);
+        v[508..512].copy_from_slice(&sum.to_le_bytes());
+        assert!(matches!(enable_ems(&v, 1, 115200), Outcome::NotApplicable(_)));
+    }
+
+    /// R12: a store with the port element already correct but no baud
+    /// element must add only the baud element — no duplicate name, and
+    /// the existing port element is left exactly as it was.
+    #[test]
+    fn adds_only_the_missing_baud_element() {
+        let before = fixture::bcd_like(512);
+        let elements =
+            find(&before, &["Objects", fixture::EMS_GUID, "Elements"])
+                .unwrap()
+                .unwrap();
+        let existing = elements.subkeys(&before).unwrap();
+        let mut seeded = before.clone();
+        add_elements(&mut seeded, elements, &existing, &[(EMS_PORT, 1)])
+            .unwrap();
+        validate(&seeded).unwrap();
+        assert_eq!(elements_of(&seeded), ["15000022", "16000020"]);
+
+        let Outcome::Patched(after) = enable_ems(&seeded, 1, 115200) else {
+            panic!("expected a patch");
+        };
+        validate(&after).unwrap();
+        assert_eq!(elements_of(&after), ["15000022", "15000023", "16000020"]);
+        let elements_after =
+            find(&after, &["Objects", fixture::EMS_GUID, "Elements"])
+                .unwrap()
+                .unwrap();
+        assert_eq!(elements_after.subkey_count(&after).unwrap(), 3);
+        let port = find(
+            &after,
+            &["Objects", fixture::EMS_GUID, "Elements", "15000022"],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            port.value(&after, "Element").unwrap(),
+            Some(1u64.to_le_bytes().to_vec())
+        );
+        let baud = find(
+            &after,
+            &["Objects", fixture::EMS_GUID, "Elements", "15000023"],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            baud.value(&after, "Element").unwrap(),
+            Some(115200u64.to_le_bytes().to_vec())
+        );
+    }
+
+    /// R12, the exact defect: a store with the baud element already
+    /// present but no port element must add only the port element. The
+    /// original guard checked only `EMS_PORT`'s presence, so this shape
+    /// missed entirely and the rebuilt leaf gained a second `15000023`
+    /// entry with the same name — a duplicate the kernel's binary search
+    /// does not tolerate.
+    #[test]
+    fn adds_only_the_missing_port_element() {
+        let before = fixture::bcd_like(512);
+        let elements =
+            find(&before, &["Objects", fixture::EMS_GUID, "Elements"])
+                .unwrap()
+                .unwrap();
+        let existing = elements.subkeys(&before).unwrap();
+        let mut seeded = before.clone();
+        add_elements(&mut seeded, elements, &existing, &[(EMS_BAUD, 115200)])
+            .unwrap();
+        validate(&seeded).unwrap();
+        assert_eq!(elements_of(&seeded), ["15000023", "16000020"]);
+
+        let Outcome::Patched(after) = enable_ems(&seeded, 1, 115200) else {
+            panic!("expected a patch");
+        };
+        validate(&after).unwrap();
+        assert_eq!(elements_of(&after), ["15000022", "15000023", "16000020"]);
+        let elements_after =
+            find(&after, &["Objects", fixture::EMS_GUID, "Elements"])
+                .unwrap()
+                .unwrap();
+        assert_eq!(elements_after.subkey_count(&after).unwrap(), 3);
+    }
+
+    /// R12: with both elements present and matching, the result is
+    /// `AlreadySet` — `patching_twice_is_a_no_op` above covers this state
+    /// via a round trip; this test covers it directly against a
+    /// hand-seeded store instead of a self-produced one.
+    #[test]
+    fn already_set_when_both_elements_match() {
+        let before = fixture::bcd_like(512);
+        let elements =
+            find(&before, &["Objects", fixture::EMS_GUID, "Elements"])
+                .unwrap()
+                .unwrap();
+        let existing = elements.subkeys(&before).unwrap();
+        let mut seeded = before;
+        add_elements(
+            &mut seeded,
+            elements,
+            &existing,
+            &[(EMS_PORT, 1), (EMS_BAUD, 115200)],
+        )
+        .unwrap();
+        assert!(matches!(enable_ems(&seeded, 1, 115200), Outcome::AlreadySet));
+    }
+
+    /// A real BCD store's `Elements` list is an `lf` leaf; an `li`
+    /// index-root is a shape this module declines rather than mis-reads.
+    /// Silently doing nothing here would mean EMS never gets enabled with
+    /// no reason surfaced, which Task 6 needs to see.
+    #[test]
+    fn declines_an_index_root_subkey_list() {
+        let mut v = fixture::bcd_like(512);
+        let elements = find(&v, &["Objects", fixture::EMS_GUID, "Elements"])
+            .unwrap()
+            .unwrap();
+        let list_off = elements.subkey_list(&v).unwrap();
+        let at = BASE + list_off as usize;
+        v[at + 4..at + 6].copy_from_slice(b"li");
+        let sum = checksum(&v);
+        v[508..512].copy_from_slice(&sum.to_le_bytes());
+        assert!(matches!(enable_ems(&v, 1, 115200), Outcome::NotApplicable(_)));
+    }
+
     fn golden_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/hive")
     }
@@ -1132,13 +1352,22 @@ mod tests {
         assert_eq!(after, golden("bcd-like-full-after.bin"));
     }
 
-    /// The comparison above is only evidence if it can fail. Flip one byte
-    /// of a golden and the comparison must notice.
+    /// The comparison above is only evidence if it can fail. The trailing
+    /// byte of the file sits in the leftover free-cell slack, so flipping
+    /// it there would prove sensitivity at an offset nobody cares about.
+    /// Flip a byte inside the new `15000022` key's own name instead, so
+    /// the test proves the comparison is sensitive where the meaning
+    /// lives.
     #[test]
     fn the_golden_comparison_can_fail() {
         let mut tampered = golden("bcd-like-after.bin");
-        let at = tampered.len() - 1;
-        tampered[at] ^= 0xff;
+        let port = find(
+            &tampered,
+            &["Objects", fixture::EMS_GUID, "Elements", "15000022"],
+        )
+        .unwrap()
+        .unwrap();
+        tampered[port.at + 80] ^= 0xff;
         let Outcome::Patched(after) =
             enable_ems(&fixture::bcd_like(512), 1, 115200)
         else {
