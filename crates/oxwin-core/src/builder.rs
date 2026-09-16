@@ -52,12 +52,106 @@ const GIB: u64 = 1024 * 1024 * 1024;
 const EMS_SERIAL_PORT: u64 = 1;
 const EMS_BAUD_RATE: u64 = 115_200;
 
+/// The store an Oxide guest actually boots. `is_bcd_store` also matches the
+/// legacy `/boot/bcd`, which is patched too (so a dump of the media never
+/// shows the two stores disagreeing) but never decides the build's `Ems`
+/// verdict, because nothing on this platform boots it.
+const UEFI_BCD_STORE: &str = "/efi/microsoft/boot/bcd";
+
 /// The BCD stores Windows media carries: the UEFI one we boot, and the legacy
 /// one we do not. Both are patched, so a dump of the media does not show two
 /// stores disagreeing about EMS.
 fn is_bcd_store(volume_path: &str) -> bool {
     let p = volume_path.to_ascii_lowercase();
-    p == "/efi/microsoft/boot/bcd" || p == "/boot/bcd"
+    p == UEFI_BCD_STORE || p == "/boot/bcd"
+}
+
+/// What happened to one BCD store. Deliberately payload-free (unlike
+/// `hive::Outcome`, which carries the patched bytes) so a sequence of these
+/// is cheap to collect across the whole media list and to assert on in a
+/// test without touching any I/O.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoreOutcome {
+    Patched,
+    AlreadySet,
+    NotApplicable(&'static str),
+}
+
+/// Applies `hive::enable_ems` to one file if it is a BCD store, in isolation
+/// from the media copy loop so the accumulation logic below can be tested
+/// without driving `assemble`'s I/O.
+///
+/// Returns the bytes to write to the volume — patched, or `data` unchanged —
+/// and, when `volume_path` was a BCD store, a record of what happened to it.
+/// `None` for anything else, which the caller writes through untouched.
+fn patch_bcd_store(
+    volume_path: &str,
+    data: Vec<u8>,
+) -> (Vec<u8>, Option<StoreOutcome>) {
+    if !is_bcd_store(volume_path) {
+        return (data, None);
+    }
+    match crate::hive::enable_ems(&data, EMS_SERIAL_PORT, EMS_BAUD_RATE) {
+        crate::hive::Outcome::Patched(patched) => {
+            (patched, Some(StoreOutcome::Patched))
+        }
+        crate::hive::Outcome::AlreadySet => {
+            (data, Some(StoreOutcome::AlreadySet))
+        }
+        crate::hive::Outcome::NotApplicable(why) => {
+            (data, Some(StoreOutcome::NotApplicable(why)))
+        }
+    }
+}
+
+/// Reduces every BCD store's patch outcome, collected over the whole media
+/// list, to the one verdict the build reports.
+///
+/// Keyed entirely on the UEFI store (`is_uefi` in each pair): that is the
+/// only store an Oxide guest ever boots, so `Patched` is reported only when
+/// *it* was patched or already carried our values, and only it decides
+/// `stores`' count of how many stores now carry EMS — never 0, in that
+/// variant, because reaching it requires the UEFI store to be one of them.
+/// The legacy store's own outcome is folded into the count when it also
+/// succeeded, but a legacy failure never flips the verdict: nothing here
+/// boots `/boot/bcd`, so its being left alone is not a fact worth reporting
+/// as a failure of the feature.
+///
+/// `bare` and a disabled flag both win outright, before any store is
+/// consulted, and an empty `results` — no BCD store found on the media at
+/// all — is `Off` rather than the vacuous `Patched { stores: 0 }` a naive
+/// accumulator would report.
+fn ems_verdict(
+    bare: bool,
+    enable_ems: bool,
+    results: &[(bool, StoreOutcome)],
+) -> Ems {
+    if bare {
+        return Ems::Off("bare build".to_string());
+    }
+    if !enable_ems {
+        return Ems::Off("disabled with --no-ems".to_string());
+    }
+    let Some((_, uefi_outcome)) = results.iter().find(|(uefi, _)| *uefi) else {
+        return Ems::Off("no BCD store found on the media".to_string());
+    };
+    match uefi_outcome {
+        StoreOutcome::NotApplicable(why) => {
+            Ems::Off(format!("{UEFI_BCD_STORE}: {why}"))
+        }
+        StoreOutcome::Patched | StoreOutcome::AlreadySet => {
+            let stores = results
+                .iter()
+                .filter(|(_, o)| {
+                    matches!(
+                        o,
+                        StoreOutcome::Patched | StoreOutcome::AlreadySet
+                    )
+                })
+                .count();
+            Ems::Patched { stores }
+        }
+    }
 }
 
 /// p2 is the partition the firmware boots: the UEFI Shell, a chooser script and the
@@ -77,14 +171,17 @@ pub struct Request {
     /// `None` derives it from the chosen image's `EDITIONID`; `Some("none")` writes no
     /// `ei.cfg` at all.
     pub ei_channel: Option<String>,
-    /// Copy the media and nothing else: no answer file, no `ei.cfg`, no drivers. The
-    /// control for "is the exFAT volume itself the problem", since a bare build differs
-    /// from the vendor ISO only in filesystem and boot device.
+    /// Copy the media and nothing else: no answer file, no `ei.cfg`, no drivers, and —
+    /// bare wins over `enable_ems` — no BCD edit either. The control for "is the exFAT
+    /// volume itself the problem", since a bare build differs from the vendor ISO only
+    /// in filesystem and boot device; patching Setup's own boot configuration would be a
+    /// content change and blunt that diagnostic.
     pub bare: bool,
     /// Where the third-party payload comes from: compiled in, or a directory.
     pub assets: crate::assets::Assets,
-    /// Patch the media's BCD stores so Windows Setup talks on COM1. Off only
-    /// via `--no-ems`; see `EMS-SERIAL-INVESTIGATION.md` for what it buys.
+    /// Patch the media's BCD stores so Windows Setup talks on COM1. Off via
+    /// `--no-ems`, and also whenever `bare` is set — see `bare` above; see
+    /// `EMS-SERIAL-INVESTIGATION.md` for what this buys.
     pub enable_ems: bool,
 }
 
@@ -363,45 +460,42 @@ fn assemble(
         ..exfat::Options::default()
     })?;
 
-    let mut ems = if request.enable_ems {
-        Ems::Patched { stores: 0 }
-    } else {
-        Ems::Off("disabled with --no-ems".into())
-    };
+    // `--bare` copies the media and nothing else, and patching Setup's own boot
+    // configuration is a content change, not a filesystem-and-boot-device one — so
+    // bare wins outright and no store is even inspected.
+    let mut store_results: Vec<(bool, StoreOutcome)> = Vec::new();
     for file in &media_files {
         cancel.check()?;
         let mut data = source.read(file)?;
-        if request.enable_ems && is_bcd_store(&file.volume_path) {
-            match crate::hive::enable_ems(&data, EMS_SERIAL_PORT, EMS_BAUD_RATE)
-            {
-                crate::hive::Outcome::Patched(patched) => {
-                    data = patched;
-                    if let Ems::Patched { stores } = &mut ems {
-                        *stores += 1;
-                    }
-                    reporter.log(format!(
+        if request.enable_ems && !request.bare {
+            let (patched, outcome) = patch_bcd_store(&file.volume_path, data);
+            data = patched;
+            if let Some(outcome) = outcome {
+                match outcome {
+                    StoreOutcome::Patched => reporter.log(format!(
                         "EMS: {} patched, COM{EMS_SERIAL_PORT} \
                          @{EMS_BAUD_RATE}",
                         file.volume_path
-                    ));
-                }
-                crate::hive::Outcome::AlreadySet => {
-                    if let Ems::Patched { stores } = &mut ems {
-                        *stores += 1;
-                    }
-                }
-                crate::hive::Outcome::NotApplicable(why) => {
-                    ems = Ems::Off(format!("{}: {why}", file.volume_path));
-                    reporter.log(format!(
+                    )),
+                    StoreOutcome::AlreadySet => reporter.log(format!(
+                        "EMS: {} already set to COM{EMS_SERIAL_PORT} \
+                         @{EMS_BAUD_RATE}",
+                        file.volume_path
+                    )),
+                    StoreOutcome::NotApplicable(why) => reporter.log(format!(
                         "EMS: {} left alone ({why}); Setup will be silent \
                          on serial",
                         file.volume_path
-                    ));
+                    )),
                 }
+                let uefi =
+                    file.volume_path.to_ascii_lowercase() == UEFI_BCD_STORE;
+                store_results.push((uefi, outcome));
             }
         }
         p1.add_file(&file.volume_path, data)?;
     }
+    let ems = ems_verdict(request.bare, request.enable_ems, &store_results);
     // Reserved, not loaded: a 4 GiB buffer plus the image holding it would need 8 GiB.
     p1.reserve_file("/sources/install.wim", wim_size)?;
 
@@ -655,6 +749,104 @@ mod tests {
         assert!(!is_bcd_store("/efi/microsoft/boot/memtest.efi"));
         // Not a store we know: a nested path that merely ends in bcd.
         assert!(!is_bcd_store("/sources/bcd"));
+    }
+
+    /// A file that is not a BCD store at all is untouched and produces no
+    /// record, whatever its bytes.
+    #[test]
+    fn patch_bcd_store_ignores_a_non_store_file() {
+        let (data, outcome) =
+            patch_bcd_store("/sources/install.wim", b"whatever".to_vec());
+        assert_eq!(data, b"whatever");
+        assert_eq!(outcome, None);
+    }
+
+    /// Bytes that are not a hive at all -- as every synthetic media item in
+    /// this crate's own tests is -- decline rather than patch, and the
+    /// bytes pass through unchanged. This is the same path the exFAT
+    /// goldens rely on: `Item::Text("/boot/bcd", "bcd")` must survive
+    /// byte-for-byte.
+    #[test]
+    fn patch_bcd_store_declines_bytes_that_are_not_a_hive() {
+        let (data, outcome) = patch_bcd_store("/boot/bcd", b"bcd".to_vec());
+        assert_eq!(data, b"bcd");
+        assert!(matches!(outcome, Some(StoreOutcome::NotApplicable(_))));
+    }
+
+    /// R13: the whole point of keying the verdict on the UEFI store rather
+    /// than mutating one shared value is that these four cases -- which the
+    /// single-`Ems`-accumulator version of this code got wrong on the first
+    /// two and the second two respectively -- all come out right regardless
+    /// of which order the media lists the two stores in.
+    #[test]
+    fn ems_verdict_counts_both_stores_when_both_succeed() {
+        let results =
+            [(true, StoreOutcome::Patched), (false, StoreOutcome::AlreadySet)];
+        assert_eq!(
+            ems_verdict(false, true, &results),
+            Ems::Patched { stores: 2 }
+        );
+    }
+
+    /// The UEFI store is what an Oxide guest boots; the legacy store is
+    /// not. A legacy failure must not flip a real UEFI patch into a
+    /// reported failure -- Finding 1's first direction.
+    #[test]
+    fn ems_verdict_stays_patched_when_only_the_legacy_store_is_declined() {
+        let results = [
+            (true, StoreOutcome::Patched),
+            (false, StoreOutcome::NotApplicable("not a readable hive")),
+        ];
+        assert_eq!(
+            ems_verdict(false, true, &results),
+            Ems::Patched { stores: 1 }
+        );
+    }
+
+    /// The reverse of the case above: the legacy store succeeding must not
+    /// paper over the UEFI store failing -- Finding 1's second direction,
+    /// where the old accumulator silently dropped a real patch's
+    /// increment because `ems` had already flipped to `Off`.
+    #[test]
+    fn ems_verdict_is_off_when_the_uefi_store_is_declined() {
+        let results = [
+            (false, StoreOutcome::Patched),
+            (true, StoreOutcome::NotApplicable("no {emssettings} object")),
+        ];
+        assert_eq!(
+            ems_verdict(false, true, &results),
+            Ems::Off("/efi/microsoft/boot/bcd: no {emssettings} object".into())
+        );
+    }
+
+    /// Finding 2: no BCD store on the media at all must not read as
+    /// success. The old accumulator started at `Patched { stores: 0 }` and
+    /// nothing in an empty loop ever moved it off that.
+    #[test]
+    fn ems_verdict_is_off_when_no_bcd_store_was_found() {
+        assert_eq!(
+            ems_verdict(false, true, &[]),
+            Ems::Off("no BCD store found on the media".into())
+        );
+    }
+
+    /// Finding 3 / R14: `--bare` wins over EMS outright, and says so,
+    /// rather than silently widening what "bare" means.
+    #[test]
+    fn ems_verdict_is_off_for_a_bare_build_even_with_a_uefi_patch() {
+        let results = [(true, StoreOutcome::Patched)];
+        assert_eq!(
+            ems_verdict(true, true, &results),
+            Ems::Off("bare build".into())
+        );
+    }
+
+    #[test]
+    fn ems_verdict_is_off_when_disabled() {
+        assert_eq!(
+            ems_verdict(false, false, &[]),
+            Ems::Off("disabled with --no-ems".into())
+        );
     }
 
     /// Pinned against the licence directories actually present in the WIMs, because the
