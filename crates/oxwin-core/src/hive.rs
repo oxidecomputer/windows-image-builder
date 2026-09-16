@@ -374,6 +374,162 @@ pub(crate) fn find(b: &[u8], path: &[&str]) -> Result<Option<Key>> {
     Ok(Some(key))
 }
 
+/// What `enable_ems` did.
+/// This is dead code until Task 6 wires `builder` up as its first
+/// non-test consumer.
+#[allow(dead_code)]
+pub(crate) enum Outcome {
+    /// Edited, and the result has been validated.
+    Patched(Vec<u8>),
+    /// The port element was already present. Use the source bytes.
+    AlreadySet,
+    /// Nothing was changed, for the reason given. Use the source bytes.
+    NotApplicable(&'static str),
+}
+
+/// The global EMS settings object, on every Windows BCD store.
+const EMS_OBJECT: &str = "{0ce4991b-e6b3-4b16-b23c-5e0d9250e5d9}";
+/// `BcdLibraryInteger_EmsPort` and `BcdLibraryInteger_EmsBaudRate`.
+const EMS_PORT: &str = "15000022";
+const EMS_BAUD: &str = "15000023";
+
+/// Adds `emsport` and `emsbaudrate` to a BCD store's `{emssettings}` object.
+///
+/// Never fails in a way a caller must handle: anything unexpected returns
+/// `NotApplicable` and the caller writes the source bytes through. That is
+/// deliberate. Losing EMS costs serial visibility during Setup; a hive we
+/// corrupted costs the whole image, and on a rack with no framebuffer the
+/// operator sees a machine that does nothing at all.
+/// This is dead code until Task 6 wires `builder` up as its first
+/// non-test consumer.
+#[allow(dead_code)]
+pub(crate) fn enable_ems(store: &[u8], port: u64, baud: u64) -> Outcome {
+    let path = ["Objects", EMS_OBJECT, "Elements"];
+    let elements = match find(store, &path) {
+        Ok(Some(key)) => key,
+        Ok(None) => return Outcome::NotApplicable("no {emssettings} object"),
+        Err(_) => return Outcome::NotApplicable("not a readable hive"),
+    };
+
+    let existing = match elements.subkeys(store) {
+        Ok(kids) => kids,
+        Err(_) => return Outcome::NotApplicable("unsupported subkey list"),
+    };
+    if existing.iter().any(|(n, _)| n == EMS_PORT) {
+        return Outcome::AlreadySet;
+    }
+
+    let mut out = store.to_vec();
+    let added = [(EMS_PORT, port), (EMS_BAUD, baud)];
+    match add_elements(&mut out, elements, &existing, &added) {
+        Ok(()) => {}
+        Err(_) => return Outcome::NotApplicable("could not be edited"),
+    }
+    // The one rule with no exceptions: a hive we cannot verify is never
+    // written to the volume.
+    if validate(&out).is_err() {
+        return Outcome::NotApplicable("edit did not validate");
+    }
+    for (name, want) in added {
+        let read = find(&out, &["Objects", EMS_OBJECT, "Elements", name])
+            .ok()
+            .flatten()
+            .and_then(|k| k.value(&out, "Element").ok().flatten());
+        if read != Some(want.to_le_bytes().to_vec()) {
+            return Outcome::NotApplicable("edit did not read back");
+        }
+    }
+    Outcome::Patched(out)
+}
+
+/// Writes one `nk` per element, each with a one-value list holding an
+/// `Element` value, then rebuilds the parent's `lf` leaf with everything in
+/// name order.
+fn add_elements(
+    out: &mut Vec<u8>,
+    parent: Key,
+    existing: &[(String, Key)],
+    add: &[(&str, u64)],
+) -> Result<()> {
+    let sk = parent.security(out);
+    let stamp = parent.timestamp(out);
+    let mut kids: Vec<(String, u32)> = existing
+        .iter()
+        .map(|(n, k)| (n.clone(), (k.at - BASE) as u32))
+        .collect();
+
+    for (name, value) in add {
+        let data_at = alloc(out, 8)?;
+        let data = BASE + data_at as usize + 4;
+        out[data..data + 8].copy_from_slice(&value.to_le_bytes());
+
+        let vk_at = alloc(out, 20 + b"Element".len())?;
+        let vk = BASE + vk_at as usize + 4;
+        out[vk..vk + 2].copy_from_slice(b"vk");
+        out[vk + 2..vk + 4].copy_from_slice(&7u16.to_le_bytes());
+        out[vk + 4..vk + 8].copy_from_slice(&8u32.to_le_bytes());
+        out[vk + 8..vk + 12].copy_from_slice(&data_at.to_le_bytes());
+        out[vk + 12..vk + 16].copy_from_slice(&3u32.to_le_bytes()); // BINARY
+        out[vk + 16..vk + 18].copy_from_slice(&1u16.to_le_bytes()); // ASCII
+        out[vk + 20..vk + 27].copy_from_slice(b"Element");
+
+        let list_at = alloc(out, 4)?;
+        let list = BASE + list_at as usize + 4;
+        out[list..list + 4].copy_from_slice(&vk_at.to_le_bytes());
+
+        let nk_at = alloc(out, 76 + name.len())?;
+        let nk = BASE + nk_at as usize + 4;
+        out[nk..nk + 2].copy_from_slice(b"nk");
+        out[nk + 2..nk + 4].copy_from_slice(&0x0020u16.to_le_bytes());
+        out[nk + 4..nk + 12].copy_from_slice(&stamp.to_le_bytes());
+        out[nk + 16..nk + 20]
+            .copy_from_slice(&((parent.at - BASE) as u32).to_le_bytes());
+        out[nk + 28..nk + 32].copy_from_slice(&u32::MAX.to_le_bytes());
+        out[nk + 32..nk + 36].copy_from_slice(&u32::MAX.to_le_bytes());
+        out[nk + 36..nk + 40].copy_from_slice(&1u32.to_le_bytes());
+        out[nk + 40..nk + 44].copy_from_slice(&list_at.to_le_bytes());
+        out[nk + 44..nk + 48].copy_from_slice(&sk.to_le_bytes());
+        out[nk + 48..nk + 52].copy_from_slice(&u32::MAX.to_le_bytes());
+        out[nk + 72..nk + 74]
+            .copy_from_slice(&(name.len() as u16).to_le_bytes());
+        out[nk + 76..nk + 76 + name.len()].copy_from_slice(name.as_bytes());
+
+        kids.push((name.to_string(), nk_at));
+    }
+
+    // Security descriptors are reference counted, and two more keys now
+    // point at this one.
+    let sk_at = BASE + sk as usize;
+    let refs = u32_at(out, sk_at + 16) + add.len() as u32;
+    out[sk_at + 16..sk_at + 20].copy_from_slice(&refs.to_le_bytes());
+
+    // A fresh leaf rather than growing the old one in place: the old cell
+    // is left allocated but unreferenced, which is legal and costs 16
+    // bytes.
+    kids.sort_by(|a, b| a.0.cmp(&b.0));
+    let leaf_at = alloc(out, 4 + kids.len() * 8)?;
+    let leaf = BASE + leaf_at as usize + 4;
+    out[leaf..leaf + 2].copy_from_slice(b"lf");
+    out[leaf + 2..leaf + 4].copy_from_slice(&(kids.len() as u16).to_le_bytes());
+    for (i, (name, at)) in kids.iter().enumerate() {
+        let e = leaf + 4 + i * 8;
+        out[e..e + 4].copy_from_slice(&at.to_le_bytes());
+        let mut hint = [0u8; 4];
+        for (j, c) in name.bytes().take(4).enumerate() {
+            hint[j] = c;
+        }
+        out[e + 4..e + 8].copy_from_slice(&hint);
+    }
+
+    out[parent.at + 24..parent.at + 28]
+        .copy_from_slice(&(kids.len() as u32).to_le_bytes());
+    out[parent.at + 32..parent.at + 36].copy_from_slice(&leaf_at.to_le_bytes());
+
+    let sum = checksum(out);
+    out[508..512].copy_from_slice(&sum.to_le_bytes());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -823,5 +979,189 @@ mod tests {
         let mut b = fixture::bcd_like(512);
         assert_eq!(alloc(&mut a, 24).unwrap(), alloc(&mut b, 24).unwrap());
         assert_eq!(a, b);
+    }
+
+    fn elements_of(v: &[u8]) -> Vec<String> {
+        find(v, &["Objects", fixture::EMS_GUID, "Elements"])
+            .unwrap()
+            .unwrap()
+            .subkeys(v)
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect()
+    }
+
+    #[test]
+    fn adds_both_elements_with_the_right_data() {
+        let before = fixture::bcd_like(512);
+        let Outcome::Patched(after) = enable_ems(&before, 1, 115200) else {
+            panic!("expected a patch");
+        };
+        validate(&after).unwrap();
+
+        let port = find(
+            &after,
+            &["Objects", fixture::EMS_GUID, "Elements", "15000022"],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            port.value(&after, "Element").unwrap(),
+            Some(1u64.to_le_bytes().to_vec())
+        );
+
+        let baud = find(
+            &after,
+            &["Objects", fixture::EMS_GUID, "Elements", "15000023"],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            baud.value(&after, "Element").unwrap(),
+            Some(115200u64.to_le_bytes().to_vec())
+        );
+    }
+
+    /// The kernel binary-searches subkey lists, so an unsorted leaf is a hive
+    /// that reads as corrupt.
+    #[test]
+    fn the_subkey_list_stays_sorted() {
+        let Outcome::Patched(after) =
+            enable_ems(&fixture::bcd_like(512), 1, 115200)
+        else {
+            panic!("expected a patch");
+        };
+        assert_eq!(elements_of(&after), ["15000022", "15000023", "16000020"]);
+    }
+
+    #[test]
+    fn the_existing_bootems_element_survives() {
+        let Outcome::Patched(after) =
+            enable_ems(&fixture::bcd_like(512), 1, 115200)
+        else {
+            panic!("expected a patch");
+        };
+        let k = find(
+            &after,
+            &["Objects", fixture::EMS_GUID, "Elements", "16000020"],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(k.value(&after, "Element").unwrap(), Some(vec![1]));
+    }
+
+    #[test]
+    fn patching_twice_is_a_no_op() {
+        let Outcome::Patched(once) =
+            enable_ems(&fixture::bcd_like(512), 1, 115200)
+        else {
+            panic!("expected a patch");
+        };
+        assert!(matches!(enable_ems(&once, 1, 115200), Outcome::AlreadySet));
+    }
+
+    #[test]
+    fn the_edit_is_deterministic() {
+        let a = enable_ems(&fixture::bcd_like(512), 1, 115200);
+        let b = enable_ems(&fixture::bcd_like(512), 1, 115200);
+        match (a, b) {
+            (Outcome::Patched(a), Outcome::Patched(b)) => assert_eq!(a, b),
+            _ => panic!("expected two patches"),
+        }
+    }
+
+    #[test]
+    fn a_hive_with_no_free_space_grows_a_bin() {
+        let before = fixture::bcd_like(8);
+        let Outcome::Patched(after) = enable_ems(&before, 1, 115200) else {
+            panic!("expected a patch");
+        };
+        assert!(after.len() > before.len());
+        validate(&after).unwrap();
+        assert_eq!(elements_of(&after), ["15000022", "15000023", "16000020"]);
+    }
+
+    #[test]
+    fn declines_anything_that_is_not_a_hive() {
+        assert!(matches!(
+            enable_ems(b"this is not a hive at all", 1, 115200),
+            Outcome::NotApplicable(_)
+        ));
+    }
+
+    #[test]
+    fn declines_a_hive_with_no_emssettings_object() {
+        // The fixture without its Objects tree: a valid hive, wrong shape.
+        let mut v = fixture::bcd_like(512);
+        let root = root(&v).unwrap();
+        v[root.at + 24..root.at + 28].copy_from_slice(&0u32.to_le_bytes());
+        let sum = checksum(&v);
+        v[508..512].copy_from_slice(&sum.to_le_bytes());
+        assert!(matches!(enable_ems(&v, 1, 115200), Outcome::NotApplicable(_)));
+    }
+
+    fn golden_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/hive")
+    }
+
+    fn golden(name: &str) -> Vec<u8> {
+        let path = golden_dir().join(name);
+        std::fs::read(&path).unwrap_or_else(|e| {
+            panic!("{}: {e}. Regenerate with dump_goldens", path.display())
+        })
+    }
+
+    #[test]
+    fn matches_the_goldens_byte_for_byte() {
+        assert_eq!(fixture::bcd_like(512), golden("bcd-like-before.bin"));
+        assert_eq!(fixture::bcd_like(8), golden("bcd-like-full-before.bin"));
+
+        let Outcome::Patched(after) =
+            enable_ems(&fixture::bcd_like(512), 1, 115200)
+        else {
+            panic!("expected a patch");
+        };
+        assert_eq!(after, golden("bcd-like-after.bin"));
+
+        let Outcome::Patched(after) =
+            enable_ems(&fixture::bcd_like(8), 1, 115200)
+        else {
+            panic!("expected a patch");
+        };
+        assert_eq!(after, golden("bcd-like-full-after.bin"));
+    }
+
+    /// The comparison above is only evidence if it can fail. Flip one byte
+    /// of a golden and the comparison must notice.
+    #[test]
+    fn the_golden_comparison_can_fail() {
+        let mut tampered = golden("bcd-like-after.bin");
+        let at = tampered.len() - 1;
+        tampered[at] ^= 0xff;
+        let Outcome::Patched(after) =
+            enable_ems(&fixture::bcd_like(512), 1, 115200)
+        else {
+            panic!("expected a patch");
+        };
+        assert_ne!(after, tampered);
+    }
+
+    ///   cargo test -p oxwin-core dump_goldens -- --ignored
+    #[test]
+    #[ignore = "rewrites goldens; run deliberately and read the diff"]
+    fn dump_goldens() {
+        let dir = golden_dir();
+        std::fs::create_dir_all(&dir).expect("create testdata/hive");
+        for (name, free) in [("bcd-like", 512usize), ("bcd-like-full", 8)] {
+            let before = fixture::bcd_like(free);
+            let Outcome::Patched(after) = enable_ems(&before, 1, 115200) else {
+                panic!("expected a patch");
+            };
+            std::fs::write(dir.join(format!("{name}-before.bin")), &before)
+                .expect("write before");
+            std::fs::write(dir.join(format!("{name}-after.bin")), &after)
+                .expect("write after");
+        }
     }
 }
