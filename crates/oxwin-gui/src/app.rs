@@ -64,6 +64,7 @@ pub struct Draft {
     pub enable_rdp: bool,
     pub inject_drivers: bool,
     pub enable_serial_console: bool,
+    pub enable_ems: bool,
     pub product_key: String,
     pub target_disk: u8,
 }
@@ -87,6 +88,7 @@ impl Default for Draft {
             enable_rdp: d.enable_rdp,
             inject_drivers: d.inject_drivers,
             enable_serial_console: d.enable_serial_console,
+            enable_ems: d.enable_ems,
             product_key: String::new(),
             target_disk: d.target_disk,
         }
@@ -128,9 +130,7 @@ impl Draft {
             enable_rdp: self.enable_rdp,
             inject_drivers: self.inject_drivers,
             enable_serial_console: self.enable_serial_console,
-            // TODO(task 7): carry a real Draft field once the GUI gets a
-            // control for this.
-            enable_ems: true,
+            enable_ems: self.enable_ems,
             product_key: {
                 let k = self.product_key.trim();
                 if k.is_empty() { None } else { Some(k.to_string()) }

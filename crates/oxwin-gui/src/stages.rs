@@ -509,6 +509,10 @@ impl App {
                     "Enable the serial console (recommended — it is how you watch the install)",
                 );
                 ui.checkbox(
+                    &mut self.draft.enable_ems,
+                    "Serial output during Windows Setup (EMS)",
+                );
+                ui.checkbox(
                     &mut self.draft.inject_drivers,
                     "Inject virtio drivers (required for networking)",
                 );

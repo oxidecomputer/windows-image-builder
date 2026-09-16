@@ -82,6 +82,8 @@ usage: oxwin doctor
                          isolates a hang in Setup from the drivers)
   --verbose-serial       extra OXIDE-STAGE markers on COM1, so a hang can be
                          localised to a pass rather than just observed
+  --no-ems               do not patch the media BCD for serial; Windows Setup
+                         then says nothing on COM1 until the install finishes
   --log-path=<path>      where Setup writes setupact.log/setuperr.log. Its
                          default is the WinPE RAM disk, so a stalled install
                          loses its own explanation on reset
@@ -369,8 +371,7 @@ fn build(args: &[String]) -> Result<()> {
         ei_channel: opt("ei-channel"),
         bare: flag("bare"),
         assets,
-        // TODO(task 7): wire up --no-ems.
-        enable_ems: true,
+        enable_ems: ems_enabled(args),
     };
 
     let quiet = flag("quiet");
@@ -388,6 +389,14 @@ fn build(args: &[String]) -> Result<()> {
             output.media_files,
             output.copied_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
         );
+        match &output.ems {
+            builder::Ems::Patched { stores } => {
+                println!("  ems:      COM1 @115200 ({stores} bcd stores)");
+            }
+            builder::Ems::Off(why) => {
+                println!("  ems:      off ({why})");
+            }
+        }
     }
     Ok(())
 }
@@ -812,8 +821,7 @@ fn build_for_golden(
             .map(str::to_string),
         bare: false,
         assets: assets_from_args(args)?,
-        // TODO(task 7): wire up --no-ems.
-        enable_ems: true,
+        enable_ems: ems_enabled(args),
     };
 
     let (reporter, printer) = printer(quiet, "copying");
@@ -1034,6 +1042,13 @@ fn flag_in(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == &format!("--{name}"))
 }
 
+/// EMS is on by default: a guest with no framebuffer has no other way to show
+/// Setup. `--no-ems` exists for the case where SAC framing on the serial
+/// console gets in the way of something else.
+fn ems_enabled(args: &[String]) -> bool {
+    !args.iter().any(|a| a == "--no-ems")
+}
+
 /// Report whether this machine can build an image, and whether it can upload one.
 ///
 /// Prints one line per check, prefixed `ok`, `warn` or `FAIL`, and exits 1 if anything
@@ -1167,6 +1182,13 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ems_is_on_unless_refused() {
+        assert!(ems_enabled(&[]));
+        assert!(ems_enabled(&["--verbose-serial".into()]));
+        assert!(!ems_enabled(&["--no-ems".into()]));
+    }
 
     /// An explicit flag beats an inherited environment, the same rule `--assets`
     /// follows: what someone typed on this command line should win over whatever
