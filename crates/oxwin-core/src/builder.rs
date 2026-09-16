@@ -48,6 +48,18 @@ use std::path::PathBuf;
 const SECTOR: u64 = crate::mbr::SECTOR as u64;
 const GIB: u64 = 1024 * 1024 * 1024;
 
+/// COM1, and the rate the answer file's own `bcdedit` call already uses.
+const EMS_SERIAL_PORT: u64 = 1;
+const EMS_BAUD_RATE: u64 = 115_200;
+
+/// The BCD stores Windows media carries: the UEFI one we boot, and the legacy
+/// one we do not. Both are patched, so a dump of the media does not show two
+/// stores disagreeing about EMS.
+fn is_bcd_store(volume_path: &str) -> bool {
+    let p = volume_path.to_ascii_lowercase();
+    p == "/efi/microsoft/boot/bcd" || p == "/boot/bcd"
+}
+
 /// p2 is the partition the firmware boots: the UEFI Shell, a chooser script and the
 /// UEFI:NTFS bootloader. The shell alone is ~1.1 MiB, and FAT32 needs at least 65525
 /// clusters, so 64 MiB is the practical floor. The slack is all zeros and the importer
@@ -71,6 +83,18 @@ pub struct Request {
     pub bare: bool,
     /// Where the third-party payload comes from: compiled in, or a directory.
     pub assets: crate::assets::Assets,
+    /// Patch the media's BCD stores so Windows Setup talks on COM1. Off only
+    /// via `--no-ems`; see `EMS-SERIAL-INVESTIGATION.md` for what it buys.
+    pub enable_ems: bool,
+}
+
+/// Whether the media's BCD stores were given a serial port, and if not why.
+/// Structured rather than a log line: the failure this feature exists to fix
+/// was invisible precisely because it only ever appeared in passing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ems {
+    Patched { stores: usize },
+    Off(String),
 }
 
 /// What the build produced.
@@ -90,6 +114,8 @@ pub struct Output {
     /// assertion. Callers that need to label the result, such as the version
     /// string on a golden image, want what the media said it was.
     pub release: crate::settings::WindowsRelease,
+    /// Whether the media's BCD stores were given a serial port, and if not why.
+    pub ems: Ems,
 }
 
 /// The disk layout, in sectors. Separated out because it is arithmetic worth testing on
@@ -337,9 +363,43 @@ fn assemble(
         ..exfat::Options::default()
     })?;
 
+    let mut ems = if request.enable_ems {
+        Ems::Patched { stores: 0 }
+    } else {
+        Ems::Off("disabled with --no-ems".into())
+    };
     for file in &media_files {
         cancel.check()?;
-        let data = source.read(file)?;
+        let mut data = source.read(file)?;
+        if request.enable_ems && is_bcd_store(&file.volume_path) {
+            match crate::hive::enable_ems(&data, EMS_SERIAL_PORT, EMS_BAUD_RATE)
+            {
+                crate::hive::Outcome::Patched(patched) => {
+                    data = patched;
+                    if let Ems::Patched { stores } = &mut ems {
+                        *stores += 1;
+                    }
+                    reporter.log(format!(
+                        "EMS: {} patched, COM{EMS_SERIAL_PORT} \
+                         @{EMS_BAUD_RATE}",
+                        file.volume_path
+                    ));
+                }
+                crate::hive::Outcome::AlreadySet => {
+                    if let Ems::Patched { stores } = &mut ems {
+                        *stores += 1;
+                    }
+                }
+                crate::hive::Outcome::NotApplicable(why) => {
+                    ems = Ems::Off(format!("{}: {why}", file.volume_path));
+                    reporter.log(format!(
+                        "EMS: {} left alone ({why}); Setup will be silent \
+                         on serial",
+                        file.volume_path
+                    ));
+                }
+            }
+        }
         p1.add_file(&file.volume_path, data)?;
     }
     // Reserved, not loaded: a 4 GiB buffer plus the image holding it would need 8 GiB.
@@ -502,6 +562,7 @@ fn assemble(
         edition_id: chosen.edition_id,
         media_files: media_files.len(),
         release: config.release,
+        ems,
     })
 }
 
@@ -582,6 +643,19 @@ pub fn boot_partition(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two stores on Windows media, and nothing else, whatever their case.
+    #[test]
+    fn recognises_both_bcd_stores() {
+        assert!(is_bcd_store("/efi/microsoft/boot/bcd"));
+        assert!(is_bcd_store("/EFI/MICROSOFT/BOOT/BCD"));
+        assert!(is_bcd_store("/boot/bcd"));
+        assert!(is_bcd_store("/BOOT/BCD"));
+        assert!(!is_bcd_store("/sources/boot.wim"));
+        assert!(!is_bcd_store("/efi/microsoft/boot/memtest.efi"));
+        // Not a store we know: a nested path that merely ends in bcd.
+        assert!(!is_bcd_store("/sources/bcd"));
+    }
 
     /// Pinned against the licence directories actually present in the WIMs, because the
     /// failure mode is a Setup that stops at "Windows cannot find the Microsoft Software
@@ -830,6 +904,7 @@ mod whole_image {
             assets: crate::assets::Assets::Directory(
                 repo_root().join("assets"),
             ),
+            enable_ems: true,
         };
         let mount_media = || Media::Directory(PathBuf::from(&mount));
 

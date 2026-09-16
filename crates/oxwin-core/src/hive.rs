@@ -21,19 +21,14 @@ use anyhow::{Result, anyhow, bail};
 
 /// The base block is 4096 bytes, and every cell offset in the hive is relative to
 /// the end of it.
-/// All items in this module have `#[allow(dead_code)]` until Task 6, when the
-/// `builder` crate becomes their consumer.
-#[allow(dead_code)]
 pub(crate) const BASE: usize = 4096;
 
-#[allow(dead_code)]
 pub(crate) struct BaseBlock {
     pub root_offset: u32,
     pub bins_size: u32,
 }
 
 /// XOR of the first 127 little-endian u32s. Zero and `!0` are reserved.
-#[allow(dead_code)]
 pub(crate) fn checksum(bytes: &[u8]) -> u32 {
     let mut sum = 0u32;
     for i in 0..127 {
@@ -48,7 +43,6 @@ pub(crate) fn checksum(bytes: &[u8]) -> u32 {
     }
 }
 
-#[allow(dead_code)]
 fn u32_at(bytes: &[u8], at: usize) -> u32 {
     let mut w = [0u8; 4];
     w.copy_from_slice(&bytes[at..at + 4]);
@@ -79,7 +73,6 @@ fn checked_u64(b: &[u8], at: usize) -> Result<u64> {
     Ok(u64::from_le_bytes(get(b, at, 8)?.try_into().expect("8 bytes")))
 }
 
-#[allow(dead_code)]
 pub(crate) fn base_block(bytes: &[u8]) -> Result<BaseBlock> {
     if bytes.len() < BASE {
         bail!("not a hive: {} bytes, shorter than a base block", bytes.len());
@@ -107,7 +100,6 @@ pub(crate) fn base_block(bytes: &[u8]) -> Result<BaseBlock> {
     Ok(BaseBlock { root_offset: u32_at(bytes, 36), bins_size })
 }
 
-#[allow(dead_code)]
 pub(crate) struct Cell {
     /// Absolute offset in the file, at the 4-byte size header.
     pub at: usize,
@@ -120,7 +112,6 @@ pub(crate) struct Cell {
 ///
 /// A bin's cells must tile it exactly: the format has no padding, so a gap means
 /// we have misread something and must not write.
-#[allow(dead_code)]
 pub(crate) fn cells(bytes: &[u8]) -> Result<Vec<Cell>> {
     let head = base_block(bytes)?;
     let mut out = Vec::new();
@@ -169,7 +160,6 @@ pub(crate) fn cells(bytes: &[u8]) -> Result<Vec<Cell>> {
 }
 
 /// Structural check, run on our own output before we hand it back.
-#[allow(dead_code)]
 pub(crate) fn validate(bytes: &[u8]) -> Result<()> {
     cells(bytes)?;
     Ok(())
@@ -177,7 +167,6 @@ pub(crate) fn validate(bytes: &[u8]) -> Result<()> {
 
 /// A key node. Field offsets below are from the cell start, so the signature is
 /// at `at + 4` and everything else follows the documented `nk` layout.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) struct Key {
     pub at: usize,
@@ -189,7 +178,6 @@ pub(crate) struct Key {
 // usually comes from an offset some other key stored on disk — so even a
 // read of `self.at`'s own well-known fields must not assume it lands
 // in-bounds.
-#[allow(dead_code)]
 impl Key {
     pub fn subkey_count(&self, b: &[u8]) -> Result<u32> {
         checked_u32(b, self.at + 24)
@@ -299,9 +287,6 @@ fn cell_size(body: usize) -> usize {
 /// remainder of at least 8 bytes is left behind as a smaller free cell;
 /// anything less is absorbed, because a cell cannot be smaller than its own
 /// header.
-/// This is dead code until Task 6 wires `builder` up as its first
-/// non-test consumer.
-#[allow(dead_code)]
 pub(crate) fn alloc(bytes: &mut Vec<u8>, want: usize) -> Result<u32> {
     let need = cell_size(want);
     let found =
@@ -369,14 +354,12 @@ pub(crate) fn alloc(bytes: &mut Vec<u8>, want: usize) -> Result<u32> {
     Ok((at - BASE) as u32)
 }
 
-#[allow(dead_code)]
 pub(crate) fn root(b: &[u8]) -> Result<Key> {
     Ok(Key { at: BASE + base_block(b)?.root_offset as usize })
 }
 
 /// Walks a path of subkey names from the root. `Ok(None)` means a name was not
 /// found, which is a fact about the hive rather than an error.
-#[allow(dead_code)]
 pub(crate) fn find(b: &[u8], path: &[&str]) -> Result<Option<Key>> {
     let mut key = root(b)?;
     for want in path {
@@ -393,9 +376,6 @@ pub(crate) fn find(b: &[u8], path: &[&str]) -> Result<Option<Key>> {
 }
 
 /// What `enable_ems` did.
-/// This is dead code until Task 6 wires `builder` up as its first
-/// non-test consumer.
-#[allow(dead_code)]
 pub(crate) enum Outcome {
     /// Edited, and the result has been validated.
     Patched(Vec<u8>),
@@ -419,9 +399,6 @@ const EMS_BAUD: &str = "15000023";
 /// deliberate. Losing EMS costs serial visibility during Setup; a hive we
 /// corrupted costs the whole image, and on a rack with no framebuffer the
 /// operator sees a machine that does nothing at all.
-/// This is dead code until Task 6 wires `builder` up as its first
-/// non-test consumer.
-#[allow(dead_code)]
 pub(crate) fn enable_ems(store: &[u8], port: u64, baud: u64) -> Outcome {
     let path = ["Objects", EMS_OBJECT, "Elements"];
     let elements = match find(store, &path) {

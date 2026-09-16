@@ -136,6 +136,7 @@ impl Engine {
             ei_channel: None,
             bare: false,
             assets: self.assets.clone(),
+            enable_ems: settings.enable_ems,
         };
         let output = builder::build(&request, reporter, cancel)
             .context("building the install image")?;

@@ -369,6 +369,8 @@ fn build(args: &[String]) -> Result<()> {
         ei_channel: opt("ei-channel"),
         bare: flag("bare"),
         assets,
+        // TODO(task 7): wire up --no-ems.
+        enable_ems: true,
     };
 
     let quiet = flag("quiet");
@@ -810,6 +812,8 @@ fn build_for_golden(
             .map(str::to_string),
         bare: false,
         assets: assets_from_args(args)?,
+        // TODO(task 7): wire up --no-ems.
+        enable_ems: true,
     };
 
     let (reporter, printer) = printer(quiet, "copying");

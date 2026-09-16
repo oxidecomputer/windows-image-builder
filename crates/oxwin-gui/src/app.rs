@@ -128,6 +128,9 @@ impl Draft {
             enable_rdp: self.enable_rdp,
             inject_drivers: self.inject_drivers,
             enable_serial_console: self.enable_serial_console,
+            // TODO(task 7): carry a real Draft field once the GUI gets a
+            // control for this.
+            enable_ems: true,
             product_key: {
                 let k = self.product_key.trim();
                 if k.is_empty() { None } else { Some(k.to_string()) }

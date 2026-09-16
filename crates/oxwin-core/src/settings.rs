@@ -240,6 +240,8 @@ pub struct Settings {
     pub enable_rdp: bool,
     pub inject_drivers: bool,
     pub enable_serial_console: bool,
+    /// Patch the media's BCD stores so Windows Setup talks on COM1.
+    pub enable_ems: bool,
     /// A retail/volume key, or `None` for evaluation media (which rejects keys).
     pub product_key: Option<String>,
     /// Disk index Setup installs onto. 1 = the second disk, because disk 0 is our
@@ -259,6 +261,7 @@ impl Default for Settings {
             enable_rdp: true,
             inject_drivers: true,
             enable_serial_console: true,
+            enable_ems: true,
             product_key: None,
             target_disk: 1,
         }
