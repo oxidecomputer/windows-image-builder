@@ -992,7 +992,7 @@ mod tests {
     ///
     ///   cargo test -p oxwin-core dump_goldens -- --ignored
     ///
-    /// Originaly this process was tested in a script, then a js plugin,
+    /// Originally this process was tested in a script, then a js plugin,
     /// (it was an idea), then that didnt work as wanted, so it was moved here.
     /// Any reference to the original goldens comes from those original tests
     /// and iterating there.

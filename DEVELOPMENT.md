@@ -11,8 +11,12 @@ crates/
   oxwin-core/     settings model, the build engine, ISO reading. No UI, no printing.
   oxwin-rack/     talking to a rack: profiles, disk upload, instance creation. No UI,
                   no printing, and no TTY — see below.
-  oxwin-gui/      eframe/egui application.
+  oxwin-gui/      eframe/egui application. A library: `run(Option<PathBuf>)`.
   oxwin-cli/      `doctor`, `build`, `upload`, `instance` — the engines driven by flags.
+                  A library too: `run(&[String])`, plus `COMMANDS`.
+  oxwin/          the one binary that ships. Decides from its arguments whether this
+                  invocation was a click or a command line, and calls one of the two.
+                  Both front ends keep a bin target of their own for development.
 assets/           third-party payload, fetched by tools/fetch-payload.sh, gitignored,
                   and embedded into the binary at build time by oxwin-core/build.rs.
 ```
@@ -277,7 +281,8 @@ dd if=~/Desktop/ws2022-win-server-01-install.img bs=512 skip=12584960 \
    count=131072 of=/tmp/p2.bin
 OXWIN_TEST_ESP=/tmp/p2.bin OXWIN_TEST_ASSETS=assets/efi cargo test
 
-# And the whole thing, four 7 GiB images (~10s, needs ~28 GiB free):
+# And the whole thing, four 7 GiB images (~10s on an M5 Pro writing to its internal
+# SSD -- it is disk-bound, so expect worse elsewhere; needs ~28 GiB free):
 OXWIN_TEST_MEDIA=/Volumes/SSS_X64FREE_EN-US_DV9 \
   OXWIN_TEST_ISO=~/Desktop/SERVER_2022_x64FRE_en-us.iso \
   cargo test --release whole_image

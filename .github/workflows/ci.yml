@@ -77,6 +77,50 @@ jobs:
       - run: cargo build --all-targets --locked
       - run: cargo test --locked
 
+  # The one mechanism in this workspace that cannot be exercised anywhere else.
+  # `oxwin.exe` is linked as a GUI-subsystem binary so a double-click does not flash
+  # a console window, which means it starts with no standard handles and has to
+  # attach to its parent's console before it can print. If that breaks, every CLI
+  # invocation on Windows succeeds silently — exit code 0, no output — and the
+  # release workflow is the only other place that would notice, on a tag, too late.
+  #
+  # Release build on purpose: the subsystem attribute is `cfg(not(debug_assertions))`,
+  # so a debug binary is console-subsystem and proves nothing.
+  windows-cli:
+    name: the CLI prints on Windows
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-winrel-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-winrel-
+      - run: cargo build --release --locked -p oxwin
+      # `--help` rather than `doctor`: it needs no payload and exits 0. Captured
+      # through a pipe, which is also the case AttachConsole must not clobber.
+      - name: usage reaches the caller
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./target/release/oxwin.exe --help > usage.txt
+          cat usage.txt
+          grep -q "usage: oxwin" usage.txt
+      - name: a mistyped command still exits 2
+        shell: bash
+        run: |
+          set +e
+          ./target/release/oxwin.exe buidl > out.txt 2>&1
+          code=$?
+          set -e
+          cat out.txt
+          test "$code" -eq 2
+          grep -q "unknown command" out.txt
+
   embed:
     name: embed the payload
     runs-on: ubuntu-24.04

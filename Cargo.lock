@@ -2658,6 +2658,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxwin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "eframe",
+ "oxwin-cli",
+ "oxwin-gui",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "oxwin-cli"
 version = "0.1.0"
 dependencies = [
@@ -2684,6 +2695,7 @@ dependencies = [
  "anyhow",
  "eframe",
  "egui",
+ "image",
  "oxwin-core",
  "oxwin-rack",
  "rfd",

@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "oxwin_cli"
+path = "src/lib.rs"
+
+# Development only: the shipped binary is `oxwin`, in crates/oxwin, which carries
+# both front ends. This one links no GUI, so `cargo run -p oxwin-cli` stays fast.
 [[bin]]
-name = "oxwin"
+name = "oxwin-cli"
 path = "src/main.rs"
 
 [lints]

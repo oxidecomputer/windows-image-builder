@@ -91,12 +91,14 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
+      # One binary, both front ends: clicked it is the app, given arguments it is
+      # the CLI. `oxwin-gui` and `oxwin-cli` are libraries it links, and their own
+      # bin targets are for development only, so nothing here builds them.
       - name: Build
         shell: bash
         run: |
           for t in ${{ matrix.targets }}; do
-            cargo build --release --locked --target "$t" \
-              -p oxwin-gui -p oxwin-cli
+            cargo build --release --locked --target "$t" -p oxwin
           done
 
       # A universal binary is two complete Mach-O slices, so the embedded payload appears
@@ -109,19 +111,17 @@ jobs:
           mkdir -p dist
           ext=""
           if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; fi
-          for bin in oxide-windows oxwin; do
-            read -ra targets <<< "${{ matrix.targets }}"
-            if [ "${#targets[@]}" -gt 1 ]; then
-              paths=()
-              for t in "${targets[@]}"; do
-                paths+=("target/$t/release/$bin")
-              done
-              lipo -create -output "dist/$bin" "${paths[@]}"
-              lipo -info "dist/$bin"
-            else
-              cp "target/${targets[0]}/release/${bin}${ext}" "dist/${bin}${ext}"
-            fi
-          done
+          read -ra targets <<< "${{ matrix.targets }}"
+          if [ "${#targets[@]}" -gt 1 ]; then
+            paths=()
+            for t in "${targets[@]}"; do
+              paths+=("target/$t/release/oxwin")
+            done
+            lipo -create -output dist/oxwin "${paths[@]}"
+            lipo -info dist/oxwin
+          else
+            cp "target/${targets[0]}/release/oxwin${ext}" "dist/oxwin${ext}"
+          fi
           cp README.md LICENSE dist/
           ls -lh dist
 
@@ -145,6 +145,28 @@ jobs:
         with:
           name: fingerprint-${{ matrix.name }}
           path: fingerprint-${{ matrix.name }}.txt
+
+      # The wrappers each desktop needs before a double-click does anything. The
+      # binary inside the bundle is the one just verified; the loose copy stays in
+      # the archive for CLI use.
+      #
+      # Signing is a no-op until MACOS_SIGN_IDENTITY is set as a repository secret
+      # (a Developer ID certificate imported into the runner keychain first, which
+      # is a step to add alongside it). Adding NOTARY_KEYCHAIN_PROFILE notarizes
+      # and staples as well. Unsigned, Gatekeeper refuses the bundle until its
+      # quarantine attribute is cleared, which the release notes below explain.
+      - name: Wrap it for macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_KEYCHAIN_PROFILE: ${{ secrets.NOTARY_KEYCHAIN_PROFILE }}
+        run: ./tools/package-macos.sh --binary dist/oxwin --out dist
+
+      - name: Wrap it for Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cp tools/oxide-windows.desktop dist/
 
       - name: Package
         shell: bash
@@ -207,12 +229,23 @@ jobs:
         run: |
           set -euo pipefail
           notes=$(cat <<'EOF'
-          Unsigned builds. On macOS, Gatekeeper will refuse to open a downloaded binary
-          until its quarantine attribute is cleared:
+          One binary, `oxwin`. Double-click it and it is the desktop app; run it with
+          arguments and it is the CLI. `oxwin doctor` reports what it found; `oxwin
+          --help` lists the commands.
 
-              xattr -d com.apple.quarantine oxide-windows oxwin
+          - **macOS** — open `Windows Image Builder.app`. The loose `oxwin` beside it
+            is the same binary, for command-line use.
+          - **Windows** — double-click `oxwin.exe`, or run it from a shell. Note that
+            a GUI-subsystem binary does not hold the shell prompt: for a script that
+            depends on ordering, use `start /wait oxwin.exe …`.
+          - **Linux** — run `oxwin`, or install `oxide-windows.desktop` (it names the
+            binary on your PATH) for a launcher entry.
 
-          Each archive holds the desktop app (`oxide-windows`) and the CLI (`oxwin`).
+          Unsigned builds. On macOS, Gatekeeper will refuse anything downloaded until
+          its quarantine attribute is cleared:
+
+              xattr -dr com.apple.quarantine "Windows Image Builder.app" oxwin
+
           The virtio drivers, OpenSSH and EFI binaries the media carries are compiled in,
           so nothing else needs downloading. Run `oxwin doctor` to confirm.
           EOF

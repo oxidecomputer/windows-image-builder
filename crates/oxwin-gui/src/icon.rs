@@ -30,13 +30,30 @@ const SIZE: usize = 128;
 /// every primitive, for a worse result.
 const SS: usize = 4;
 
+/// The design grid every constant below is written on. [`rgba`] scales it to the
+/// requested edge, so 128 is a unit of measure here and not a resolution.
+const GRID: usize = 128;
+
 /// The icon, ready for `ViewportBuilder::with_icon`.
 pub fn icon() -> egui::IconData {
-    let mut canvas = Canvas::new(SIZE * SS);
+    egui::IconData { rgba: rgba(SIZE), width: SIZE as u32, height: SIZE as u32 }
+}
 
-    // Every dimension below is written on the 128-unit design grid and scaled on the way
-    // in, so the constants read as pixels at the nominal size.
-    let u = |n: usize| n * SS;
+/// The same mark at any edge, as RGBA8.
+///
+/// macOS wants an `.icns` holding everything from 16 to 1024 pixels square, and
+/// upscaling the 128-pixel window icon to 1024 would ship a blurry Dock icon. So
+/// the renderer is resolution-independent and the bundle's icon is generated from
+/// this same arithmetic — see `examples/icon-png.rs` and `tools/package-macos.sh`.
+/// Committing a `.png` instead would put the one unreviewable blob in the
+/// repository, which is what the note at the top of this file is about.
+pub fn rgba(edge: usize) -> Vec<u8> {
+    let mut canvas = Canvas::new(edge * SS, edge);
+
+    // Scale the design grid to the requested size. Integer arithmetic throughout:
+    // at the sizes an icon is drawn, a rounding difference is a pixel, and the
+    // supersampling below is what hides it.
+    let u = |n: usize| n * edge * SS / GRID;
 
     // The plate. Not the app background: at this size a near-black square vanishes into
     // a dark dock, so the icon needs to be a shade the surrounding chrome is not.
@@ -54,22 +71,21 @@ pub fn icon() -> egui::IconData {
         canvas.rounded_rect(u(26), y, u(76), u(16), u(4), *shade);
     }
 
-    egui::IconData {
-        rgba: canvas.downsample(),
-        width: SIZE as u32,
-        height: SIZE as u32,
-    }
+    canvas.downsample()
 }
 
 /// A square RGBA buffer at `SS` times the final resolution.
 struct Canvas {
     pixels: Vec<u8>,
     edge: usize,
+    /// Edge of the buffer [`Canvas::downsample`] produces: `edge / SS`, held rather
+    /// than divided out so the two cannot disagree.
+    out_edge: usize,
 }
 
 impl Canvas {
-    fn new(edge: usize) -> Self {
-        Self { pixels: vec![0u8; edge * edge * 4], edge }
+    fn new(edge: usize, out_edge: usize) -> Self {
+        Self { pixels: vec![0u8; edge * edge * 4], edge, out_edge }
     }
 
     /// Fill an axis-aligned rounded rectangle, opaque, no antialiasing —
@@ -120,9 +136,10 @@ impl Canvas {
     /// Box-filter `SS`×`SS` blocks down to one pixel each.
     fn downsample(&self) -> Vec<u8> {
         let n = (SS * SS) as u32;
-        let mut out = vec![0u8; SIZE * SIZE * 4];
-        for y in 0..SIZE {
-            for x in 0..SIZE {
+        let out_edge = self.out_edge;
+        let mut out = vec![0u8; out_edge * out_edge * 4];
+        for y in 0..out_edge {
+            for x in 0..out_edge {
                 let mut sums = [0u32; 4];
                 for sy in 0..SS {
                     for sx in 0..SS {
@@ -132,7 +149,7 @@ impl Canvas {
                         }
                     }
                 }
-                let o = (y * SIZE + x) * 4;
+                let o = (y * out_edge + x) * 4;
                 for (channel, sum) in sums.iter().enumerate() {
                     out[o + channel] = (sum / n) as u8;
                 }
@@ -183,5 +200,44 @@ mod tests {
             "top bar is not distinct from the gap"
         );
         assert_ne!(at(64, 34), at(64, 94), "the bars are all the same shade");
+    }
+
+    /// The `.icns` in the macOS bundle is rendered at every size Apple asks for, by
+    /// a packaging script nobody runs on a laptop. An off-by-one in the scaling
+    /// arithmetic would surface as a panic in CI at release time, or — worse, since
+    /// it cannot panic — as a blank icon at one size only.
+    #[test]
+    fn it_renders_at_every_size_the_bundle_needs() {
+        for edge in [16usize, 32, 64, 128, 256, 512, 1024] {
+            let rgba = rgba(edge);
+            assert_eq!(
+                rgba.len(),
+                edge * edge * 4,
+                "{edge}px buffer is the wrong length"
+            );
+            let opaque = rgba.chunks_exact(4).filter(|p| p[3] == 255).count();
+            assert!(
+                opaque > edge * edge / 2,
+                "the {edge}px icon is mostly transparent ({opaque} of {} pixels \
+                 opaque), so the plate did not scale",
+                edge * edge
+            );
+
+            // The mark has to survive the scaling too, not just the plate. Sampled
+            // on the design grid so the same two points are compared at every size.
+            let at = |x: usize, y: usize| {
+                let i = ((y * edge / GRID) * edge + (x * edge / GRID)) * 4;
+                [rgba[i], rgba[i + 1], rgba[i + 2]]
+            };
+            // 16px is below the resolution at which three bars and two gaps are
+            // distinguishable at all; the plate check above is what it gets.
+            if edge >= 32 {
+                assert_ne!(
+                    at(64, 34),
+                    at(64, 50),
+                    "at {edge}px the top bar merged into the gap below it"
+                );
+            }
+        }
     }
 }

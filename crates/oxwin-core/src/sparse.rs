@@ -14,7 +14,7 @@
 //! endpoint takes. An imported Oxide disk is born zeroed, so the uploader can walk the
 //! non-zero blocks and skip the rest, which is most of why our own client uploaded
 //! 7 GiB in a fraction of the time the CLI took, since the CLI sends the padding too!
-//! This has sseen averages of 25% or so of the upload saved.
+//! This has seen averages of 25% or so of the upload saved.
 
 use anyhow::{Result, bail};
 use std::collections::BTreeMap;

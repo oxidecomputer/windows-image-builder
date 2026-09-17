@@ -5,6 +5,7 @@ members = [
     "crates/oxwin-rack",
     "crates/oxwin-gui",
     "crates/oxwin-cli",
+    "crates/oxwin",
 ]
 
 [workspace.package]

@@ -1,6 +1,10 @@
-# Windows Image Builder
+# Windows Image Builder (`oxwin`)
 
 Get Windows running on an Oxide rack.
+
+**One binary, two ways to use it.** `oxwin` is the app when you click it and the CLI
+when you give it arguments — the same engine either way, so anything the wizard can
+build a script can build too.
 
 The Oxide rack requires a serial console, and VirtIO drivers installed within a
 Windows image for that image to function. This repo contains an applications which
@@ -25,15 +29,48 @@ compatible with the Oxide hypervisor.
   password — see below.
 
 
-> **Running it today:** this is an early version, so you start it from source rather
-> than double-clicking an app. You need [Rust](https://rustup.rs), then:
->
-> ```
-> cargo run --release -p oxwin-gui
-> ```
->
-> A packaged, double-clickable app is on the roadmap. You do not need to mount the ISO
-> first — drop the `.iso` straight in.
+## Running it
+
+Download the archive for your platform from the releases page and open it. There is
+nothing to install and nothing else to download — the drivers, OpenSSH and EFI
+binaries are compiled into the binary. You do not need to mount the ISO first; drop
+the `.iso` straight in.
+
+- **macOS** — open `Windows Image Builder.app`. The loose `oxwin` beside it is the
+  same binary, for the command line.
+- **Windows** — double-click `oxwin.exe`.
+- **Linux** — run `oxwin`. For a launcher entry, install
+  `oxide-windows.desktop` (the comments in it say how).
+
+These builds are not signed yet. macOS will refuse a downloaded app until you clear
+its quarantine attribute:
+
+```
+xattr -dr com.apple.quarantine "Windows Image Builder.app" oxwin
+```
+
+`oxwin doctor` prints what it found — the payload it carries, and which racks this
+machine is logged into. It is the first thing to run if something looks wrong.
+
+> **From source**, if you would rather: you need [Rust](https://rustup.rs), then
+> `cargo run --release -p oxwin`. During development `cargo run -p oxwin-gui` and
+> `cargo run -p oxwin-cli` build the two front ends separately, which is faster —
+> the CLI that way does not link the windowing stack.
+
+### Using it as a CLI
+
+Give it a command and it never opens a window:
+
+```
+oxwin --help                   # the commands, and every flag
+oxwin doctor                   # what this build carries, and your rack logins
+oxwin build windows.iso out.img --password=… --name=…
+```
+
+One Windows-only wrinkle: `oxwin.exe` is linked as a GUI binary, because that is
+what makes a double-click not flash a console window. It prints to the console that
+started it, but the shell does not wait for it — so in a script that depends on
+ordering, use `start /wait oxwin.exe …` or pipe through `| Out-Host`.
 
 ---
 
@@ -44,7 +81,8 @@ compatible with the Oxide hypervisor.
 Drag your Windows ISO anywhere onto the window, or click the box to pick one. The app
 tells you how big it is so you can catch it immediately if you grabbed the wrong file.
 
-You can also start the app with a file: `cargo run -p oxwin-gui -- path/to/windows.iso`.
+You can also start the app on a file: `oxwin path/to/windows.iso`. On macOS, "Open
+With" and dropping an ISO on the Dock icon do the same thing.
 
 ### 2. Settings
 
@@ -177,10 +215,13 @@ It builds the media, uploads it, creates a temporary instance, waits for Windows
 install and shut itself down, snapshots the disk, turns the snapshot into an image,
 and deletes everything temporary. What is left is the image, named after `--run`.
 
-Measured against a rack on the same network: **eighteen and a half minutes** -- ten
-uploading, six installing, two for sysprep and the shutdown. The upload is the biggest
-part and the one that depends on where you are, so expect longer over a slow link and
-plan around that rather than around the install.
+Measured against a rack on the same network, from an M5 Pro MacBook Pro with the
+image on its internal SSD: **eighteen and a half minutes** -- ten uploading, six
+installing, two for sysprep and the shutdown. The upload is the biggest part and the
+one that depends on where you are, so expect longer over a slow link and plan around
+that rather than around the install. The two ends of it that are yours -- building the
+7 GiB image and reading it back to upload -- are disk-bound, so an external drive or a
+spinning disk adds minutes that have nothing to do with the rack.
 
 **If it stops — a laptop lid, a lost connection, a Ctrl-C — run exactly the same
 command again.** It works out what already exists on the rack and carries on from
@@ -281,8 +322,11 @@ Windows versions come with many different versions of media, see [TESTED-MEDIA.m
 
 ## Where things are
 
-- `crates/` — the app: `oxwin-core` the engine, `oxwin-rack` the rack client,
-  `oxwin-gui` the desktop app, `oxwin-cli` the command-line one
+- `crates/` — `oxwin` the shipped binary (it picks a front end), `oxwin-core` the
+  engine, `oxwin-rack` the rack client, `oxwin-gui` the desktop app, `oxwin-cli` the
+  command-line one
+- `tools/` — `fetch-payload.sh` for the payload, `package-macos.sh` for the `.app`,
+  `oxide-windows.desktop` for a Linux launcher
 - `assets/` — third-party payload, downloaded by `tools/fetch-payload.sh`, not committed
 - `DEVELOPMENT.md` — how it works inside, and how to work on it
 - `TESTED-MEDIA.md` — which Windows ISOs this has actually been run against

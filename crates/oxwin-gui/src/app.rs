@@ -302,7 +302,10 @@ pub struct App {
 const LOG_CAP: usize = 2000;
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        opened_with: Option<PathBuf>,
+    ) -> Self {
         theme::apply(&cc.egui_ctx);
         // Reported on the first screen rather than several minutes into a build. The
         // engine itself always constructs; what can be missing is its payload.
@@ -310,9 +313,6 @@ impl App {
         let engine_error = engine.assets().problem();
         let engine = Some(Arc::new(engine));
         let draft = Draft::default();
-        // Opening the app on a file, the way any desktop app should behave.
-        let opened_with =
-            std::env::args().nth(1).map(PathBuf::from).filter(|p| p.exists());
 
         // Debug builds only: jump straight to a stage so its layout can be reviewed
         // without clicking through. Compiled out of release entirely.

@@ -4,62 +4,19 @@
 
 // Copyright 2026 Oxide Computer Company
 
+//! The app on its own, for development.
+//!
+//! What ships is `oxwin` — one binary that decides between this and the CLI from
+//! its arguments (see `crates/oxwin`). This target exists so `cargo run -p
+//! oxwin-gui -- some.iso` keeps working.
+
 // Hide the console window on Windows release builds; this is a GUI.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod app;
-mod icon;
-mod stages;
-mod stepper;
-mod theme;
-
 fn main() -> eframe::Result<()> {
-    let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([980.0, 720.0])
-        .with_min_inner_size([760.0, 560.0])
-        .with_title("Windows Image Builder")
-        .with_icon(icon::icon())
-        // The reverse-DNS id is what Wayland matches against a `.desktop` file and what
-        // GNOME shows in place of the binary name; without it the window is labelled
-        // `oxwin-gui`, which means nothing to the person running it.
-        .with_app_id("com.oxide.windows-image-builder");
-
-    // Pin the window to a known spot when asked, so a screenshot can target this
-    // window's rectangle alone. Without it the only option is capturing the whole
-    // display, which sweeps up whatever else the user happens to have open.
-    if let Some(spec) = std::env::var_os("OXWIN_WINDOW_AT") {
-        let spec = spec.to_string_lossy().into_owned();
-        let parts: Vec<f32> =
-            spec.split(',').filter_map(|p| p.trim().parse().ok()).collect();
-        if let [x, y] = parts[..] {
-            viewport = viewport.with_position([x, y]);
-        } else {
-            eprintln!(
-                "OXWIN_WINDOW_AT should look like \"120,120\", got {spec:?}"
-            );
-        }
-    }
-
-    let options = eframe::NativeOptions { viewport, ..Default::default() };
-    let result = eframe::run_native(
-        "Windows Image Builder",
-        options,
-        Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
-    );
-
-    // Quitting cleanly still trips a macOS crash reporter dialog: as the window tears
-    // down, AppKit's Touch Bar observation calls removeObserver:forKeyPath: for an
-    // observer that is no longer registered, that Objective-C exception is rethrown
-    // through a C++ terminate handler, and the process takes SIGABRT. It happens
-    // entirely inside AppKit after our event loop has returned, so there is nothing on
-    // our side left to fix or flush.
-    //
-    // Exiting here skips that teardown. Safe because the event loop has already
-    // finished and no build thread outlives it — a build in flight keeps the window
-    // open. Revisit if winit fixes it upstream, or if this app ever gains state that
-    // must be flushed on exit.
-    if result.is_ok() {
-        std::process::exit(0);
-    }
-    result
+    let opened_with = std::env::args()
+        .nth(1)
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.exists());
+    oxwin_gui::run(opened_with)
 }

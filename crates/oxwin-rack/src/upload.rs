@@ -99,7 +99,7 @@ fn concurrency() -> usize {
 
 /// The chunks of an image that actually need uploading.
 ///
-/// **All-zero chunks are skipped**, greatly speeding up image transer of install media.
+/// **All-zero chunks are skipped**, greatly speeding up image transfer of install media.
 ///  It is safe because a disk created with `importing_blocks` is zeroed by the control
 /// plane, so a chunk we never write already holds the bytes we would have written.
 pub struct Chunks<R> {
