@@ -45,6 +45,9 @@ It reads the ISO directly through `udf.rs`, so it needs no `hdiutil`, no mount a
 administrator rights. Handed a directory it reads that instead, which is how an ISO
 someone has already mounted gets used.
 
+`hive.rs` adds two EMS elements to the media's BCD stores. It declines rather than
+risks the hive.
+
 The project started with a script that managed to get an image to boot, then that moved
 into a Javascript plugin with the idea that maybe it could be a browser plugin. The large
 media handling caused that idea to almost, but not fully work. After working through bugs,

@@ -1298,6 +1298,52 @@ mod tests {
         assert!(matches!(enable_ems(&v, 1, 115200), Outcome::NotApplicable(_)));
     }
 
+    /// The editor against a real store, which is the only input that can
+    /// disprove a shared misunderstanding between our fixture writer and our
+    /// reader.
+    ///
+    ///   OXWIN_TEST_ISO=~/Desktop/…iso cargo test -p oxwin-core patches_a_real_bcd_store
+    #[test]
+    fn patches_a_real_bcd_store() {
+        let Ok(iso) = std::env::var("OXWIN_TEST_ISO") else {
+            eprintln!("skipped: set OXWIN_TEST_ISO");
+            return;
+        };
+        let media = crate::media::Media::at(iso);
+        let mut source =
+            crate::media::Source::open(&media).expect("open the media");
+        let file = source
+            .find("/efi/microsoft/boot/bcd")
+            .expect("media carries a UEFI BCD store");
+        let store = source.read(&file).expect("read the store");
+
+        let before = find(&store, &["Objects", EMS_OBJECT, "Elements"])
+            .unwrap()
+            .expect("stock media has an {emssettings} object")
+            .subkeys(&store)
+            .unwrap();
+        assert!(
+            before.iter().any(|(n, _)| n == "16000020"),
+            "stock media should already have bootems"
+        );
+        assert!(
+            !before.iter().any(|(n, _)| n == EMS_PORT),
+            "stock media should not already have a port"
+        );
+
+        let Outcome::Patched(after) = enable_ems(&store, 1, 115200) else {
+            panic!("a real store should patch");
+        };
+        validate(&after).unwrap();
+        let port = find(&after, &["Objects", EMS_OBJECT, "Elements", EMS_PORT])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            port.value(&after, "Element").unwrap(),
+            Some(1u64.to_le_bytes().to_vec())
+        );
+    }
+
     fn golden_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/hive")
     }
