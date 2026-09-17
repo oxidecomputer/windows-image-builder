@@ -117,16 +117,32 @@ with a message naming Arm64 and leaves no image behind.
 | Server 2019 | **Installed and verified** |
 | Server 2022 | **Installed and verified** (the reference ISO) |
 | Server 2022 volume licensing | **Installed and verified** — proves the `_Default` licence channel |
-| Windows 10 22H2 | **Installed and verified** |
-| Server 2025 | Blocked, on two separate things — see below |
-| Windows 11 22H2 | Blocked, on two separate things — see below |
+| Windows 10 22H2 | **Installed and verified**, before the LabConfig bypasses were removed from its answer file — see the note below |
+| Server 2025 | **Cannot be hardware-verified right now** — blocked in the hypervisor, see below |
+| Windows 11 22H2 | **Cannot be hardware-verified right now** — blocked in the hypervisor, see below |
+
+**The Windows 10 verification predates the answer file it would build today.** The five
+`HKLM\System\Setup\LabConfig` bypasses used to be emitted for every client release and
+are now Windows 11 only, so the Windows 10 answer file has changed since it was verified
+on a rack. Only Windows 11 Setup reads those values — on Windows 10 they were five
+registry writes nothing consulted — so this is a removal of dead weight rather than an
+untested change. It has not been re-verified on hardware.
 
 Server 2025 and Windows 11 are held up by **a Propolis NVMe problem**:
 
 **Propolis NVMe emulation.** The way device registers work right now for NVMe causes
 newer Windows kernels to panic and keep restarting the virtual device. An early attempt
 has been made to fix the problem, [propolis#1199](https://github.com/oxidecomputer/propolis/pull/1199).
-The Propolis team is working on a better long term fix!
+The Propolis team is working on a better long term fix, tracked by a ticket filed with
+them.
+
+**Re-confirmed with Server 2025 on 2026-09-17: still failing the same way.** So this is
+not a stale row waiting on someone to retry — **neither Server 2025 nor Windows 11 can be
+verified on real hardware at all until the hypervisor fix lands**, and no change to this
+builder will move either one. Treat both as blocked-by-dependency rather than untested:
+a 2025 or Windows 11 answer file change is unverified because the hypervisor cannot run
+it. Emulation is the only evidence available meanwhile, and
+`tools/qemu-test.sh` cannot exercise the chooser's second branch or the VPC firewall.
 
 ## Golden images
 
