@@ -1,0 +1,542 @@
+# Development
+
+How the app is put together, why it is put together that way, and what to be careful
+about. For the user-facing side see [README.md](README.md); for what is coming see
+[PLAN.md](PLAN.md).
+
+## Layout
+
+```
+crates/
+  oxwin-core/     settings model, the build engine, ISO reading. No UI, no printing.
+  oxwin-rack/     talking to a rack: profiles, disk upload, instance creation. No UI,
+                  no printing, and no TTY — see below.
+  oxwin-gui/      eframe/egui application. A library: `run(Option<PathBuf>)`.
+  oxwin-cli/      `doctor`, `build`, `upload`, `instance` — the engines driven by flags.
+                  A library too: `run(&[String])`, plus `COMMANDS`.
+  oxwin/          the one binary that ships. Decides from its arguments whether this
+                  invocation was a click or a command line, and calls one of the two.
+                  Both front ends keep a bin target of their own for development.
+assets/           third-party payload, fetched by tools/fetch-payload.sh, gitignored,
+                  and embedded into the binary at build time by oxwin-core/build.rs.
+```
+
+The rule that keeps this honest: **`oxwin-core` never prints and never blocks on a
+human.** It emits `progress::Event` values and returns `Result`. That constraint is the
+only reason the CLI was cheap to add — if the core ever grows a `println!` or a prompt,
+the CLI stops being free and starts being a rewrite.
+
+`oxwin-rack` is a separate crate rather than a module of the core, because the Oxide SDK
+brings tokio, reqwest and rustls with it. The core has four dependencies and produces
+bytes deterministically; both of those are worth keeping. `oxwin-rack` owns a
+current-thread runtime internally and exposes a **blocking** API emitting the same
+`progress::Event`, so the async never crosses the crate boundary and no caller needs
+tokio in its own tree.
+
+It inherits the core's rule and adds one: **no TTY, anywhere.** No prompt, no picker, no
+spinner, nothing read from stdin. Someone with only a terminal has to be able to pass the
+variables in and get an image uploaded, so the profile is a *parameter*; choosing one
+interactively is a GUI feature that fills that parameter in.
+
+## The engine
+
+`engine::Engine` takes a `Settings` and an output path and produces an image, reporting
+through a `Reporter` and checking a `Cancel` as it goes. It drives `builder.rs`, which
+composes the two filesystems, the partition table, the answer file and the bootstrap
+script.
+
+It reads the ISO directly through `udf.rs`, so it needs no `hdiutil`, no mount and no
+administrator rights. Handed a directory it reads that instead, which is how an ISO
+someone has already mounted gets used.
+
+`hive.rs` adds two EMS elements to the media's BCD stores. It declines rather than
+risks the hive.
+
+The project started with a script that managed to get an image to boot, then that moved
+into a Javascript plugin with the idea that maybe it could be a browser plugin. The large
+media handling caused that idea to almost, but not fully work. After working through bugs,
+the project was ported to rust and iterated on.
+
+## The goldens are the gate
+
+Every generated structure is pinned byte for byte by a committed golden:
+
+| what | where |
+| --- | --- |
+| answer file, 15 configurations | `testdata/unattend/*.xml` |
+| bootstrap script, 7 configurations | `testdata/bootstrap/*.ps1` |
+| exFAT volumes, 7 configurations, plus placements | `testdata/exfat/*.blocks`, `placements.json` |
+| FAT32 ESP, six named hex regions | `testdata/reference-esp.txt` |
+| exFAT media reference regions | `testdata/reference-media.txt` |
+
+The golden configs were original from the js plugin, then later from the rust code.
+
+The exFAT goldens are non-zero blocks rather than dense images, because the configuration
+that matters is a 6 GiB volume holding a 4 GiB reserved file: dense, that is 6 GiB of
+mostly zeros per test; sparse, a few megabytes. The comparison is still complete: holes
+read as zero on both sides and an all-zero block is excluded by both, so equal block
+lists mean identical volumes.
+
+Rules that came out of building this:
+
+- **Mutation-test every comparison before believing it**, and record the mutations next
+  to the claim. A green comparison nobody has tried to break is not evidence.
+- **A test that skips is a test that lies.** These tests used to generate their reference
+  by running the JavaScript, and skipped when it was absent — so a machine without Node
+  ran a suite that proved nothing while reporting success. A missing or orphaned golden
+  now fails.
+- **`dump_goldens` rewrites from the current code, so its diff is the review.** Each
+  module has one, behind `--ignored`. An unexplained hunk is a bug being blessed.
+- **Case tables carry an explicit slug**, separate from the prose label, so a reworded
+  label cannot orphan a golden.
+
+Run the whole-image gate when the media is to hand:
+
+```
+hdiutil attach ~/Desktop/SERVER_2022_x64FRE_en-us.iso
+OXWIN_TEST_MEDIA=/Volumes/SSS_X64FREE_EN-US_DV9 \
+  OXWIN_TEST_ISO=~/Desktop/SERVER_2022_x64FRE_en-us.iso \
+  cargo test --release whole_image
+```
+
+It builds four 7 GiB images — twice from the mount, once from the ISO, once through the
+engine — and compares them, in about ten seconds. Determinism is the property under test.
+
+## What each port established
+
+Worth knowing, because the same shapes recur.
+
+### FAT32
+
+- **Reproducibility was broken and nobody could have noticed.** Both filesystem builders
+  encoded `Date.UTC(2020, 0, 1)` with *local-time* getters, so every directory entry in
+  both volumes carried the time zone of the machine that ran the build. The reference
+  image is stamped `2019-12-31 19:00:00` for that reason. No install ever failed over it;
+  it simply meant the byte-compare gate could only ever have held on one laptop. Made
+  unrepresentable here: `fat32::Timestamp` holds the two encoded 16-bit fields and has no
+  clock and no zone in it.
+- **Golden regions beat a golden file.** `testdata/reference-esp.txt` holds six named hex
+  regions of p2 — boot sector, FSInfo, FAT head, and four directory clusters. None depend
+  on the three EFI binaries the volume carries, so the tests run without the gitignored
+  payload while still comparing against bytes that booted. The full 64 MiB compare sits
+  behind `OXWIN_TEST_ESP`.
+- **Mutation testing found a real coverage boundary.** Five mutations, all caught with an
+  exact offset — except reversing the order of long-name entries, which the golden regions
+  cannot see, because every filename on p2 fits in a single long-name entry. Only a
+  dedicated unit test covers multi-entry names.
+- **A quirk was preserved rather than fixed.** `short_name_for` truncates a directory name
+  at its last dot, so an all-upper-case `RUFUS.OLD` directory is silently renamed to
+  `RUFUS` with no long entry to recover it. No directory on the media has a dot, and
+  changing it would change every volume's bytes — including images already booted. Pinned
+  by a test that says so.
+- **The reserve-by-size path is exFAT's, really.** `reserve_file` and `placements` let a
+  4 GiB `install.wim` stream straight into its clusters instead of being held in memory
+  next to the image containing it. p2 has no file that needs it; the media volume has
+  nothing but.
+
+### exFAT
+
+- **The full-volume comparison is the better gate.** Golden regions were right for p2
+  because p2 is 64 MiB of three fixed binaries; p1 is 6 GiB of ISO payload, so the only
+  regions checkable hermetically are the ones fixed by geometry — the boot sector, its
+  checksum, the first five FAT entries, and the root's three metadata entries.
+- **Two of those regions turned out not to be geometry-fixed**, which the first test run
+  caught: the FAT past entry 4 and the allocation bitmap past its third bit both describe
+  files. The fixture now carries only the first five FAT entries and says why.
+- **The up-case table is derived, not embedded.** Take the standard uppercase mapping and
+  keep it only where one character maps to exactly one character, so `ß` stays `ß` rather
+  than becoming `SS`. Hand-folding ASCII and Latin-1 instead produces a table
+  `fsck_exfat` rejects. It is 128 KiB of Unicode data pinned by a four-byte checksum from
+  the volume that booted — `0x8742138f` — so a Unicode table change shows up as a test
+  failure rather than as a volume Windows quietly dislikes.
+- **Two spec deviations were preserved deliberately.** The name hash up-cases by hand over
+  ASCII and Latin-1 rather than through the volume's own up-case table, and the name
+  length is counted in code points where the specification counts UTF-16 units. Both only
+  matter outside the BMP or outside Latin-1, and every name on Windows media is ASCII.
+  Non-BMP names are refused with an explanation.
+
+### The orchestration
+
+- **File ordering was the third reproducibility bug.** The walk returned files in
+  `readdir` order, which differs between a mounted ISO, a copy of one on a host
+  filesystem, and another host again —
+  and that order decides the order clusters are handed out in, so it decides the bytes of
+  the volume. The sort key is now the path the file will have *on the volume*, not the
+  host path, so a Windows host's backslashes cannot produce a different order either.
+  Three bugs of the same shape: **assume any remaining nondeterminism is a bug.**
+- **The whole-image comparison cannot see the sizing slack.** Mutating the 10% headroom to
+  15% produced a byte-identical 7 GiB image, because our payload is 4.692 GiB and every
+  factor from 1.1 to 1.2 rounds to the same 6 GiB volume. Five of six mutations were
+  caught; that one needed a unit test at payloads where the factor is what decides the
+  answer. A 7 GiB `cmp` feels like total coverage and is not.
+- **Reading the ISO directly produces the same image as reading a mount.** That is what
+  makes `hdiutil` unnecessary. The directory path is worth keeping regardless, for an ISO
+  someone has already mounted or a tree they have edited by hand.
+- **A FAT32 media mode was deliberately not ported.** It replaced `install.wim` with
+  `wimlib`-split `.swm` parts, needed an external tool, existed to answer a question
+  `ei.cfg` has since answered, and no media anyone booted came out of it. Porting it would
+  have meant porting WIM splitting for a dead end.
+- **`wim.rs` was not on the original list.** The reasoning was that WIM handling existed
+  to split `install.wim` under FAT32's 4 GiB limit, and choosing exFAT removed that need.
+  Half right: the splitting is dead, but reading the image list is not. It hand-scans the
+  XML rather than pulling in a parser, because the blob is machine-generated by
+  Microsoft's tooling and has a fixed flat shape.
+
+## Reading the ISO
+
+`udf.rs` parses UDF directly. This looks more complex than it is. We support very few
+features.
+
+A Windows Server ISO is a hybrid: an ISO9660 tree for compatibility and a UDF tree with
+the real content. `sources/install.wim` is larger than ISO9660's 4 GiB per-file ceiling,
+so **it only exists in the UDF layer** — on Server 2022 media the entire ISO9660 root
+holds one file, `README.TXT`. Explored rust crates had issues with reading UDF.
+
+Asking the OS to mount the ISO was the earlier approach, via `hdiutil attach` on macOS
+and `Mount-DiskImage` on Windows. Mounting needs privileges, and needs a platform-specific
+tool.
+
+Reading *mounted* media has not gone anywhere. `Media::Directory` takes any directory:
+an ISO someone has already mounted, a copy on disk, a tree they have edited by hand — and
+`builds_the_same_image_by_every_route` pins it to produce the same bytes as reading the
+ISO. What changed is only that nothing in this workspace performs the mount for you.
+
+## Progress
+
+`progress::Event` is the only channel out of the core:
+
+```rust
+Event::Phase { name, message }        // a stage started
+Event::Log(String)                    // a line for the log pane
+Event::Fraction { fraction, detail }  // the 4 GiB copy, thousands of times
+Event::Done { artifact, bytes }
+Event::Failed { message }
+```
+
+The GUI drains these on a channel each frame; the CLI prints them, throttling `Fraction`
+to one line per percent because a terminal is not a progress bar. Neither the core nor the
+CLI ever logs the argument vector, it contains `--password=`.
+
+## Third-party crates
+
+The standing preference is to own the code if it is not too complex. Concretely:
+
+- **`oxide`** — the first-party [Oxide Rust SDK](https://github.com/oxidecomputer/oxide.rs).
+  Use it for anything talking to a rack.
+- **exFAT and FAT32** — ours. `exfat-fs` can format, and is worth a look, but this code's
+  output has been booted by real UEFI firmware on real Oxide hardware. We only do a one time
+  linear write, which makes the handling easier.
+- **UDF** — ours, of necessity.
+- **WIM** — ours. The core is 200 lines and only reads the image list.
+
+## GUI notes
+
+Structure:
+
+- `theme.rs` — the palette in one place. `PRIMARY #00b77d`, `SECONDARY #002923`,
+  `GREY #292c2f`, `BACKGROUND #0b0e12`, plus derived neutrals for text and warnings, which
+  the brand list does not cover but legibility requires.
+- `stepper.rs` — the stage indicator, painted rather than assembled from widgets. The check
+  mark is drawn from two line segments because the default font set cannot be relied on for
+  a tick glyph, and a missing glyph in the one place that signals success is a bad trade for
+  three lines of code.
+- `app.rs` — state, the frame loop, and stage reachability.
+- `stages.rs` — each stage's body.
+
+### Draft versus Settings
+
+The GUI holds a `Draft` of raw strings and bools, and converts to a core `Settings` on
+demand. Editing the core enums directly through widgets would throw away a half-typed
+hostname every time a radio button changed. The GUI owns raw input; the core owns meaning.
+
+### Validation
+
+`Settings::problems()` returns blocking problems and warnings together, and the UI renders
+both. The core decides what is wrong, not the UI — that way the CLI inherits every check
+for free. Warnings that are not the user's mistake still belong here: the RDP firewall
+caution is a warning on a perfectly valid configuration.
+
+### Long operations
+
+Builds run on a thread with an `mpsc` channel and a `Cancel` flag. The UI drains the
+channel each frame and calls `request_repaint_after` while a build is live, since a
+background thread does not wake the event loop.
+
+Two things worth noting:
+
+- Cancelling deletes the partial image. A half-written image that looks like a finished
+  one is worse than no image.
+- Stages are re-enterable. Someone who waits eleven minutes and then wants a different
+  hostname should not have to start over.
+
+## Testing
+
+```
+cargo test              # whole suite; no rack, ISO or payload download required
+cargo clippy --all-targets
+
+# The gated ones, when the artifacts are to hand:
+OXWIN_TEST_ISO=~/Desktop/...iso cargo test        # UDF against real media
+dd if=~/Desktop/ws2022-win-server-01-install.img bs=512 skip=12584960 \
+   count=131072 of=/tmp/p2.bin
+OXWIN_TEST_ESP=/tmp/p2.bin OXWIN_TEST_ASSETS=assets/efi cargo test
+
+# And the whole thing, four 7 GiB images (~10s on an M5 Pro writing to its internal
+# SSD -- it is disk-bound, so expect worse elsewhere; needs ~28 GiB free):
+OXWIN_TEST_MEDIA=/Volumes/SSS_X64FREE_EN-US_DV9 \
+  OXWIN_TEST_ISO=~/Desktop/SERVER_2022_x64FRE_en-us.iso \
+  cargo test --release whole_image
+```
+
+The tests cover the parts that can be checked without hardware, chosen for where bugs have
+actually happened: that a golden image asks Windows for a random name, that validation
+blocks what it should, and that Core editions are not matched ahead of Desktop Experience
+ones.
+
+**The gated tests skip when their environment variable is unset**, which is the one place
+the "a test that skips is a test that lies" rule cannot be applied: there is genuinely no
+ISO in CI. The consequence is real and worth stating: **a green suite is consistent with
+the image being broken.** Building an image from a real ISO is a separate, manual gate, and
+it is the only thing that exercises a release binary against real media. This may change,
+but we did not want to introduce Windows media into CI.
+
+Recorded mutations, so the comparisons are not taken on trust: a trailing space in
+`<Organization>` fails all 15 unattend cases; a Core edition collapsing to Desktop fails
+one; one flipped CHS byte fails the MBR reference; five separate mutations fail the FAT32
+comparison with an exact offset; four fail the exFAT one; and five of six fail the
+whole-image one — the sixth is the sizing slack described above, which needed a different
+test.
+
+There is no default password anywhere in this workspace, and `Settings::default()` is
+deliberately unbuildable.
+
+## Testing the golden cycle on a rack
+
+`cargo test` cannot reach a rack, so the golden cycle's real test is this procedure.
+Run it after any change to `oxwin-rack` or to the generalize block in `bootstrap.rs`,
+and before claiming the cycle works.
+
+Worth noting, the most common failure points are: first, serial says "Starting Windows
+Setup. The screen stays blank for a few minutes." and the system never does anything else.
+Most likely what happened is the installer failed to read the setup information, and is
+stuck trying to go through the installer. This happened with driver issues in testing.
+Second, the install happens and reboots, but nothing answers on SSH or RDP. The NIC
+driver is the likely culprit; on Server editions the serial console will start a `cmd`,
+which is enough to check whether the guest has an address at all.
+
+A finished cycle proves nothing on its own. **Check the artifact at each milestone,
+not the outcome at the end.**
+
+```
+oxwin golden ~/Storage/ISOs/SERVER_2022_x64FRE_en-us.iso \
+  --run=g4 --project=<yours> --profile=<yours> \
+  --user=oxide --password=... --ssh-key="$(cat ~/.ssh/id_ed25519.pub)"
+```
+
+Everything is named from `--run`: `g4-installer`, `g4-system`, the instance `g4`,
+`g4-snap`, and the image `g4`. **Re-running the identical command resumes**, because
+every step asks the rack what already exists rather than consulting a journal.
+
+The one step that does *not* reconcile is the build: from an ISO it rebuilds the image
+every time, including on a resume. A file at `--image-out` could equally be a finished
+image or one an interrupted build left half-written, and uploading a truncated
+installer fails somewhere inside Setup an hour later for no visible reason. A few
+minutes of rebuilding is the cheaper mistake.
+
+### While it installs
+
+The watch prints `answered on port 22` when Setup has finished, and the machine is
+then briefly up before it generalizes. From another terminal:
+
+```
+ssh oxide@<the address the watch printed>
+```
+
+- `C:\oxide-bootstrap.log` ends with `OxideGeneralize registered`. Without that the
+  machine will never shut down and the watch will spend its whole timeout on an
+  install that worked.
+- `Get-NetAdapter` shows a bound NIC, so the virtio driver installed.
+- `Get-ComputerInfo | Select WindowsProductName` is the edition that was asked for.
+
+### After it stops
+
+- The watch said `finished`, not a failure.
+- **The gap between `port 22` and `finished` is minutes, not seconds.** A sysprep
+  takes real time; an instant stop means something else stopped the machine.
+  Observed on Server 2022: 4m52s to port 22, stopped at 6m20s.
+
+### After the image
+
+```
+oxide image view --project <yours> --image g4
+```
+
+- `os` and `version` are populated. `version` is `unknown` only when the run started
+  from a prebuilt `.img`, where there is no media to detect from.
+- The instance, both disks and the snapshot are gone under the default
+  `--keep=image`.
+
+### Resume, which has no unit test
+
+```
+# The identical command again: it must find the image, do a no-op teardown, and
+# create nothing.
+oxwin golden ... --run=g4 --project=<yours>
+
+# And from a fresh run, interrupt during the watch and continue:
+oxwin golden ... --run=g5 --project=<yours>
+# Ctrl-C once, during "waiting for g5 to install" -- it must stop within a second
+oxwin golden ... --run=g5 --project=<yours>
+# It must resume at the watch, not re-upload.
+```
+
+### The clone, which is what "golden" actually claims
+
+```
+oxwin verify g4 --project=<yours>
+```
+
+This creates a disk from the image and an instance from that disk, and requires the
+machine to come up **and stay up for five minutes**. The staying is the test: a
+broken image generalizes itself again and powers off about a minute after reaching a
+normal startup, so a check that stopped at the first successful connection to port 22
+would pass on precisely the image it exists to catch.
+
+Then, and this is the part no green result can stand in for:
+
+```
+ssh oxide@<the clone's address>
+hostname                                              # must DIFFER from the original
+Get-CimInstance Win32_UserAccount | Select-Object SID # must DIFFER too
+type C:\oxide-bootstrap.log | findstr /i generalize   # must say "already generalized"
+```
+
+A clone that shares the original's name and SID is not a golden image, whatever else
+worked: that collision is the entire reason for generalizing.
+
+### When a run has gone wrong
+
+Every failure prints what exists on the rack and the one command that resumes, which
+is the command that was just run. If you would rather start over it also prints the
+`oxide ... delete` lines in the order that works. **Nothing is ever deleted
+automatically:** a run that has already spent twenty minutes must not discard its
+own work over a transient error.
+
+## Known-good baseline
+
+Verified end to end on a real Oxide rack: stock Server 2022 ISO → exFAT media with the
+UEFI chooser → firmware → UEFI:NTFS → unattended Setup → GPT partitioning → NetKVM bound
+to the Propolis virtio NIC → OpenSSH from a signature-verified Microsoft payload → SAC on
+serial → the chooser booting the installed OS on the next boot
+(`OXIDE-CHOOSER: BOOT-INSTALLED fs1`) → RDP, after a VPC firewall rule was added.
+
+Two things QEMU cannot test, so do not trust a local pass as proof:
+
+- QEMU honours guest NVRAM, so it never re-enters our media after install and
+  **structurally cannot exercise the chooser's second branch**. Only real hardware can.
+- The VPC firewall does not exist locally, so RDP appears to work in QEMU and then times
+  out on a rack.
+
+## The firmware cannot read exFAT
+
+The whole two-partition layout rests on this, and it was an inference from the UEFI spec
+until it was measured. `map -b` at the UEFI Shell on a rack, with only the installer
+disk attached:
+
+```text
+Shell> map -b
+Mapping table
+      FS0: Alias(s):HD0c:;BLK2:
+          PciRoot(0x0)/Pci(0x10,0x0)/NVMe(0x1,00-…)/HD(2,MBR,0x27A1A4B2,0xC00800,0x20000)
+      FS1: Alias(s):F1:;BLK3:
+          PciRoot(0x0)/Pci(0x18,0x0)
+     BLK0: Alias(s):
+          PciRoot(0x0)/Pci(0x10,0x0)/NVMe(0x1,00-…)
+     BLK1: Alias(s):
+          PciRoot(0x0)/Pci(0x10,0x0)/NVMe(0x1,00-…)/HD(1,MBR,0x27A1A4B2,0x800,0xC00000)
+```
+
+- **`BLK1` is p1** — LBA 0x800 (2048), 0xC00000 sectors (6 GiB), the exFAT media volume.
+  It has a block handle and **no `FS` alias**: the firmware produced no
+  `SimpleFileSystem` for it. That is the claim, as a measurement.
+- **`FS0` is p2** — LBA 0xC00800, 0x20000 sectors (64 MiB), our FAT32 ESP. The only
+  volume on the disk the firmware can open, which is why it is the bootable entry and
+  why the exFAT driver has to be reachable from it.
+- **`FS1` is not a partition.** `PciRoot(0x0)/Pci(0x18,0x0)` has no `HD()` node at all.
+  Unidentified; `dh -d` on that handle would say. It is a reminder that the `fs`
+  numbers the chooser walks name slots, not disks — the `BOOT-INSTALLED fs1` in the
+  baseline above was the installed system disk's ESP in a different configuration.
+  Nothing depends on the numbering, because the chooser scans `fs0`..`fs7`.
+
+Shipping an exFAT driver in firmware is not normal and is not becoming normal: UEFI
+requires FAT12/16/32 and nothing more.
+
+## Secure Boot would stop this media dead
+
+Not a current constraint — Secure Boot is not in play on the rack, and nothing in this
+tree mentions it — but the answer is worth writing down before someone assumes it is a
+detail. None of the three binaries we load are signed:
+
+```
+$ osslsigncode verify -in shellx64.efi     # and uefintfs.efi, and exfat_x64.efi
+No signature found
+```
+
+With Secure Boot on, the firmware refuses `\EFI\BOOT\BOOTX64.EFI` with a security
+violation and the media never boots. Pointing the fallback path straight at
+`uefintfs.efi` fails identically, and the `LoadImage` of `exfat_x64.efi` is gated too,
+so all three would need signatures.
+
+What is *not* affected: an installed Windows boots fine, because `bootmgfw.efi` is
+Microsoft-signed and the ESP fallback copy `bootstrap.rs` makes is that same signed
+binary. So a golden image and its clones are unaffected; only the installer media is.
+The virtio drivers are gated by Windows' own kernel-mode signing, a different mechanism.
+
+Three ways out, if it ever matters:
+
+- **Toggle it off for the install and on afterwards.** We own the whole install, so this
+  is a control-plane action either side of a cycle that already has well-defined start
+  and end points. Cheapest by a wide margin.
+- **An Oxide key in `db`, and sign the loaders ourselves.** The binaries are pinned by
+  SHA-256 in `fetch-payload.sh` already, so signing them is a build step, not a trust
+  decision we would be making for the first time.
+- **Remove the need.** Make p1 FAT32 and split `install.wim` into `install.swm` under
+  the 4 GiB ceiling; Setup reads split WIMs natively. That drops the exFAT driver and
+  UEFI:NTFS entirely and lets the media's own Microsoft-signed `\efi\boot\bootx64.efi`
+  be the boot target. The chooser has no answer on this path — it *is* the UEFI Shell,
+  and Microsoft will not sign a shell, because a shell that loads arbitrary images is a
+  Secure Boot bypass. That would push the decision back to flipping `boot_disk` from
+  outside, which `builder::chooser_script` explains why we avoided.
+
+## Open question: the ESP fallback copy in `bootstrap`
+
+`bootstrap.rs` copies `\EFI\Microsoft\Boot\bootmgfw.efi` to `\EFI\BOOT\BOOTX64.EFI` on the
+installed system's ESP, because Oxide boots the configured `boot_disk` by the
+removable-media fallback path and ignores guest NVRAM — a system disk with nothing at that
+path drops to the EFI shell, and a clone has no installer media and no chooser to save it.
+
+**Windows appears to write that file itself, so the copy has never run.** The log line was
+originally `already present or bootmgfw missing`, which is the `else` of a compound
+condition and so could not tell the two apart; the branches now log separately, and Server
+2022 says:
+
+```
+2026-09-10T09:44:12.9735602-07:00  ESP fallback bootloader: Windows already wrote \EFI\BOOT\BOOTX64.EFI
+```
+
+Two data points — 2022 confirmed, and a 2025 run consistent with it under the old message.
+Neither covers the Windows 10/11 client media in the release table.
+
+Left in place rather than deleted, because the two errors are not symmetric: a redundant
+`Copy-Item` costs nothing, while a missing fallback loader is a clone in the EFI shell with
+no console to recover from.
+
+**It was not inert when it skipped.** To reach the `Test-Path` checks it assigns the ESP a
+drive letter, and for a while nothing removed it — so every image shipped with the ESP
+mounted as `S:`, visible in Explorer and Disk Management on every clone and writable by
+anything running as admin. That was the only effect this block had actually had. It now
+unmounts in a `finally`, with `Remove-PartitionAccessPath`, and only when it was the thing
+that assigned the letter — an ESP that already had one was mounted by someone else.
+
+The block itself still has no confirmed reason to exist on any media checked so far; drop
+it once the Windows 10/11 client media has been looked at.

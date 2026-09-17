@@ -1,1 +1,25 @@
 /target
+
+# Third-party payload. Fetched by tools/fetch-payload.sh, never committed — CI runs
+# that script before packaging. Versions are pinned and checksummed there, so the
+# build stays reproducible without carrying binaries in git.
+/assets/drivers/
+/assets/openssh/
+/assets/efi/
+/assets/payload-manifest.json
+
+# Download cache for tools/fetch-payload.sh: the virtio-win ISO alone is ~750 MB.
+# Checksummed on every run, so deleting it costs a download and nothing else.
+/.cache/
+
+# Built answer disks and installer images — multi-GB, always regenerable.
+*.img
+
+# Per-machine Claude Code permission grants, not project config.
+.claude/settings.local.json
+
+.DS_Store
+
+# Working notes, kept locally rather than in the repository.
+CLAUDE.md
+PLAN.md
