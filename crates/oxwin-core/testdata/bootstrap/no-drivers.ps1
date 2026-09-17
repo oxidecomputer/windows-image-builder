@@ -90,17 +90,33 @@ try {
   $esp = (Get-Partition | Where-Object { $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' } | Select-Object -First 1)
   if ($esp) {
     $letter = 'S'
-    if (-not $esp.DriveLetter) { $esp | Set-Partition -NewDriveLetter $letter } else { $letter = $esp.DriveLetter }
-    $src2 = "${letter}:\EFI\Microsoft\Boot\bootmgfw.efi"
-    $dstDir = "${letter}:\EFI\BOOT"
-    if (-not (Test-Path $src2)) {
-      Log "WARNING: ESP fallback: no bootmgfw.efi at $src2"
-    } elseif (Test-Path "$dstDir\BOOTX64.EFI") {
-      Log "ESP fallback bootloader: Windows already wrote \EFI\BOOT\BOOTX64.EFI"
-    } else {
-      New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
-      Copy-Item -Path $src2 -Destination "$dstDir\BOOTX64.EFI" -Force
-      Log "ESP fallback bootloader installed at \EFI\BOOT\BOOTX64.EFI"
+    $mounted = $false
+    if (-not $esp.DriveLetter) {
+      $esp | Set-Partition -NewDriveLetter $letter
+      $mounted = $true
+    } else { $letter = $esp.DriveLetter }
+    try {
+      $src2 = "${letter}:\EFI\Microsoft\Boot\bootmgfw.efi"
+      $dstDir = "${letter}:\EFI\BOOT"
+      if (-not (Test-Path $src2)) {
+        Log "WARNING: ESP fallback: no bootmgfw.efi at $src2"
+      } elseif (Test-Path "$dstDir\BOOTX64.EFI") {
+        Log "ESP fallback bootloader: Windows already wrote \EFI\BOOT\BOOTX64.EFI"
+      } else {
+        New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
+        Copy-Item -Path $src2 -Destination "$dstDir\BOOTX64.EFI" -Force
+        Log "ESP fallback bootloader installed at \EFI\BOOT\BOOTX64.EFI"
+      }
+    } finally {
+      # An ESP has no drive letter on a normal install. Leaving the one assigned
+      # above ships every clone with the ESP visible in Explorer and writable by
+      # anything running as admin, so it comes back off even if the copy threw.
+      if ($mounted) {
+        try {
+          Remove-PartitionAccessPath -DiskNumber $esp.DiskNumber -PartitionNumber $esp.PartitionNumber -AccessPath "${letter}:" -ErrorAction Stop
+          Log "ESP unmounted from ${letter}:"
+        } catch { Log "WARNING: could not unmount ESP from ${letter}: $_" }
+      }
     }
   } else { Log "WARNING: no EFI system partition found" }
 } catch { Log "WARNING: ESP fallback copy failed: $_" }

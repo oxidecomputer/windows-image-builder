@@ -531,14 +531,12 @@ Left in place rather than deleted, because the two errors are not symmetric: a r
 `Copy-Item` costs nothing, while a missing fallback loader is a clone in the EFI shell with
 no console to recover from.
 
-**It is not inert when it skips.** To reach the `Test-Path` checks it assigns the ESP a
-drive letter, and nothing removes it:
+**It was not inert when it skipped.** To reach the `Test-Path` checks it assigns the ESP a
+drive letter, and for a while nothing removed it — so every image shipped with the ESP
+mounted as `S:`, visible in Explorer and Disk Management on every clone and writable by
+anything running as admin. That was the only effect this block had actually had. It now
+unmounts in a `finally`, with `Remove-PartitionAccessPath`, and only when it was the thing
+that assigned the letter — an ESP that already had one was mounted by someone else.
 
-```powershell
-if (-not $esp.DriveLetter) { $esp | Set-Partition -NewDriveLetter $letter } else { … }
-```
-
-An ESP normally has no letter, so every image ships with it mounted as `S:` — visible in
-Explorer and Disk Management on every clone, writable by anything running as admin. That
-is the only effect this block has actually had. Whoever picks this up: either remove the
-letter in a `finally`, or drop the block once the client media has been checked.
+The block itself still has no confirmed reason to exist on any media checked so far; drop
+it once the Windows 10/11 client media has been looked at.
