@@ -389,16 +389,22 @@ fn build(args: &[String]) -> Result<()> {
             output.media_files,
             output.copied_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
         );
-        match &output.ems {
-            builder::Ems::Patched { stores } => {
-                println!("  ems:      COM1 @115200 ({stores} bcd stores)");
-            }
-            builder::Ems::Off(why) => {
-                println!("  ems:      off ({why})");
-            }
-        }
+        print_ems(&output.ems);
     }
     Ok(())
+}
+
+/// Shared by `build` and `build_for_golden`, which otherwise printed the
+/// identical match twice.
+fn print_ems(ems: &builder::Ems) {
+    match ems {
+        builder::Ems::Patched { stores } => {
+            println!("  ems:      COM1 @115200 ({stores} bcd stores)");
+        }
+        builder::Ems::Off(why) => {
+            println!("  ems:      off ({why})");
+        }
+    }
 }
 
 /// A thread that renders `progress::Event` as lines.
@@ -836,14 +842,7 @@ fn build_for_golden(
             output.edition_id,
             output.copied_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
         );
-        match &output.ems {
-            builder::Ems::Patched { stores } => {
-                println!("  ems:      COM1 @115200 ({stores} bcd stores)");
-            }
-            builder::Ems::Off(why) => {
-                println!("  ems:      off ({why})");
-            }
-        }
+        print_ems(&output.ems);
     }
     // The label, not the slug: this becomes the image's version string, which
     // someone reads in `oxide image list` months later.
