@@ -13,14 +13,15 @@
 
 use crate::stepper::{self, State};
 use crate::theme;
+use oxwin_core::builder::Ems;
 use oxwin_core::media::MediaInfo;
 use oxwin_core::{
     Cancel, Credentials, Deployment, Engine, Event, Reporter, Settings,
     WindowsRelease,
 };
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const STAGES: &[&str] =
@@ -147,12 +148,17 @@ pub struct Running {
     pub phase: String,
     pub detail: String,
     pub fraction: Option<f32>,
+    /// Set by the build thread just before it sends `Event::Done`, since
+    /// `progress::Event` -- shared with the upload path -- has no room for
+    /// a build-specific verdict. `pump` reads it out at the same moment it
+    /// consumes that event and moves it into `Build::Done`.
+    pub ems: Arc<Mutex<Option<Ems>>>,
 }
 
 pub enum Build {
     Idle,
     Running(Running),
-    Done { artifact: PathBuf, bytes: u64, elapsed: Duration },
+    Done { artifact: PathBuf, bytes: u64, elapsed: Duration, ems: Option<Ems> },
     Failed { message: String },
 }
 
@@ -439,6 +445,8 @@ impl App {
         self.out_path = Some(out);
         self.saved_to = None;
         self.notice = None;
+        let ems_slot = Arc::new(Mutex::new(None));
+        let ems_for_thread = ems_slot.clone();
         self.build = Build::Running(Running {
             rx,
             cancel,
@@ -446,6 +454,7 @@ impl App {
             phase: "starting".into(),
             detail: String::new(),
             fraction: None,
+            ems: ems_slot,
         });
         self.stage = Stage::Processing;
 
@@ -457,11 +466,14 @@ impl App {
                 &cancel_for_thread,
             );
             match result {
-                Ok(artifact) => {
-                    let bytes = std::fs::metadata(&artifact)
+                Ok(output) => {
+                    // Stashed before `Event::Done` goes out, so it is
+                    // there to be read the moment `pump` sees that event.
+                    *ems_for_thread.lock().unwrap() = Some(output.ems);
+                    let bytes = std::fs::metadata(&output.path)
                         .map(|m| m.len())
                         .unwrap_or(0);
-                    reporter.send(Event::Done { artifact, bytes });
+                    reporter.send(Event::Done { artifact: output.path, bytes });
                 }
                 Err(e) => {
                     reporter.send(Event::Failed { message: format!("{e:#}") })
@@ -777,10 +789,13 @@ impl App {
                     }
                     Ok(Event::Log(line)) => logs.push(line),
                     Ok(Event::Done { artifact, bytes }) => {
+                        let ems =
+                            run.ems.lock().ok().and_then(|mut g| g.take());
                         finished = Some(Build::Done {
                             artifact,
                             bytes,
                             elapsed: run.started.elapsed(),
+                            ems,
                         });
                         break;
                     }

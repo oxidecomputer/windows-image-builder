@@ -22,7 +22,7 @@ use crate::progress::Reporter;
 use crate::settings::Settings;
 use crate::unattend::Config;
 use anyhow::{Context, Result, bail};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -79,7 +79,9 @@ impl Engine {
 
     /// Build install media from `settings` into `out`.
     ///
-    /// Reports progress through `reporter` and returns the artifact path. Returns
+    /// Reports progress through `reporter` and returns what the build produced,
+    /// including [`builder::Ems`] -- the CLI already states that verdict, and the GUI
+    /// needs the same fact rather than a line buried in the scrolling log. Returns
     /// promptly with an error once `cancel` is tripped, and does not leave a half-written
     /// image where a complete one is expected.
     pub fn build(
@@ -88,7 +90,7 @@ impl Engine {
         out: &Path,
         reporter: &Reporter,
         cancel: &Cancel,
-    ) -> Result<PathBuf> {
+    ) -> Result<builder::Output> {
         let result = self.assemble(settings, out, reporter, cancel);
         if result.is_err() {
             // The same contract `builder::build` keeps, extended to cover the checks
@@ -105,7 +107,7 @@ impl Engine {
         out: &Path,
         reporter: &Reporter,
         cancel: &Cancel,
-    ) -> Result<PathBuf> {
+    ) -> Result<builder::Output> {
         let problems = settings.problems();
         if let Some(blocking) = problems.iter().find(|p| p.blocking) {
             bail!("{}", blocking.message);
@@ -138,9 +140,8 @@ impl Engine {
             assets: self.assets.clone(),
             enable_ems: settings.enable_ems,
         };
-        let output = builder::build(&request, reporter, cancel)
-            .context("building the install image")?;
-        Ok(output.path)
+        builder::build(&request, reporter, cancel)
+            .context("building the install image")
     }
 }
 
@@ -148,6 +149,7 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::settings::{Credentials, Deployment};
+    use std::path::PathBuf;
 
     fn settings() -> Settings {
         Settings {

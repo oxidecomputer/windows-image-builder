@@ -10,6 +10,7 @@
 use crate::app::{App, Build, Stage};
 use crate::theme;
 use egui::{RichText, Ui};
+use oxwin_core::builder;
 use oxwin_core::media::{self, Media, MediaInfo};
 use oxwin_core::wim;
 use std::path::{Path, PathBuf};
@@ -512,6 +513,12 @@ impl App {
                     &mut self.draft.enable_ems,
                     "Serial output during Windows Setup (EMS)",
                 );
+                hint(
+                    ui,
+                    "The checkbox above covers the installed OS, once it exists. \
+                     This one covers Windows Setup itself, before it does — turn it \
+                     off and Setup is silent on serial until first logon.",
+                );
                 ui.checkbox(
                     &mut self.draft.inject_drivers,
                     "Inject virtio drivers (required for networking)",
@@ -622,7 +629,7 @@ impl App {
                 }
                 self.log_pane(ui);
             }
-            Build::Done { artifact, bytes, elapsed } => {
+            Build::Done { artifact, bytes, elapsed, ems } => {
                 let summary = format!(
                     "{} · {:.1} GiB · took {}",
                     file_name(artifact),
@@ -642,6 +649,19 @@ impl App {
                 });
                 heading(ui, "Install media built");
                 hint(ui, &summary);
+                // This is the one place EMS is stated as a fact rather than
+                // buried as a line in the scrolling log below: the whole
+                // feature exists because a failure here was invisible.
+                match ems {
+                    Some(builder::Ems::Patched { stores }) => hint(
+                        ui,
+                        &format!("EMS: on, COM1 @115200 ({stores} bcd stores)"),
+                    ),
+                    Some(builder::Ems::Off(why)) => {
+                        hint(ui, &format!("EMS: off ({why})"))
+                    }
+                    None => {}
+                }
                 self.log_pane(ui);
             }
             Build::Failed { message } => {
