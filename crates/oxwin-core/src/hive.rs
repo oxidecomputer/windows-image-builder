@@ -43,7 +43,11 @@ pub(crate) fn checksum(bytes: &[u8]) -> u32 {
     }
 }
 
-fn u32_at(bytes: &[u8], at: usize) -> u32 {
+/// Unchecked: only for offsets whose validity is the very thing being
+/// established (the base block's own fixed fields, read before anything has
+/// been trusted). Everything read after that uses `checked_u32` and its
+/// siblings below, which return `Err` instead of panicking on a bad offset.
+fn u32_at_unchecked(bytes: &[u8], at: usize) -> u32 {
     let mut w = [0u8; 4];
     w.copy_from_slice(&bytes[at..at + 4]);
     u32::from_le_bytes(w)
@@ -82,22 +86,22 @@ pub(crate) fn base_block(bytes: &[u8]) -> Result<BaseBlock> {
     }
     // Unequal sequence numbers mean a write was interrupted and the hive needs
     // recovery from a log. Editing one is not our business.
-    if u32_at(bytes, 4) != u32_at(bytes, 8) {
+    if u32_at_unchecked(bytes, 4) != u32_at_unchecked(bytes, 8) {
         bail!("hive is dirty: sequence numbers differ");
     }
-    if u32_at(bytes, 28) != 0 {
+    if u32_at_unchecked(bytes, 28) != 0 {
         bail!("not a primary hive");
     }
-    let stored = u32_at(bytes, 508);
+    let stored = u32_at_unchecked(bytes, 508);
     let computed = checksum(bytes);
     if stored != computed {
         bail!("base block checksum is {stored:#x}, expected {computed:#x}");
     }
-    let bins_size = u32_at(bytes, 40);
+    let bins_size = u32_at_unchecked(bytes, 40);
     if BASE + bins_size as usize > bytes.len() {
         bail!("hive claims {bins_size} bytes of bins, file is too short");
     }
-    Ok(BaseBlock { root_offset: u32_at(bytes, 36), bins_size })
+    Ok(BaseBlock { root_offset: u32_at_unchecked(bytes, 36), bins_size })
 }
 
 pub(crate) struct Cell {
@@ -121,7 +125,7 @@ pub(crate) fn cells(bytes: &[u8]) -> Result<Vec<Cell>> {
         if bytes.len() < bin + 32 || &bytes[bin..bin + 4] != b"hbin" {
             bail!("no hbin signature at {bin:#x}");
         }
-        let bin_size = u32_at(bytes, bin + 8) as usize;
+        let bin_size = u32_at_unchecked(bytes, bin + 8) as usize;
         if bin_size == 0
             || !bin_size.is_multiple_of(BASE)
             || bin + bin_size > end
@@ -322,6 +326,21 @@ pub(crate) fn alloc(bytes: &mut Vec<u8>, want: usize) -> Result<u32> {
             // of it.
             bin[32..36]
                 .copy_from_slice(&((bin_size - 32) as i32).to_le_bytes());
+            // `bin_at` is where the bins region ends per the base block's
+            // own `bins_size`, which is what `cells()` also trusts. On
+            // every store this module has read, the file's length is
+            // exactly `bin_at` (base block + bins, nothing after), so this
+            // truncate is a no-op. It is checked, not assumed: a file with
+            // trailing bytes past the declared bins region would have them
+            // silently dropped, and this module's rule is to decline
+            // rather than lose bytes silently.
+            if bytes.len() != bin_at {
+                bail!(
+                    "hive has {} bytes past the declared bins region \
+                     ({bin_at:#x}); refusing to drop them",
+                    bytes.len() - bin_at
+                );
+            }
             bytes.truncate(bin_at);
             bytes.extend_from_slice(&bin);
 
@@ -391,6 +410,10 @@ const EMS_OBJECT: &str = "{0ce4991b-e6b3-4b16-b23c-5e0d9250e5d9}";
 /// `BcdLibraryInteger_EmsPort` and `BcdLibraryInteger_EmsBaudRate`.
 const EMS_PORT: &str = "15000022";
 const EMS_BAUD: &str = "15000023";
+/// `BcdLibraryBoolean_EmsEnabled` — every real store surveyed carries this
+/// already, and without it the port/baud rate we add achieve nothing:
+/// EMS itself is off.
+const BOOTEMS: &str = "16000020";
 
 /// Adds `emsport` and `emsbaudrate` to a BCD store's `{emssettings}` object.
 ///
@@ -411,6 +434,15 @@ pub(crate) fn enable_ems(store: &[u8], port: u64, baud: u64) -> Outcome {
         Ok(kids) => kids,
         Err(_) => return Outcome::NotApplicable("unsupported subkey list"),
     };
+
+    // EMS only actually comes up if `{emssettings}` also carries `bootems`.
+    // Every real store surveyed has it, but nothing enforces that a store
+    // must, so without it the port/baud elements we are about to add would
+    // achieve nothing and reporting `Patched` would be false — the same
+    // shape of misreporting this feature exists to fix.
+    if !existing.iter().any(|(n, _)| n == BOOTEMS) {
+        return Outcome::NotApplicable("{emssettings} has no bootems");
+    }
 
     // Filter by name first: a name already present must never be added a
     // second time, since a duplicate name in a subkey list is exactly what
@@ -454,6 +486,33 @@ pub(crate) fn enable_ems(store: &[u8], port: u64, baud: u64) -> Outcome {
     // written to the volume.
     if validate(&out).is_err() {
         return Outcome::NotApplicable("edit did not validate");
+    }
+    // `validate` only checks that cells tile their bins; it says nothing
+    // about whether the leaf we just rebuilt is in an order the kernel's
+    // binary search can find things in. Check that here, on our own output
+    // only — never in `validate`, which also runs on third-party stores
+    // this module never wrote, where a leaf we judged unsorted might
+    // simply use a comparison we have not modelled. A mistake here must
+    // become `NotApplicable`, not a hive that validates yet mis-reads in
+    // Windows.
+    let rebuilt = match find(&out, &path) {
+        Ok(Some(key)) => match key.subkeys(&out) {
+            Ok(kids) => kids,
+            Err(_) => {
+                return Outcome::NotApplicable(
+                    "rebuilt subkey list unreadable",
+                );
+            }
+        },
+        _ => return Outcome::NotApplicable("rebuilt {emssettings} missing"),
+    };
+    let kernel_sorted = rebuilt
+        .windows(2)
+        .all(|w| w[0].0.to_ascii_uppercase() <= w[1].0.to_ascii_uppercase());
+    if !kernel_sorted {
+        return Outcome::NotApplicable(
+            "rebuilt subkey list is not sorted in kernel order",
+        );
     }
     for &(name, want) in &to_add {
         let read = find(&out, &["Objects", EMS_OBJECT, "Elements", name])
@@ -541,9 +600,26 @@ fn add_elements(
     // A fresh leaf rather than growing the old one in place: the old cell
     // is left allocated but unreferenced, which is legal and costs 16
     // bytes.
-    kids.sort_by(|a, b| a.0.cmp(&b.0));
+    //
+    // Sorted by the kernel's own comparison, not Rust's: the kernel
+    // binary-searches an `lf`/`lh` leaf by upcasing each name before
+    // comparing, so a leaf that is sorted under `Ord` but not under that
+    // upcased rule reads as corrupt to Windows even though `validate` (bin
+    // tiling only) sees nothing wrong. For the all-digit names this module
+    // ever adds, byte order and upcased order coincide, so this is latent
+    // today; it stops being latent the moment a store mixes cases (e.g.
+    // `1600000F` next to `1600000a`).
+    kids.sort_by(|a, b| {
+        a.0.to_ascii_uppercase().cmp(&b.0.to_ascii_uppercase())
+    });
     let leaf_at = alloc(out, 4 + kids.len() * 8)?;
     let leaf = BASE + leaf_at as usize + 4;
+    // Always an `lf` leaf, even if the parent's existing subkey list was
+    // `lh` (which additionally hashes each name for a faster compare). An
+    // `lh` parent converting to `lf` is legal — the kernel accepts either
+    // — and this module has never observed one in an eight-ISO survey, so
+    // there is nothing to preserve in practice; the point is only that a
+    // future `lh` store gets converted rather than misread.
     out[leaf..leaf + 2].copy_from_slice(b"lf");
     out[leaf + 2..leaf + 4].copy_from_slice(&(kids.len() as u16).to_le_bytes());
     for (i, (name, at)) in kids.iter().enumerate() {
@@ -559,6 +635,13 @@ fn add_elements(
     out[parent.at + 24..parent.at + 28]
         .copy_from_slice(&(kids.len() as u32).to_le_bytes());
     out[parent.at + 32..parent.at + 36].copy_from_slice(&leaf_at.to_le_bytes());
+    // `parent.at + 52` holds the parent's cached "largest subkey name
+    // length" hint, which is left untouched here. That is only correct
+    // because every name this module ever adds (`15000022`, `15000023`)
+    // is the same 8 characters as `16000020`, which is already present
+    // and required by the bootems check above — so the hint the parent
+    // already carries cannot go stale. A future caller adding a
+    // differently-sized name would need to maintain this field too.
 
     let sum = checksum(out);
     out[508..512].copy_from_slice(&sum.to_le_bytes());
@@ -1070,6 +1153,47 @@ mod tests {
         assert_eq!(elements_of(&after), ["15000022", "15000023", "16000020"]);
     }
 
+    /// R19: the kernel upcases each name before comparing, so a leaf sorted
+    /// by Rust's plain `Ord` can disagree with the kernel's own order.
+    /// `1600000F` and `1600000a` are exactly such a pair: byte order says
+    /// `F` (0x46) sorts before `a` (0x61), but upcased order says `1600000A`
+    /// sorts before `1600000F` since `A` (0x41) precedes `F` (0x46). A fix
+    /// that only changed byte order (or forgot to upcase) would still pass
+    /// `the_subkey_list_stays_sorted` above, since that fixture's names are
+    /// all-digit and cannot tell the two rules apart.
+    #[test]
+    fn rebuilds_the_leaf_in_kernel_collation_order() {
+        let mut store = fixture::bcd_like(512);
+        let elements =
+            find(&store, &["Objects", fixture::EMS_GUID, "Elements"])
+                .unwrap()
+                .unwrap();
+        let existing = elements.subkeys(&store).unwrap();
+        add_elements(
+            &mut store,
+            elements,
+            &existing,
+            &[("1600000F", 1), ("1600000a", 2)],
+        )
+        .unwrap();
+        validate(&store).unwrap();
+
+        let Outcome::Patched(after) = enable_ems(&store, 1, 115200) else {
+            panic!("expected a patch");
+        };
+        validate(&after).unwrap();
+        // Kernel collation upcases before comparing: "1600000a" and
+        // "1600000F" share a prefix with "16000020" only through
+        // "160000", and diverge at the next character — '0' (from both
+        // mixed-case names) sorts before '2' (from "16000020") — so both
+        // mixed-case names precede "16000020" here, which byte order alone
+        // would not obviously predict either.
+        assert_eq!(
+            elements_of(&after),
+            ["15000022", "15000023", "1600000a", "1600000F", "16000020"]
+        );
+    }
+
     #[test]
     fn the_existing_bootems_element_survives() {
         let Outcome::Patched(after) =
@@ -1134,6 +1258,60 @@ mod tests {
         let sum = checksum(&v);
         v[508..512].copy_from_slice(&sum.to_le_bytes());
         assert!(matches!(enable_ems(&v, 1, 115200), Outcome::NotApplicable(_)));
+    }
+
+    /// R18: EMS only actually comes up if `{emssettings}` also carries
+    /// `bootems`. A store missing it must not be patched — the port and
+    /// baud rate we would add achieve nothing without it, so writing them
+    /// and reporting `Patched` would be false, the same way this whole
+    /// feature exists because a false "success" was invisible.
+    #[test]
+    fn declines_when_bootems_is_missing() {
+        let mut v = fixture::bcd_like(512);
+        let elements = find(&v, &["Objects", fixture::EMS_GUID, "Elements"])
+            .unwrap()
+            .unwrap();
+        // Empty the subkey list: bootems was the only child, so this
+        // removes it and leaves nothing else either.
+        v[elements.at + 24..elements.at + 28]
+            .copy_from_slice(&0u32.to_le_bytes());
+        v[elements.at + 32..elements.at + 36]
+            .copy_from_slice(&u32::MAX.to_le_bytes());
+        let sum = checksum(&v);
+        v[508..512].copy_from_slice(&sum.to_le_bytes());
+        let before = v.clone();
+        match enable_ems(&v, 1, 115200) {
+            Outcome::NotApplicable(why) => {
+                assert_eq!(why, "{emssettings} has no bootems");
+            }
+            _ => panic!("expected NotApplicable"),
+        }
+        assert_eq!(v, before, "source bytes must be untouched");
+    }
+
+    /// A design decision — never clobber an element already present with
+    /// data we did not write, such as someone's intentional COM2 — held up
+    /// until now by nothing but the code reading that way.
+    #[test]
+    fn declines_when_port_is_already_set_to_something_else() {
+        let before = fixture::bcd_like(512);
+        let elements =
+            find(&before, &["Objects", fixture::EMS_GUID, "Elements"])
+                .unwrap()
+                .unwrap();
+        let existing = elements.subkeys(&before).unwrap();
+        let mut seeded = before;
+        add_elements(&mut seeded, elements, &existing, &[(EMS_PORT, 2)])
+            .unwrap();
+        validate(&seeded).unwrap();
+        let snapshot = seeded.clone();
+        match enable_ems(&seeded, 1, 115200) {
+            Outcome::NotApplicable(why) => {
+                assert_eq!(why, "element present with unexpected data");
+            }
+            _ => panic!("expected NotApplicable"),
+        }
+        assert_eq!(seeded, snapshot, "source bytes must be untouched");
     }
 
     /// R11: an offset read out of the file — here, the `Elements` key's own
