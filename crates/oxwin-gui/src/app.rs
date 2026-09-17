@@ -864,3 +864,16 @@ impl eframe::App for App {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// EMS is on by default in `Settings`, and a fresh GUI session must
+    /// inherit that -- a checkbox silently defaulting off would disable the
+    /// feature for every GUI user without anyone choosing that.
+    #[test]
+    fn a_fresh_draft_has_ems_enabled() {
+        assert!(Draft::default().enable_ems);
+    }
+}

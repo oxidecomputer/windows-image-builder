@@ -836,6 +836,14 @@ fn build_for_golden(
             output.edition_id,
             output.copied_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
         );
+        match &output.ems {
+            builder::Ems::Patched { stores } => {
+                println!("  ems:      COM1 @115200 ({stores} bcd stores)");
+            }
+            builder::Ems::Off(why) => {
+                println!("  ems:      off ({why})");
+            }
+        }
     }
     // The label, not the slug: this becomes the image's version string, which
     // someone reads in `oxide image list` months later.
