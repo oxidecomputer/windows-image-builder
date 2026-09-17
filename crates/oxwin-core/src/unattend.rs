@@ -200,13 +200,17 @@ pub struct Config {
     /// that is indistinguishable from a slow install. `Never` makes it fail fast instead,
     /// worse for a human at a keyboard, far better for a machine nobody is watching.
     pub show_ui_on_error: bool,
-    /// Emit a serial marker at the end of `windowsPE` and the start of `specialize`, not
-    /// only at the start of `windowsPE`.
+    /// Emit a serial marker (`specialize-begin`) at the start of `specialize`, after
+    /// the image has been applied and the guest has rebooted into it, so reaching it
+    /// proves `windowsPE` finished.
     ///
     /// Diagnostic, and off by default so the answer file stays byte-identical to the one
-    /// that has installed on a rack. With one marker a hang is only ever "it started";
-    /// with three, the console says which pass it died in, and Setup renders to graphics
-    /// an Oxide instance does not have, so these markers are the only view there is.
+    /// that has installed on a rack. Setup renders to graphics an Oxide instance does not
+    /// have, so this marker is the only view there is until EMS comes up.
+    ///
+    /// There used to be markers at the start and end of `windowsPE` too, but WinPE has
+    /// no COM1 device: they wrote nothing while `& exit /b 0` still reported success to
+    /// Setup's log. See `EMS-SERIAL-INVESTIGATION.md`.
     pub verbose_serial: bool,
     /// Index of the image to install, read from the WIM's own metadata. Preferred over
     /// a name: names vary across retail, evaluation, OEM and localised media, so a

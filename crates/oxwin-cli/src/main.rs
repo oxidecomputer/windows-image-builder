@@ -80,8 +80,8 @@ usage: oxwin doctor
   --ssh-key=<a;b>        public keys authorised for SSH, semicolon separated
   --drivers=0            do not inject virtio drivers (diagnostic control:
                          isolates a hang in Setup from the drivers)
-  --verbose-serial       extra OXIDE-STAGE markers on COM1, so a hang can be
-                         localised to a pass rather than just observed
+  --verbose-serial       an OXIDE-STAGE marker on COM1 at the start of
+                         specialize, so reaching it proves windowsPE finished
   --no-ems               do not patch the media BCD for serial; Windows Setup
                          then says nothing on COM1 until the install finishes
   --log-path=<path>      where Setup writes setupact.log/setuperr.log. Its
