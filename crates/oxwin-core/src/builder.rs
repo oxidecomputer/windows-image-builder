@@ -62,8 +62,17 @@ const UEFI_BCD_STORE: &str = "/efi/microsoft/boot/bcd";
 /// one we do not. Both are patched, so a dump of the media does not show two
 /// stores disagreeing about EMS.
 fn is_bcd_store(volume_path: &str) -> bool {
-    let p = volume_path.to_ascii_lowercase();
-    p == UEFI_BCD_STORE || p == "/boot/bcd"
+    is_uefi_bcd_store(volume_path)
+        || volume_path.eq_ignore_ascii_case("/boot/bcd")
+}
+
+/// The one store an Oxide guest ever boots. A sibling of `is_bcd_store`
+/// rather than a second, independent comparison against `UEFI_BCD_STORE` —
+/// two case-lowering comparisons of the same constant, done separately in
+/// two places, is exactly the shape of the `VOLUME_LABEL` drift documented
+/// in this workspace's `CLAUDE.md`.
+fn is_uefi_bcd_store(volume_path: &str) -> bool {
+    volume_path.eq_ignore_ascii_case(UEFI_BCD_STORE)
 }
 
 /// What happened to one BCD store. Deliberately payload-free (unlike
@@ -133,7 +142,18 @@ fn ems_verdict(
         return Ems::Off("disabled with --no-ems".to_string());
     }
     let Some((_, uefi_outcome)) = results.iter().find(|(uefi, _)| *uefi) else {
-        return Ems::Off("no BCD store found on the media".to_string());
+        // Distinct from "no BCD store at all": the legacy `/boot/bcd` may
+        // still be in `results` here, just not the store an Oxide guest
+        // boots. Saying "not found" when a store *was* found, only the
+        // wrong one, is the exact wrong direction for a feature that
+        // exists because a silent failure was unreadable.
+        return if results.is_empty() {
+            Ems::Off("no BCD store found on the media".to_string())
+        } else {
+            Ems::Off(format!(
+                "no UEFI BCD store ({UEFI_BCD_STORE}) on the media"
+            ))
+        };
     };
     match uefi_outcome {
         StoreOutcome::NotApplicable(why) => {
@@ -488,8 +508,7 @@ fn assemble(
                         file.volume_path
                     )),
                 }
-                let uefi =
-                    file.volume_path.to_ascii_lowercase() == UEFI_BCD_STORE;
+                let uefi = is_uefi_bcd_store(&file.volume_path);
                 store_results.push((uefi, outcome));
             }
         }
@@ -827,6 +846,23 @@ mod tests {
         assert_eq!(
             ems_verdict(false, true, &[]),
             Ems::Off("no BCD store found on the media".into())
+        );
+    }
+
+    /// Fix 6: a legacy `/boot/bcd` with no UEFI store present is not "no
+    /// BCD store found" -- a store *was* found, just not the one an Oxide
+    /// guest boots. The old wording claimed nothing was found when
+    /// something was, which is the wrong direction for a status line that
+    /// exists because a silent failure was once unreadable.
+    #[test]
+    fn ems_verdict_names_the_uefi_store_when_only_legacy_was_found() {
+        let results = [(false, StoreOutcome::Patched)];
+        assert_eq!(
+            ems_verdict(false, true, &results),
+            Ems::Off(
+                "no UEFI BCD store (/efi/microsoft/boot/bcd) on the media"
+                    .into()
+            )
         );
     }
 
