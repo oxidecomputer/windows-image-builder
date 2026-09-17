@@ -1227,6 +1227,22 @@ mod tests {
         assert_eq!(on_disk, expected);
     }
 
+    /// A CRLF golden is the one difference `lines()` cannot see, and it is the one a
+    /// Windows checkout produces, so the message has to name it. This failed on a
+    /// windows runner for weeks reporting "ours 190 vs js ref 190".
+    #[test]
+    fn a_crlf_golden_is_reported_as_a_line_ending_difference() {
+        let ours = build(&base()).expect("build");
+        let theirs = ours.replace('\n', "\r\n");
+        assert_ne!(ours, theirs);
+        let message = first_difference(&ours, &theirs);
+        assert!(
+            message.contains("line endings")
+                && message.contains("ours and CRLF"),
+            "unhelpful message for a CRLF golden: {message}"
+        );
+    }
+
     /// Point at the first differing line, which is far more useful than a diff of two
     /// 8 KB strings when a single space is wrong.
     fn first_difference(ours: &str, theirs: &str) -> String {
@@ -1238,11 +1254,37 @@ mod tests {
                 );
             }
         }
+        if ours.lines().count() != theirs.lines().count() {
+            return format!(
+                "line counts differ: ours {} vs js ref {}",
+                ours.lines().count(),
+                theirs.lines().count()
+            );
+        }
+        // Every line matches and there are equally many of them, so what differs is
+        // the bytes between the lines: `str::lines` drops a trailing CR. A checkout
+        // with `core.autocrlf=true` — the default on GitHub's windows runners —
+        // rewrites an LF golden into CRLF and lands here, and the old message for
+        // this case read "line counts differ: ours 190 vs js ref 190".
         format!(
-            "line counts differ: ours {} vs js ref {}",
-            ours.lines().count(),
-            theirs.lines().count()
+            "every line matches but the bytes do not: line endings are {} for \
+             ours and {} for the js ref. Check .gitattributes and \
+             core.autocrlf",
+            terminators(ours),
+            terminators(theirs)
         )
+    }
+
+    /// Names what ends the lines of `s`, for the message above.
+    fn terminators(s: &str) -> &'static str {
+        let crlf = s.matches("\r\n").count();
+        let lf = s.matches('\n').count();
+        match (crlf, lf - crlf) {
+            (0, 0) => "absent",
+            (0, _) => "LF",
+            (_, 0) => "CRLF",
+            _ => "mixed LF and CRLF",
+        }
     }
 
     #[test]
