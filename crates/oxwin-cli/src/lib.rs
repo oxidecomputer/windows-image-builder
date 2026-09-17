@@ -1217,7 +1217,14 @@ mod tests {
     /// reach the CLI without being a subcommand.
     #[test]
     fn every_command_is_handled() {
-        let source = include_str!("lib.rs");
+        // `include_str!` embeds this file's bytes verbatim, so on a checkout with
+        // `core.autocrlf=true` — the default on GitHub's windows runners, and what
+        // `.gitattributes` exempts only the goldens from — every line ends `\r\n`
+        // and a `"\n}\n"` sentinel matches nothing. The arm parsing below survives
+        // that because it trims each line; this did not, and the failure was
+        // `run() ends` on windows only, naming nothing to do with the match the
+        // test exists to check.
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
         let body = source
             .split_once("pub fn run(args: &[String]) -> Result<()> {")
             .expect("run() is where the dispatch match lives")
