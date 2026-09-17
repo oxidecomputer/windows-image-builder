@@ -200,8 +200,7 @@ pub struct Request {
     /// Where the third-party payload comes from: compiled in, or a directory.
     pub assets: crate::assets::Assets,
     /// Patch the media's BCD stores so Windows Setup talks on COM1. Off via
-    /// `--no-ems`, and also whenever `bare` is set — see `bare` above; see
-    /// `EMS-SERIAL-INVESTIGATION.md` for what this buys.
+    /// `--no-ems`, and also whenever `bare` is set — see `bare` above.
     pub enable_ems: bool,
 }
 

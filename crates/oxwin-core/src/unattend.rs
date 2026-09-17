@@ -210,7 +210,7 @@ pub struct Config {
     ///
     /// There used to be markers at the start and end of `windowsPE` too, but WinPE has
     /// no COM1 device: they wrote nothing while `& exit /b 0` still reported success to
-    /// Setup's log. See `EMS-SERIAL-INVESTIGATION.md`.
+    /// Setup's log.
     pub verbose_serial: bool,
     /// Index of the image to install, read from the WIM's own metadata. Preferred over
     /// a name: names vary across retail, evaluation, OEM and localised media, so a
@@ -1129,8 +1129,8 @@ mod tests {
     }
 
     /// WinPE has no COM1 device, so a marker echoed there is written to nothing
-    /// while `& exit /b 0` reports success. Proven under QEMU on 2026-09-10;
-    /// see EMS-SERIAL-INVESTIGATION.md. Serial during Setup comes from EMS now.
+    /// while `& exit /b 0` reports success. Proven under QEMU on 2026-09-10.
+    /// Serial during Setup comes from EMS now.
     #[test]
     fn no_answer_file_echoes_to_com1_in_windows_pe() {
         for release in WindowsRelease::ALL {

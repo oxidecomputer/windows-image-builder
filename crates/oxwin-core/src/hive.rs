@@ -9,8 +9,7 @@
 //! Windows install media carries a BCD store — a registry hive — whose
 //! `{emssettings}` object already enables Emergency Management Services but never
 //! says which serial port to use. Windows then asks the firmware, via the ACPI
-//! SPCR table, and on a guest without one it redirects to nothing. Two integer
-//! elements fix it, and `EMS-SERIAL-INVESTIGATION.md` records how that was found.
+//! SPCR table, and on a guest without one it redirects to nothing.
 //!
 //! Scope is deliberately tiny. This is not a registry library: it walks to one
 //! known object, adds two subkeys, and validates what it produced. Anything it
