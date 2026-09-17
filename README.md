@@ -78,13 +78,18 @@ Two things to know about that password:
 - On a **golden image**, every machine you clone inherits it. Change it after first
   boot, or build a separate image per machine.
 
-**Access and hardware.** Sensible defaults are already set. The two worth
-understanding:
+**Access and hardware.** Sensible defaults are already set. Worth understanding:
 
 - **Inject virtio drivers** — leave this on. Without it Windows installs fine and
   then has no network, which is a confusing thing to debug.
-- **Enable the serial console** — leave this on. It is how you watch the install
-  happen, and it is your only way in if something goes wrong.
+- **Enable the serial console** — leave this on. It is how you watch the
+  *installed* OS happen, once it exists, and it is your only way in if something
+  goes wrong.
+- **Serial output during Windows Setup (EMS)** — leave this on too. It is a
+  separate switch, because it covers the earlier moment: without it, Setup itself
+  is silent on serial and the console above only starts talking once the OS
+  reaches first logon. `--no-ems` on the CLI does the same thing. Off is a legal
+  choice, just a surprising one if you did not mean it.
 
 ### 3. Processing
 
