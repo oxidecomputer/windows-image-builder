@@ -1117,9 +1117,6 @@ mod whole_image {
                 show_ui_on_error: true,
                 image_index: None,
                 skip_image_install: false,
-                install_from: None,
-                install_from_letter: None,
-                install_from_label: None,
                 ssh_keys: vec![
                     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 dan@example".to_string(),
                 ],

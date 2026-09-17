@@ -224,12 +224,6 @@ pub struct Config {
     /// Diagnostic escape hatch: drop `<ImageInstall>` so Setup picks the edition and
     /// resolves the licence itself.
     pub skip_image_install: bool,
-    /// Explicit path to `install.wim`, when it is not on the booted volume.
-    pub install_from: Option<String>,
-    pub install_from_letter: Option<char>,
-    /// Volume label to pin to a drive letter with diskpart before Setup looks for
-    /// `install.wim`.
-    pub install_from_label: Option<String>,
     /// Public keys authorised for SSH. Read only by the bootstrap script, the answer
     /// file has nowhere to put them, since the account does not exist until
     /// `oobeSystem` and sshd is configured in `specialize`.
@@ -272,9 +266,6 @@ impl Config {
             verbose_serial: false,
             image_index,
             skip_image_install: false,
-            install_from: None,
-            install_from_letter: None,
-            install_from_label: None,
             ssh_keys: settings.credentials.keys.clone(),
             enable_ssh: true,
         }
@@ -460,27 +451,6 @@ fn windows_pe_pass(
         }
     }
 
-    if let Some(label) = &config.install_from_label {
-        // install.wim on a second partition: Setup will not go looking for it, and
-        // WinPE letters depend on how many disks are attached, so pin the volume to a
-        // known letter by label first. diskpart takes a label directly and is always
-        // present in WinPE, where PowerShell is not.
-        let letter = config.install_from_letter.unwrap_or('W');
-        let script = "X:\\oxide-diskpart.txt";
-        setup_commands.push(Command {
-            path: format!(
-                "cmd.exe /c echo select volume={label} noerr>{script}\
-                 \x20& echo remove noerr>>{script}\
-                 \x20& echo assign letter={letter} noerr>>{script}\
-                 \x20& diskpart /s {script}\
-                 \x20& exit /b 0"
-            ),
-            description: format!(
-                "Assign {letter}: to the volume labelled {label}"
-            ),
-        });
-    }
-
     let run_sync = if setup_commands.is_empty() {
         String::new()
     } else {
@@ -493,20 +463,10 @@ fn windows_pe_pass(
     let image_install = if config.skip_image_install {
         String::new()
     } else {
-        // Setup resolves sources\install.wim relative to the volume it booted from.
-        // When install.wim lives elsewhere it has to be named explicitly or Setup
-        // reports a missing media driver.
-        let install_from =
-            match (&config.install_from, config.install_from_letter) {
-                (Some(path), _) => {
-                    format!("            <Path>{}</Path>\n", xml_escape(path))
-                }
-                (None, Some(letter)) => format!(
-                    "            <Path>{}</Path>\n",
-                    xml_escape(&format!("{letter}:\\sources\\install.wim"))
-                ),
-                (None, None) => String::new(),
-            };
+        // No `<Path>`: Setup resolves sources\install.wim relative to the volume it
+        // booted from, and naming a second partition there fails to resolve the licence
+        // terms. `builder`'s media is one volume for exactly that reason, so the only
+        // correct path is the one Setup finds unaided.
         let metadata = match config.image_index {
             Some(index) => format!(
                 "            <MetaData wcm:action=\"add\">\n\
@@ -526,7 +486,7 @@ fn windows_pe_pass(
             "      <ImageInstall>\n\
              \x20       <OSImage>\n\
              \x20         <InstallFrom>\n\
-             {install_from}{metadata}\n\
+             {metadata}\n\
              \x20         </InstallFrom>\n\
              \x20         <InstallTo>\n\
              \x20           <DiskID>{disk}</DiskID>\n\
@@ -877,9 +837,6 @@ mod tests {
             show_ui_on_error: true,
             image_index: Some(4),
             skip_image_install: false,
-            install_from: None,
-            install_from_letter: None,
-            install_from_label: None,
             ssh_keys: Vec::new(),
             enable_ssh: true,
         }
@@ -1012,23 +969,6 @@ mod tests {
                 "skip-image-install",
                 "skip image install",
                 Config { skip_image_install: true, ..base() },
-            ),
-            (
-                "install-from-label",
-                "install from a labelled volume",
-                Config {
-                    install_from_label: Some("WINSETUP".into()),
-                    install_from_letter: Some('W'),
-                    ..base()
-                },
-            ),
-            (
-                "install-from-path",
-                "explicit install path",
-                Config {
-                    install_from: Some("E:\\sources\\install.wim".into()),
-                    ..base()
-                },
             ),
             ("autologon", "autologon", Config { auto_logon: true, ..base() }),
             (
@@ -1316,7 +1256,10 @@ mod tests {
     fn every_path_stays_under_the_schema_limit() {
         // The 259-char cap is what rejected an entire answer file once, with an error
         // naming only the pass. Check the decoded length, which is what the schema
-        // sees, across every branch that can add commands.
+        // sees, across every branch that can add commands. The Windows 11 case is the
+        // longest one left: the diskpart command that used to beat it went with
+        // `install_from_label`, so add a config here for any new RunSynchronous branch
+        // rather than assuming the remaining two cover it.
         for config in [
             base(),
             Config {
@@ -1324,7 +1267,6 @@ mod tests {
                 edition: "pro".into(),
                 ..base()
             },
-            Config { install_from_label: Some("WINSETUP".into()), ..base() },
         ] {
             let xml = build(&config).expect("build");
             for chunk in xml.split("<Path>").skip(1) {

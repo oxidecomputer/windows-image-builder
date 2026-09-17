@@ -414,9 +414,6 @@ mod tests {
             show_ui_on_error: true,
             image_index: Some(4),
             skip_image_install: false,
-            install_from: None,
-            install_from_letter: None,
-            install_from_label: None,
             ssh_keys: Vec::new(),
             enable_ssh: true,
         }

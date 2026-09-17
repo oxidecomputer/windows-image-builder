@@ -311,9 +311,6 @@ fn config_from_args(args: &[String]) -> Result<Config> {
         show_ui_on_error: !flag("no-ui-on-error"),
         image_index: None,
         skip_image_install: opt("image-install").as_deref() == Some("0"),
-        install_from: None,
-        install_from_letter: None,
-        install_from_label: None,
         ssh_keys: opt("ssh-key")
             .unwrap_or_default()
             .split(';')
