@@ -36,11 +36,6 @@
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <Path>cmd.exe /c echo OXIDE-STAGE windowsPE-begin&gt;COM1 &amp; exit /b 0</Path>
-          <Description>Serial progress marker: windowsPE-begin</Description>
-        </RunSynchronousCommand>
-        <RunSynchronousCommand wcm:action="add">
-          <Order>2</Order>
           <Path>cmd.exe /c echo select volume=WINSETUP noerr&gt;X:\oxide-diskpart.txt &amp; echo remove noerr&gt;&gt;X:\oxide-diskpart.txt &amp; echo assign letter=W noerr&gt;&gt;X:\oxide-diskpart.txt &amp; diskpart /s X:\oxide-diskpart.txt &amp; exit /b 0</Path>
           <Description>Assign W: to the volume labelled WINSETUP</Description>
         </RunSynchronousCommand>

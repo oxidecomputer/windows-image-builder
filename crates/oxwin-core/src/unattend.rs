@@ -431,20 +431,6 @@ fn windows_pe_pass(
 
     let mut setup_commands: Vec<Command> = Vec::new();
 
-    // Progress markers on COM1. Windows Setup renders only to graphics and an Oxide
-    // instance has none, so without these an install is completely silent until the
-    // installed OS brings up SAC, which can be twenty minutes of nothing. COM1 is
-    // free during windowsPE; EMS is configured for the installed OS in specialize.
-    //
-    // No space before the redirect (`echo x>COM1`) or the space becomes part of the
-    // output, and `& exit /b 0` because a non-zero exit from a RunSynchronousCommand
-    // aborts Setup.
-    setup_commands.push(Command {
-        path: "cmd.exe /c echo OXIDE-STAGE windowsPE-begin>COM1 & exit /b 0"
-            .into(),
-        description: "Serial progress marker: windowsPE-begin".into(),
-    });
-
     if target.bypass_hardware_checks {
         // One command per key. Chaining all five with && makes a 408-character
         // <Path>, over the 259 limit, and Setup then rejects the entire answer file.
@@ -483,14 +469,6 @@ fn windows_pe_pass(
             description: format!(
                 "Assign {letter}: to the volume labelled {label}"
             ),
-        });
-    }
-
-    if config.verbose_serial {
-        setup_commands.push(Command {
-            path: "cmd.exe /c echo OXIDE-STAGE windowsPE-end>COM1 & exit /b 0"
-                .into(),
-            description: "Serial progress marker: windowsPE-end".into(),
         });
     }
 
@@ -1144,6 +1122,27 @@ mod tests {
         assert!(!xml.contains("Microsoft-Windows-International-Core\""));
         // The WinPE one is a different component and stays where it was.
         assert!(xml.contains("Microsoft-Windows-International-Core-WinPE"));
+    }
+
+    /// WinPE has no COM1 device, so a marker echoed there is written to nothing
+    /// while `& exit /b 0` reports success. Proven under QEMU on 2026-09-10;
+    /// see EMS-SERIAL-INVESTIGATION.md. Serial during Setup comes from EMS now.
+    #[test]
+    fn no_answer_file_echoes_to_com1_in_windows_pe() {
+        for release in WindowsRelease::ALL {
+            let mut config = base();
+            config.release = *release;
+            config.verbose_serial = true;
+            let xml = build(&config).unwrap();
+            let pe = xml
+                .split("<settings pass=\"specialize\">")
+                .next()
+                .expect("windowsPE comes first");
+            assert!(
+                !pe.contains("COM1"),
+                "{release:?}: windowsPE still writes to COM1"
+            );
+        }
     }
 
     /// The whole point of the sysprep answer file is that it still has the password.

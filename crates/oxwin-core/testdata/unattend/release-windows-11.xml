@@ -36,31 +36,26 @@
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <Path>cmd.exe /c echo OXIDE-STAGE windowsPE-begin&gt;COM1 &amp; exit /b 0</Path>
-          <Description>Serial progress marker: windowsPE-begin</Description>
-        </RunSynchronousCommand>
-        <RunSynchronousCommand wcm:action="add">
-          <Order>2</Order>
           <Path>cmd.exe /c reg add HKLM\System\Setup\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
           <Description>Bypass Windows 11 BypassTPMCheck</Description>
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
-          <Order>3</Order>
+          <Order>2</Order>
           <Path>cmd.exe /c reg add HKLM\System\Setup\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
           <Description>Bypass Windows 11 BypassSecureBootCheck</Description>
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
-          <Order>4</Order>
+          <Order>3</Order>
           <Path>cmd.exe /c reg add HKLM\System\Setup\LabConfig /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
           <Description>Bypass Windows 11 BypassRAMCheck</Description>
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
-          <Order>5</Order>
+          <Order>4</Order>
           <Path>cmd.exe /c reg add HKLM\System\Setup\LabConfig /v BypassCPUCheck /t REG_DWORD /d 1 /f</Path>
           <Description>Bypass Windows 11 BypassCPUCheck</Description>
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
-          <Order>6</Order>
+          <Order>5</Order>
           <Path>cmd.exe /c reg add HKLM\System\Setup\LabConfig /v BypassStorageCheck /t REG_DWORD /d 1 /f</Path>
           <Description>Bypass Windows 11 BypassStorageCheck</Description>
         </RunSynchronousCommand>
