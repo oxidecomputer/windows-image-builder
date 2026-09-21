@@ -195,6 +195,32 @@ impl MediaInfo {
     pub fn is_buildable(&self) -> bool {
         !self.problems().iter().any(|p| p.blocking)
     }
+
+    /// Every language any image on this media carries, deduped, in first-seen order.
+    ///
+    /// The union rather than one image's list: the display-language choice is made
+    /// before the edition on the GUI's stage order, and offering a language that
+    /// only some images carry is better than offering none.
+    pub fn languages(&self) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        for image in &self.images {
+            for language in &image.languages {
+                if !seen.contains(language) {
+                    seen.push(language.clone());
+                }
+            }
+        }
+        seen
+    }
+
+    /// The language Setup would use unaided, from the first image that names one.
+    /// `None` when the media said nothing, which is not the same as `Some("en-US")`.
+    pub fn default_language(&self) -> Option<String> {
+        self.images
+            .iter()
+            .map(|i| i.default_language.clone())
+            .find(|d| !d.is_empty())
+    }
 }
 
 /// The same verdict as [`MediaInfo::problems`], from an image list alone.
@@ -611,6 +637,8 @@ mod tests {
             build: Some(build),
             product_type: product_type.into(),
             installation_type: installation.into(),
+            languages: Vec::new(),
+            default_language: String::new(),
         }
     }
 
@@ -832,6 +860,8 @@ mod tests {
             build: Some(22621),
             product_type: "WinNT".into(),
             installation_type: "Client".into(),
+            languages: Vec::new(),
+            default_language: String::new(),
         }
     }
 

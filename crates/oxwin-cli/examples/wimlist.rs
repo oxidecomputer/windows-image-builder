@@ -76,11 +76,23 @@ fn dump(path: &str) -> anyhow::Result<()> {
         "   ei.cfg       {}",
         info.ei_cfg.as_deref().unwrap_or("-- absent --")
     );
+    println!(
+        "   languages    {}",
+        if info.languages().is_empty() {
+            "-- media does not say --".to_string()
+        } else {
+            info.languages().join(", ")
+        }
+    );
+    println!(
+        "   default lang {}",
+        info.default_language().as_deref().unwrap_or("-- absent --")
+    );
 
     println!("   {} image(s):", info.images.len());
     for image in &info.images {
         println!(
-            "   [{:>2}] {:<44} editionId={:<26} {}",
+            "   [{:>2}] {:<44} editionId={:<26} {}  languages={:?} default={}",
             image.index,
             image.name,
             image.edition_id,
@@ -88,6 +100,12 @@ fn dump(path: &str) -> anyhow::Result<()> {
                 "?"
             } else {
                 &image.installation_type
+            },
+            image.languages,
+            if image.default_language.is_empty() {
+                "--"
+            } else {
+                &image.default_language
             },
         );
     }

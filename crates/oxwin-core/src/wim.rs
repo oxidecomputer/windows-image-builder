@@ -58,6 +58,12 @@ pub struct Image {
     pub product_type: String,
     /// `Server`, `Server Core` or `Client`. Empty when absent.
     pub installation_type: String,
+    /// Every language pack the image carries, in the media's own order. Empty when
+    /// the media omits `<LANGUAGES>`, which is a different statement from "no
+    /// languages" and must not be rendered as one.
+    pub languages: Vec<String>,
+    /// `<DEFAULT>` — the language Setup uses unaided. Empty when absent.
+    pub default_language: String,
 }
 
 /// `ARCH` for amd64, the only architecture anything in this workspace supports.
@@ -136,6 +142,8 @@ pub fn parse_xml(bytes: &[u8]) -> Result<Vec<Image>> {
                 build: number(body, "BUILD"),
                 product_type: element(body, "PRODUCTTYPE"),
                 installation_type: element(body, "INSTALLATIONTYPE"),
+                languages: all_elements(body, "LANGUAGE"),
+                default_language: element(body, "DEFAULT"),
             });
         }
         rest = &body_start[body_end + "</IMAGE>".len()..];
@@ -163,6 +171,23 @@ fn element(body: &str, tag: &str) -> String {
         return String::new();
     };
     body[from..from + end].trim().to_string()
+}
+
+/// Every `<TAG>...</TAG>` in `body`, in order. `element` returns the first, which is
+/// right for the identity fields; `<LANGUAGE>` is the one tag that legitimately
+/// repeats.
+fn all_elements(body: &str, tag: &str) -> Vec<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut found = Vec::new();
+    let mut rest = body;
+    while let Some(at) = rest.find(&open) {
+        let from = at + open.len();
+        let Some(end) = rest[from..].find(&close) else { break };
+        found.push(rest[from..from + end].trim().to_string());
+        rest = &rest[from + end + close.len()..];
+    }
+    found
 }
 
 /// The first `<TAG>...</TAG>` as a number. `None` covers absent, empty and unparseable
@@ -319,6 +344,8 @@ mod tests {
             build: Some(20348),
             product_type: "ServerNT".into(),
             installation_type: install.to_string(),
+            languages: Vec::new(),
+            default_language: String::new(),
         })
         .collect()
     }
@@ -343,6 +370,8 @@ mod tests {
             build: Some(22621),
             product_type: "WinNT".into(),
             installation_type: "Client".into(),
+            languages: Vec::new(),
+            default_language: String::new(),
         })
         .collect()
     }
@@ -455,6 +484,8 @@ mod tests {
             build: Some(20348),
             product_type: "ServerNT".into(),
             installation_type: String::new(),
+            languages: Vec::new(),
+            default_language: String::new(),
         };
         assert!(is_core_image(&image));
         // And "core" anywhere other than the end does not count.
@@ -561,6 +592,53 @@ mod tests {
         let xml = "<IMAGE INDEX=\"1\"><NAME>\n  Spaced Out  \n</NAME></IMAGE>";
         let images = parse_xml(&utf16le(xml)).unwrap();
         assert_eq!(images[0].name, "Spaced Out");
+    }
+
+    /// Real media carries the languages its image can present, which is what makes a
+    /// display-language picker a detection rather than an assertion.
+    ///
+    /// The shape here is Microsoft's: `<LANGUAGES>` holds one `<LANGUAGE>` per
+    /// installed pack plus a `<DEFAULT>`. Single-language media is the overwhelming
+    /// case and carries exactly one of each.
+    #[test]
+    fn languages_are_read_from_the_image() {
+        let xml = utf16le(
+            r#"<WIM><IMAGE INDEX="1">
+                 <NAME>SERVERSTANDARD</NAME>
+                 <LANGUAGES><LANGUAGE>en-US</LANGUAGE><DEFAULT>en-US</DEFAULT></LANGUAGES>
+               </IMAGE></WIM>"#,
+        );
+        let images = parse_xml(&xml).expect("parse");
+        assert_eq!(images[0].languages, vec!["en-US".to_string()]);
+        assert_eq!(images[0].default_language, "en-US");
+    }
+
+    #[test]
+    fn multi_language_media_reports_every_language() {
+        let xml = utf16le(
+            r#"<WIM><IMAGE INDEX="1">
+                 <LANGUAGES>
+                   <LANGUAGE>en-US</LANGUAGE>
+                   <LANGUAGE>de-DE</LANGUAGE>
+                   <DEFAULT>de-DE</DEFAULT>
+                 </LANGUAGES>
+               </IMAGE></WIM>"#,
+        );
+        let images = parse_xml(&xml).expect("parse");
+        assert_eq!(images[0].languages, vec!["en-US", "de-DE"]);
+        assert_eq!(images[0].default_language, "de-DE");
+    }
+
+    /// Media that omits the element is not an error and must not be guessed at. An
+    /// empty list means "the media did not say", which the UI treats as "say
+    /// nothing" rather than as "no languages".
+    #[test]
+    fn media_without_languages_reports_none() {
+        let xml =
+            utf16le(r#"<WIM><IMAGE INDEX="1"><NAME>X</NAME></IMAGE></WIM>"#);
+        let images = parse_xml(&xml).expect("parse");
+        assert!(images[0].languages.is_empty());
+        assert!(images[0].default_language.is_empty());
     }
 
     /// The real thing, when an ISO is to hand. `install.wim` is 4.04 GiB, so this also
