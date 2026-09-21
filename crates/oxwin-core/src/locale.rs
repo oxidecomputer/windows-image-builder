@@ -52,6 +52,10 @@ macro_rules! regions {
     };
 }
 
+// Region labels are deliberately ASCII. Glyphs that might not exist in the
+// default font must never be typed — the codebase learned this the hard way
+// when a missing-glyph box shipped next to a button. Keep diacritics out of
+// these labels even when a language name wants them.
 regions! {
     "en-US" => "English (United States)",
     "en-GB" => "English (United Kingdom)",
@@ -96,11 +100,12 @@ zones! {
     "GMT Standard Time" => "United Kingdom, Ireland, Portugal",
     "W. Europe Standard Time" => "Western Europe",
     "Central Europe Standard Time" => "Central Europe",
+    "Central European Standard Time" => "Poland, Croatia, Bosnia",
     "Romance Standard Time" => "France, Spain, Belgium",
-    "E. Europe Standard Time" => "Eastern Europe",
+    "FLE Standard Time" => "Finland, Baltics, Ukraine",
     "Russian Standard Time" => "Moscow",
     "India Standard Time" => "India",
-    "China Standard Time" => "China, Hong Kong, Singapore",
+    "China Standard Time" => "China, Hong Kong",
     "Tokyo Standard Time" => "Japan",
     "Korea Standard Time" => "Korea",
     "AUS Eastern Standard Time" => "Eastern Australia",
