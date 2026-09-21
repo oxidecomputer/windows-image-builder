@@ -255,6 +255,9 @@ pub struct Settings {
     /// Disk index Setup installs onto. 1 = the second disk, because disk 0 is our
     /// own install media.
     pub target_disk: u8,
+    /// How the target disk is partitioned. `partition::default_layout()` unless the
+    /// user changed it.
+    pub partitions: Vec<crate::partition::Partition>,
 }
 
 impl Default for Settings {
@@ -275,6 +278,7 @@ impl Default for Settings {
             region: crate::locale::DEFAULT_REGION.to_string(),
             timezone: crate::locale::DEFAULT_TIME_ZONE.to_string(),
             target_disk: 1,
+            partitions: crate::partition::default_layout(),
         }
     }
 }
@@ -431,6 +435,8 @@ impl Settings {
                 ));
             }
         }
+
+        v.extend(crate::partition::problems(&self.partitions));
 
         v
     }

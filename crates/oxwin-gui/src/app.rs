@@ -150,6 +150,9 @@ impl Draft {
             region: self.region.clone(),
             timezone: self.timezone.clone(),
             target_disk: self.target_disk,
+            // Task 9 replaces this with a `Draft` field once the GUI offers a
+            // layout editor.
+            partitions: oxwin_core::partition::default_layout(),
         }
     }
 }

@@ -172,6 +172,10 @@ pub struct Config {
     pub inject_drivers: bool,
     pub enable_serial_console: bool,
     pub target_disk: u8,
+    /// How the target disk is partitioned. The default is the three partitions the
+    /// answer file has always written; see [`crate::partition`] for why orders and
+    /// IDs are derived rather than carried.
+    pub partitions: Vec<crate::partition::Partition>,
     /// What Setup and the installed shell are rendered in.
     ///
     /// **Constrained by the media**: this needs a language pack present in the
@@ -273,6 +277,7 @@ impl Config {
             inject_drivers: settings.inject_drivers,
             enable_serial_console: settings.enable_serial_console,
             target_disk: settings.target_disk,
+            partitions: settings.partitions.clone(),
             ui_language: settings.ui_language.clone(),
             region: settings.region.clone(),
             timezone: settings.timezone.clone(),
@@ -344,6 +349,84 @@ pub fn build(config: &Config) -> Result<String> {
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<unattend {NS}>\n{}\n</unattend>\n",
         settings.join("\n")
     ))
+}
+
+/// The `<DiskConfiguration>` block, generated from the layout.
+///
+/// Byte-for-byte what the literal it replaced produced, for the default layout.
+/// `Order` and `PartitionID` are the 1-based position in the list and are never
+/// carried in the model, which is the whole reason a custom layout is safe to offer.
+fn disk_configuration(config: &Config) -> String {
+    let creates: Vec<String> = config
+        .partitions
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let extent = match p.size_mb {
+                Some(mb) => format!("              <Size>{mb}</Size>\n"),
+                None => "              <Extend>true</Extend>\n".to_string(),
+            };
+            format!(
+                "            <CreatePartition wcm:action=\"add\">\n\
+                 \x20             <Order>{}</Order>\n\
+                 \x20             <Type>{}</Type>\n\
+                 {extent}\x20           </CreatePartition>",
+                i + 1,
+                p.kind.type_name()
+            )
+        })
+        .collect();
+
+    let modifies: Vec<String> = config
+        .partitions
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            // Emitted only when set. MSR carries none of the three, and adding an
+            // empty <Label> or <Format> for it would move every committed golden.
+            let label = match &p.label {
+                Some(l) => {
+                    format!("              <Label>{}</Label>\n", xml_escape(l))
+                }
+                None => String::new(),
+            };
+            let letter = match p.letter {
+                Some(c) => format!("              <Letter>{c}</Letter>\n"),
+                None => String::new(),
+            };
+            let format = match p.format {
+                Some(f) => {
+                    format!("              <Format>{}</Format>\n", f.name())
+                }
+                None => String::new(),
+            };
+            format!(
+                "            <ModifyPartition wcm:action=\"add\">\n\
+                 \x20             <Order>{n}</Order>\n\
+                 \x20             <PartitionID>{n}</PartitionID>\n\
+                 {label}{letter}{format}\x20           </ModifyPartition>",
+                n = i + 1
+            )
+        })
+        .collect();
+
+    format!(
+        "      <DiskConfiguration>\n\
+         \x20       <WillShowUI>{ui}</WillShowUI>\n\
+         \x20       <Disk wcm:action=\"add\">\n\
+         \x20         <DiskID>{disk}</DiskID>\n\
+         \x20         <WillWipeDisk>true</WillWipeDisk>\n\
+         \x20         <CreatePartitions>\n{}\n\
+         \x20         </CreatePartitions>\n\
+         \x20         <ModifyPartitions>\n{}\n\
+         \x20         </ModifyPartitions>\n\
+         \x20       </Disk>\n\
+         \x20     </DiskConfiguration>\n",
+        creates.join("\n"),
+        modifies.join("\n"),
+        disk = config.target_disk,
+        ui = will_show_ui(config)
+    )
 }
 
 fn driver_paths() -> String {
@@ -509,13 +592,14 @@ fn windows_pe_pass(
              \x20         </InstallFrom>\n\
              \x20         <InstallTo>\n\
              \x20           <DiskID>{disk}</DiskID>\n\
-             \x20           <PartitionID>3</PartitionID>\n\
+             \x20           <PartitionID>{partition}</PartitionID>\n\
              \x20         </InstallTo>\n\
              \x20         <WillShowUI>{ui}</WillShowUI>\n\
              \x20       </OSImage>\n\
              \x20     </ImageInstall>\n",
             disk = config.target_disk,
-            ui = will_show_ui(config)
+            ui = will_show_ui(config),
+            partition = crate::partition::os_partition_id(&config.partitions),
         )
     };
 
@@ -537,52 +621,11 @@ fn windows_pe_pass(
         None => String::new(),
     };
 
+    let disk_config = disk_configuration(config);
+
     components.push(format!(
         "    <component name=\"Microsoft-Windows-Setup\" {ARCH}>\n\
-         {run_sync}      {log_path}<DiskConfiguration>\n\
-         \x20       <WillShowUI>{ui}</WillShowUI>\n\
-         \x20       <Disk wcm:action=\"add\">\n\
-         \x20         <DiskID>{disk}</DiskID>\n\
-         \x20         <WillWipeDisk>true</WillWipeDisk>\n\
-         \x20         <CreatePartitions>\n\
-         \x20           <CreatePartition wcm:action=\"add\">\n\
-         \x20             <Order>1</Order>\n\
-         \x20             <Type>EFI</Type>\n\
-         \x20             <Size>260</Size>\n\
-         \x20           </CreatePartition>\n\
-         \x20           <CreatePartition wcm:action=\"add\">\n\
-         \x20             <Order>2</Order>\n\
-         \x20             <Type>MSR</Type>\n\
-         \x20             <Size>16</Size>\n\
-         \x20           </CreatePartition>\n\
-         \x20           <CreatePartition wcm:action=\"add\">\n\
-         \x20             <Order>3</Order>\n\
-         \x20             <Type>Primary</Type>\n\
-         \x20             <Extend>true</Extend>\n\
-         \x20           </CreatePartition>\n\
-         \x20         </CreatePartitions>\n\
-         \x20         <ModifyPartitions>\n\
-         \x20           <ModifyPartition wcm:action=\"add\">\n\
-         \x20             <Order>1</Order>\n\
-         \x20             <PartitionID>1</PartitionID>\n\
-         \x20             <Label>System</Label>\n\
-         \x20             <Format>FAT32</Format>\n\
-         \x20           </ModifyPartition>\n\
-         \x20           <ModifyPartition wcm:action=\"add\">\n\
-         \x20             <Order>2</Order>\n\
-         \x20             <PartitionID>2</PartitionID>\n\
-         \x20           </ModifyPartition>\n\
-         \x20           <ModifyPartition wcm:action=\"add\">\n\
-         \x20             <Order>3</Order>\n\
-         \x20             <PartitionID>3</PartitionID>\n\
-         \x20             <Label>Windows</Label>\n\
-         \x20             <Letter>C</Letter>\n\
-         \x20             <Format>NTFS</Format>\n\
-         \x20           </ModifyPartition>\n\
-         \x20         </ModifyPartitions>\n\
-         \x20       </Disk>\n\
-         \x20     </DiskConfiguration>\n\
-         {image_install}      <UpgradeData>\n\
+         {run_sync}{log_path}{disk_config}{image_install}      <UpgradeData>\n\
          \x20       <Upgrade>false</Upgrade>\n\
          \x20       <WillShowUI>Never</WillShowUI>\n\
          \x20     </UpgradeData>\n\
@@ -592,9 +635,7 @@ fn windows_pe_pass(
          \x20       <Organization>Oxide</Organization>\n\
          {product_key}      </UserData>\n\
          \x20   </component>",
-        disk = config.target_disk,
         user = xml_escape(&config.username),
-        ui = will_show_ui(config),
         log_path = match &config.log_path {
             Some(path) =>
                 format!("      <LogPath>{}</LogPath>\n", xml_escape(path)),
@@ -847,6 +888,7 @@ mod tests {
             inject_drivers: true,
             enable_serial_console: true,
             target_disk: 1,
+            partitions: crate::partition::default_layout(),
             ui_language: "en-US".into(),
             region: "en-US".into(),
             timezone: "UTC".into(),
@@ -1026,6 +1068,28 @@ mod tests {
                 Config {
                     ui_language: "en-US".into(),
                     region: "de-DE".into(),
+                    ..base()
+                },
+            ),
+            // A layout with a data partition, pinning both the generated orders and
+            // the InstallTo that follows them. A hardcoded PartitionID here would
+            // install Windows onto the wrong partition and say nothing.
+            (
+                "partitions-data-volume",
+                "an extra data partition",
+                Config {
+                    partitions: {
+                        let mut l = crate::partition::default_layout();
+                        l[2].size_mb = Some(61440);
+                        l.push(crate::partition::Partition {
+                            kind: crate::partition::Kind::Primary,
+                            size_mb: None,
+                            label: Some("Data".into()),
+                            letter: Some('D'),
+                            format: Some(crate::partition::Format::Ntfs),
+                        });
+                        l
+                    },
                     ..base()
                 },
             ),
@@ -1476,5 +1540,74 @@ mod tests {
         // An empty <Key> is not the same as no key: Setup fails the licence lookup
         // before showing any page.
         assert!(!build(&base()).expect("build").contains("<ProductKey>"));
+    }
+
+    /// The safety property. Generating the block from the default layout must produce
+    /// the bytes the literal produced, or every committed golden moves.
+    #[test]
+    fn the_default_layout_produces_the_original_bytes() {
+        let xml = build(&base()).expect("build");
+        assert!(
+            xml.contains(
+                "            <CreatePartition wcm:action=\"add\">\n\
+             \x20             <Order>1</Order>\n\
+             \x20             <Type>EFI</Type>\n\
+             \x20             <Size>260</Size>\n\
+             \x20           </CreatePartition>"
+            ),
+            "{xml}"
+        );
+        // MSR carries no Label, Letter or Format -- the original emits only Order and
+        // PartitionID for it, and adding either would move every golden.
+        assert!(
+            xml.contains(
+                "            <ModifyPartition wcm:action=\"add\">\n\
+             \x20             <Order>2</Order>\n\
+             \x20             <PartitionID>2</PartitionID>\n\
+             \x20           </ModifyPartition>"
+            ),
+            "{xml}"
+        );
+        assert!(xml.contains("<Extend>true</Extend>"));
+    }
+
+    /// The hardcoded `3` was correct for one layout only.
+    #[test]
+    fn install_to_follows_the_layout() {
+        use crate::partition::{Kind, default_layout};
+        let without_msr: Vec<_> = default_layout()
+            .into_iter()
+            .filter(|p| p.kind != Kind::Msr)
+            .collect();
+        let config = Config { partitions: without_msr, ..base() };
+        let xml = build(&config).expect("build");
+        assert!(
+            xml.contains(
+                "          <InstallTo>\n\
+                 \x20           <DiskID>1</DiskID>\n\
+                 \x20           <PartitionID>2</PartitionID>\n\
+                 \x20         </InstallTo>"
+            ),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn an_extra_data_partition_is_emitted() {
+        use crate::partition::{Format, Kind, Partition, default_layout};
+        let mut layout = default_layout();
+        layout[2].size_mb = Some(61440);
+        layout.push(Partition {
+            kind: Kind::Primary,
+            size_mb: None,
+            label: Some("Data".into()),
+            letter: Some('D'),
+            format: Some(Format::Ntfs),
+        });
+        let xml =
+            build(&Config { partitions: layout, ..base() }).expect("build");
+        assert!(xml.contains("<Order>4</Order>"));
+        assert!(xml.contains("<Letter>D</Letter>"));
+        assert!(xml.contains("<Size>61440</Size>"));
     }
 }

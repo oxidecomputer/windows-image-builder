@@ -420,6 +420,7 @@ mod tests {
             inject_drivers: true,
             enable_serial_console: true,
             target_disk: 1,
+            partitions: crate::partition::default_layout(),
             ui_language: "en-US".into(),
             region: "en-US".into(),
             timezone: "UTC".into(),

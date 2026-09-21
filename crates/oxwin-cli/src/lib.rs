@@ -25,6 +25,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use oxwin_core::builder::{self, Request};
 use oxwin_core::engine::Cancel;
 use oxwin_core::media::Media;
+use oxwin_core::partition::{Format, Kind, Partition};
 use oxwin_core::progress::{Event, Reporter};
 use oxwin_core::settings::WindowsRelease;
 use oxwin_core::unattend::Config;
@@ -120,6 +121,13 @@ usage: oxwin doctor
                          omitted, the media's own list picks a sensible default
   --edition-hint=<hint>  overrides --edition when reading the WIM's image list
   --target-disk=<n>      disk index Setup installs to
+  --partition=<spec>     repeatable; replaces the whole layout. Spec is
+                         kind:size:letter:format:label, e.g.
+                         --partition=efi:260::FAT32:System
+                         --partition=msr:16
+                         --partition=primary:extend:C:NTFS:Windows
+                         Size may be \"extend\" for the rest of the disk. Omitted
+                         entirely, the default EFI/MSR/Windows layout is used.
   --product-key=<key>
   --ei-channel=<Eval|_Default|none>
   --bare                 media only: no answer file, no drivers, no ei.cfg
@@ -330,6 +338,7 @@ fn config_from_args(args: &[String]) -> Result<Config> {
             .unwrap_or("1")
             .parse()
             .context("--target-disk must be a disk index")?,
+        partitions: partitions_from_args(args)?,
         ui_language: opt("ui-language")
             .unwrap_or_else(|| oxwin_core::locale::DEFAULT_REGION.into()),
         region: opt("region")
@@ -361,6 +370,52 @@ fn config_from_args(args: &[String]) -> Result<Config> {
         enable_ssh: opt("ssh").as_deref() != Some("0"),
     };
     Ok(config)
+}
+
+/// `--partition=<kind>:<size|extend>[:<letter>][:<format>][:<label>]`, repeated.
+///
+/// Positional rather than named because the alternative is five flags that have to
+/// be kept in step across an unknown number of partitions. Absent entirely means the
+/// default layout, which is the overwhelming case.
+fn partitions_from_args(args: &[String]) -> Result<Vec<Partition>> {
+    let specs: Vec<&str> =
+        args.iter().filter_map(|a| a.strip_prefix("--partition=")).collect();
+    if specs.is_empty() {
+        return Ok(oxwin_core::partition::default_layout());
+    }
+    specs
+        .iter()
+        .map(|spec| {
+            let f: Vec<&str> = spec.split(':').collect();
+            let kind = match f.first().copied() {
+                Some("efi") => Kind::Efi,
+                Some("msr") => Kind::Msr,
+                Some("primary") => Kind::Primary,
+                other => bail!(
+                    "unknown partition kind {other:?}; use efi, msr or primary"
+                ),
+            };
+            let size_mb = match f.get(1).copied() {
+                None | Some("extend") | Some("") => None,
+                Some(mb) => Some(mb.parse().with_context(|| {
+                    format!("partition size {mb:?} is not a number of MB")
+                })?),
+            };
+            let letter =
+                f.get(2).and_then(|l| l.chars().next()).filter(|c| *c != ' ');
+            let format = match f.get(3).copied() {
+                None | Some("") => None,
+                Some("FAT32") | Some("fat32") => Some(Format::Fat32),
+                Some("NTFS") | Some("ntfs") => Some(Format::Ntfs),
+                Some(other) => {
+                    bail!("unknown format {other:?}; use FAT32 or NTFS")
+                }
+            };
+            let label =
+                f.get(4).filter(|l| !l.is_empty()).map(|l| l.to_string());
+            Ok(Partition { kind, size_mb, label, letter, format })
+        })
+        .collect()
 }
 
 /// The payload, embedded unless told otherwise.
