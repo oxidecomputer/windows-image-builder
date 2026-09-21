@@ -1047,6 +1047,48 @@ mod tests {
         );
     }
 
+    /// The generator must satisfy its own linter, for every case and both deployment
+    /// kinds.
+    ///
+    /// This is what turns the trap list in CLAUDE.md from prose into a gate. Each rule
+    /// in `lint` describes a way an answer file is silently wrong; without this test,
+    /// nothing stops a future change to this file from reintroducing one, and the next
+    /// evidence would be a rack guest sitting at a wizard page nobody can see.
+    #[test]
+    fn generated_output_is_clean() {
+        let mut failures = Vec::new();
+        for (slug, label, config) in cases() {
+            let xml = build(&config).expect("build");
+            let cx = LintContext {
+                target_disk: config.target_disk,
+                generalize: config.generalize,
+            };
+            // `show_ui_on_error` is true in every committed case, so this fires
+            // everywhere. It is a real hazard and the rule stays, but changing the
+            // default would move every golden and is a separate decision from this
+            // plan. Filtered here, named rather than hidden.
+            for problem in lint(&xml, &cx)
+                .into_iter()
+                .filter(|p| p.field != "unattend_will_show_ui")
+            {
+                failures.push(format!("{slug} ({label}): {}", problem.message));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The sysprep answer file has its own shape — two passes, no windowsPE — and its
+    /// own way of being wrong, which is exactly the Localization hang.
+    #[test]
+    fn generated_sysprep_output_is_clean() {
+        let config = Config { generalize: true, ..base() };
+        let xml = build_sysprep(&config).expect("build_sysprep");
+        let cx =
+            LintContext { target_disk: config.target_disk, generalize: true };
+        let found = lint(&xml, &cx);
+        assert!(found.is_empty(), "{found:#?}");
+    }
+
     /// The Localization page is what actually stalled a rack guest, and only the sysprep
     /// answer file can prevent it: `windowsPE` sets the locale on a normal install and
     /// does not run on a generalize cycle.
