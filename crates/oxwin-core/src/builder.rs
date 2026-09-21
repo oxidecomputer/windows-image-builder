@@ -370,6 +370,29 @@ pub fn build(
     result
 }
 
+/// A warning line when the chosen display language is not one the media carries,
+/// or `None` when there is nothing to say.
+///
+/// Separated from `assemble` so the two branches are testable without a real ISO:
+/// `assemble` has already read the image list by the time it can ask this, and
+/// `languages` is what `media::languages_for` returns from it.
+///
+/// **An empty `languages` says nothing.** That is "the media did not say", not "the
+/// media carries none" — `MediaInfo::languages` was built to keep that distinction,
+/// and warning on every ISO whose WIM omits the `LANGUAGE` tag would be noise that
+/// teaches people to ignore warnings. Region and time zone are never mentioned here:
+/// unlike display language, the media does not constrain them at all.
+fn language_problem(languages: &[String], ui_language: &str) -> Option<String> {
+    if languages.is_empty() || languages.iter().any(|l| l == ui_language) {
+        return None;
+    }
+    Some(format!(
+        "  ({ui_language:?} is not a display language this media carries ({}); \
+         Setup may fall back to the media's own language)",
+        languages.join(", ")
+    ))
+}
+
 fn assemble(
     request: &Request,
     reporter: &Reporter,
@@ -444,6 +467,13 @@ fn assemble(
             ));
         }
         config.release = release;
+    }
+    // Display language is constrained by the media, unlike region and time zone.
+    if let Some(warning) = language_problem(
+        &crate::media::languages_for(&images),
+        &config.ui_language,
+    ) {
+        reporter.log(warning);
     }
     // Evaluation media rejects retail and KMS keys, and supplying one makes Setup
     // filter every image out of the edition list.
@@ -764,6 +794,31 @@ pub fn boot_partition(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The media says which languages it carries, and the chosen one is not among
+    /// them: Setup may not render in it, so this is worth a warning.
+    #[test]
+    fn a_language_the_media_does_not_carry_warns() {
+        let languages = vec!["en-US".to_string(), "fr-FR".to_string()];
+        let warning = language_problem(&languages, "de-DE").expect("a warning");
+        assert!(warning.contains("de-DE"), "{warning}");
+        assert!(warning.contains("en-US"), "{warning}");
+        assert!(warning.contains("fr-FR"), "{warning}");
+    }
+
+    /// The chosen language is exactly what the media carries: nothing to say.
+    #[test]
+    fn a_language_the_media_does_carry_is_silent() {
+        let languages = vec!["en-US".to_string(), "de-DE".to_string()];
+        assert_eq!(language_problem(&languages, "de-DE"), None);
+    }
+
+    /// An empty list means the media did not say, not that it carries none.
+    /// Warning here would fire on every ISO whose WIM omits the `LANGUAGE` tag.
+    #[test]
+    fn no_languages_reported_at_all_is_silent() {
+        assert_eq!(language_problem(&[], "de-DE"), None);
+    }
 
     /// The two stores on Windows media, and nothing else, whatever their case.
     #[test]

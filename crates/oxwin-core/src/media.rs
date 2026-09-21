@@ -202,15 +202,7 @@ impl MediaInfo {
     /// before the edition on the GUI's stage order, and offering a language that
     /// only some images carry is better than offering none.
     pub fn languages(&self) -> Vec<String> {
-        let mut seen: Vec<String> = Vec::new();
-        for image in &self.images {
-            for language in &image.languages {
-                if !seen.contains(language) {
-                    seen.push(language.clone());
-                }
-            }
-        }
-        seen
+        languages_for(&self.images)
     }
 
     /// The language Setup would use unaided, from the first image that names one.
@@ -221,6 +213,24 @@ impl MediaInfo {
             .map(|i| i.default_language.clone())
             .find(|d| !d.is_empty())
     }
+}
+
+/// The same union as [`MediaInfo::languages`], from an image list alone.
+///
+/// Split out for the same reason as [`problems_for`]: `crate::builder` has already
+/// read the image list by the time it wants this, and re-reading the media to build
+/// a `MediaInfo` just to ask it a question about the list it is already holding
+/// would be silly.
+pub fn languages_for(images: &[wim::Image]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for image in images {
+        for language in &image.languages {
+            if !seen.contains(language) {
+                seen.push(language.clone());
+            }
+        }
+    }
+    seen
 }
 
 /// The same verdict as [`MediaInfo::problems`], from an image list alone.

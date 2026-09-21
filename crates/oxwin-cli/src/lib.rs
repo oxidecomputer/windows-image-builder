@@ -339,9 +339,12 @@ fn config_from_args(args: &[String]) -> Result<Config> {
         // An empty or whitespace-only `--product-key=` is not "no key was given" --
         // `opt` still returns `Some("")` -- and an empty `<Key>` element is not the
         // same as omitting it: Setup treats it as a key to resolve, matches no
-        // edition, and stalls at the licence-terms page with no error. Treat it as
-        // `None`, matching what the GUI already does in `Draft::to_settings`.
-        product_key: opt("product-key").filter(|k| !k.trim().is_empty()),
+        // edition, and stalls at the licence-terms page with no error. Trim first
+        // and treat the empty result as `None`, matching what the GUI already does
+        // in `Draft::to_settings`, which stores the trimmed value too.
+        product_key: opt("product-key")
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty()),
         auto_logon: false,
         generalize: flag("generalize") || opt("name").as_deref() == Some("*"),
         verbose_serial: flag("verbose-serial"),
@@ -1360,6 +1363,21 @@ mod tests {
         ];
         let config = config_from_args(&args).unwrap();
         assert_eq!(config.product_key, None);
+    }
+
+    /// The CLI stores the trimmed key, exactly what the GUI's `Draft::to_settings`
+    /// does -- not the untrimmed original with a comment merely claiming parity.
+    #[test]
+    fn a_product_key_with_surrounding_whitespace_is_trimmed() {
+        let args = vec![
+            "--password=0xide!230xide!23".to_string(),
+            "--product-key= WX4NM-KYWYW-QJJR4-XV3QB-6VM33 ".to_string(),
+        ];
+        let config = config_from_args(&args).unwrap();
+        assert_eq!(
+            config.product_key,
+            Some("WX4NM-KYWYW-QJJR4-XV3QB-6VM33".to_string())
+        );
     }
 
     /// An explicit flag beats an inherited environment, the same rule `--assets`
