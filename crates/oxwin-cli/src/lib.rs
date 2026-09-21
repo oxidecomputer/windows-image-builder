@@ -38,8 +38,8 @@ use std::path::PathBuf;
 /// here and silently routed to the GUI. `every_command_is_handled` holds the two
 /// ends together.
 pub const COMMANDS: &[&str] = &[
-    "doctor", "build", "upload", "instance", "watch", "snapshot", "image",
-    "teardown", "golden", "verify", "licenses",
+    "doctor", "build", "unattend", "upload", "instance", "watch", "snapshot",
+    "image", "teardown", "golden", "verify", "licenses",
 ];
 
 /// Run the CLI. `args` is the argument list with the program name already removed.
@@ -52,6 +52,7 @@ pub fn run(args: &[String]) -> Result<()> {
     match cmd {
         "doctor" => doctor(),
         "build" => build(&args[1..]),
+        "unattend" => unattend_cmd(&args[1..]),
         "upload" => upload(&args[1..]),
         "instance" => instance(&args[1..]),
         "watch" => watch(&args[1..]),
@@ -75,6 +76,7 @@ pub fn run(args: &[String]) -> Result<()> {
 const USAGE: &str = "\
 usage: oxwin doctor
        oxwin build <iso-or-mount> <out.img> [--opt=value]
+       oxwin unattend [--sysprep] [--opt=value]
        oxwin upload <image.img> --project=<p> --disk=<name> [--opt=value]
        oxwin instance <name> --project=<p> --installer-disk=<d> [--opt=value]
        oxwin watch <instance> --project=<p> [--timeout=2h] [--poll=15s]
@@ -132,7 +134,16 @@ usage: oxwin doctor
   --ei-channel=<Eval|_Default|none>
   --bare                 media only: no answer file, no drivers, no ei.cfg
   --assets=<dir>         a payload directory, instead of the embedded one
+  --unattend=<file>      use this answer file instead of the generated one. It is
+                         checked for known hazards and used regardless; only a file
+                         that is not an answer file at all is refused.
   --quiet
+
+unattend options:
+  --sysprep              print the generalize/oobeSystem answer file a golden
+                         build would write, instead of the windowsPE/specialize
+                         one a normal build writes
+  plus every build option above that affects the answer file's content
 
 upload options:
   --project=<name>       project to create the disk in. Required
@@ -456,6 +467,34 @@ fn build(args: &[String]) -> Result<()> {
     let config = config_from_args(args)?;
     let assets = assets_from_args(args)?;
 
+    let unattend = match args.iter().find_map(|a| a.strip_prefix("--unattend="))
+    {
+        None => None,
+        Some(path) => {
+            let xml = std::fs::read_to_string(path)
+                .with_context(|| format!("reading the answer file {path}"))?;
+            // Advisory. Every rule here is a failure that costs a rack cycle to
+            // discover, and none of them stops the build: the user edited this on
+            // purpose and owns the outcome.
+            let cx = oxwin_core::unattend::LintContext {
+                target_disk: config.target_disk,
+                generalize: config.generalize,
+            };
+            for problem in oxwin_core::unattend::lint(&xml, &cx) {
+                if problem.blocking {
+                    bail!("{path}: {}", problem.message);
+                }
+                eprintln!("warn  {path}: {}", problem.message);
+            }
+            eprintln!(
+                "note  using {path} verbatim. bootstrap.ps1 is still generated \
+                 from the flags, and the release detected from the media is not \
+                 applied to this file."
+            );
+            Some(xml)
+        }
+    };
+
     let request = Request {
         media,
         out: PathBuf::from(out),
@@ -465,6 +504,7 @@ fn build(args: &[String]) -> Result<()> {
         bare: flag("bare"),
         assets,
         enable_ems: ems_enabled(args),
+        unattend,
     };
 
     let quiet = flag("quiet");
@@ -484,6 +524,22 @@ fn build(args: &[String]) -> Result<()> {
         );
         print_ems(&output.ems);
     }
+    Ok(())
+}
+
+/// Print the answer file the current flags would produce.
+///
+/// Stdout, not a file beside the image: the answer file carries the password in
+/// cleartext, and writing one out as a side effect of a build is how a secret ends
+/// up somewhere nobody meant to put it.
+fn unattend_cmd(args: &[String]) -> Result<()> {
+    let config = config_from_args(args)?;
+    let xml = if flag_in(args, "sysprep") {
+        oxwin_core::unattend::build_sysprep(&config)?
+    } else {
+        oxwin_core::unattend::build(&config)?
+    };
+    print!("{xml}");
     Ok(())
 }
 
@@ -954,6 +1010,7 @@ fn build_for_golden(
         bare: false,
         assets: assets_from_args(args)?,
         enable_ems: ems_enabled(args),
+        unattend: None,
     };
 
     let (reporter, printer) = printer(quiet, "copying");

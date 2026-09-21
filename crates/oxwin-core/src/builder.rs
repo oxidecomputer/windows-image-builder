@@ -202,6 +202,19 @@ pub struct Request {
     /// Patch the media's BCD stores so Windows Setup talks on COM1. Off via
     /// `--no-ems`, and also whenever `bare` is set — see `bare` above.
     pub enable_ems: bool,
+    /// An answer file supplied by the caller, used verbatim in place of the
+    /// generated one.
+    ///
+    /// The text, not a path: the core does not read files on a caller's behalf, and
+    /// the GUI has the bytes already.
+    ///
+    /// **Two things this bypasses**, both of which fail silently and both of which
+    /// the caller is expected to have linted for with [`crate::unattend::lint`]:
+    /// `bootstrap.ps1` is still generated from `config`, so a file that does not
+    /// invoke it produces an install that succeeds and a guest that is unreachable;
+    /// and `assemble` overwrites `config.release` with the release read off the
+    /// media, which a supplied file never passes through.
+    pub unattend: Option<String>,
 }
 
 /// Whether the media's BCD stores were given a serial port, and if not why.
@@ -393,6 +406,23 @@ fn language_problem(languages: &[String], ui_language: &str) -> Option<String> {
     ))
 }
 
+/// The answer file this build writes: the caller's, or the generated one.
+///
+/// A function rather than a branch inline in `assemble`, so it can be tested without
+/// a mounted ISO and 21 GiB of scratch. The gated whole-image test is the wrong
+/// instrument for a two-way branch, and a test most runs skip proves nothing.
+///
+/// Takes `config` — the release detected from the media — and never
+/// `request.config`, which carries only what the caller asserted. Reading the wrong
+/// one built Server 2025 media with Server 2022 drivers while every log line said
+/// 2025.
+fn answer_file(request: &Request, config: &Config) -> Result<String> {
+    match &request.unattend {
+        Some(supplied) => Ok(supplied.clone()),
+        None => unattend::build(config),
+    }
+}
+
 fn assemble(
     request: &Request,
     reporter: &Reporter,
@@ -556,9 +586,16 @@ fn assemble(
     p1.reserve_file("/sources/install.wim", wim_size)?;
 
     if !request.bare {
+        if request.unattend.is_some() {
+            reporter.log(
+                "answer file: supplied by the caller, used verbatim. \
+                 bootstrap.ps1 is still generated, and the release detected \
+                 from the media is not applied to it",
+            );
+        }
         p1.add_file(
             "/autounattend.xml",
-            unattend::build(&config)?.into_bytes(),
+            answer_file(request, &config)?.into_bytes(),
         )?;
         p1.add_file(
             "/setup/bootstrap.ps1",
@@ -794,6 +831,7 @@ pub fn boot_partition(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::WindowsRelease;
 
     /// The media says which languages it carries, and the chosen one is not among
     /// them: Setup may not render in it, so this is worth a warning.
@@ -1099,6 +1137,97 @@ mod tests {
         // CRLF, because the UEFI shell reads it on a FAT volume.
         assert!(nsh.ends_with("stall 10000000\r\n"));
     }
+
+    /// The same `Config` literal `builds_the_same_image_by_every_route` builds,
+    /// copied rather than shared: that test is gated behind `OXWIN_TEST_MEDIA` and
+    /// these are not, so a second copy that can drift is the price of these tests
+    /// actually running.
+    fn test_config() -> Config {
+        Config {
+            release: WindowsRelease::Server2022,
+            edition: "datacenter".into(),
+            computer_name: "win-server-01".into(),
+            username: "oxide".into(),
+            password: "0xide!230xide!23".into(),
+            enable_rdp: true,
+            inject_drivers: true,
+            enable_serial_console: true,
+            target_disk: 1,
+            partitions: crate::partition::default_layout(),
+            ui_language: "en-US".into(),
+            region: "en-US".into(),
+            timezone: "UTC".into(),
+            product_key: None,
+            auto_logon: false,
+            generalize: false,
+            verbose_serial: false,
+            log_path: None,
+            show_ui_on_error: true,
+            image_index: None,
+            skip_image_install: false,
+            ssh_keys: vec![
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 dan@example".to_string(),
+            ],
+            enable_ssh: true,
+        }
+    }
+
+    /// A full `Request`, needing only the fields `answer_file` reads: `unattend`
+    /// and (indirectly) nothing else. `Media` points at a path that is never
+    /// opened -- `answer_file` does no I/O.
+    fn test_request(unattend: Option<String>) -> Request {
+        Request {
+            media: Media::Directory(PathBuf::from("/nonexistent")),
+            out: PathBuf::from("/nonexistent/out.img"),
+            config: test_config(),
+            edition_hint: None,
+            ei_channel: None,
+            bare: false,
+            assets: crate::assets::Assets::Directory(PathBuf::from(
+                "/nonexistent/assets",
+            )),
+            enable_ems: true,
+            unattend,
+        }
+    }
+
+    /// A supplied answer file reaches the volume verbatim. Anything less and this
+    /// is a suggestion rather than an escape hatch.
+    #[test]
+    fn a_supplied_answer_file_is_used_verbatim() {
+        let supplied = "<?xml version=\"1.0\"?>\n<unattend>mine</unattend>\n";
+        let config = test_config();
+        let request = test_request(Some(supplied.to_string()));
+        assert_eq!(answer_file(&request, &config).unwrap(), supplied);
+    }
+
+    /// With nothing supplied, the generated file is what it has always been.
+    #[test]
+    fn no_supplied_file_generates_as_before() {
+        let config = test_config();
+        let request = test_request(None);
+        assert_eq!(
+            answer_file(&request, &config).unwrap(),
+            crate::unattend::build(&config).unwrap()
+        );
+    }
+
+    /// `config`, never `request.config`. The local one carries the release
+    /// detected from the media; reading the other gave the answer file one
+    /// release and the drivers another, and every log line said the wrong thing.
+    #[test]
+    fn the_generated_file_uses_the_detected_release_not_the_asserted_one() {
+        let asserted =
+            Config { release: WindowsRelease::Server2019, ..test_config() };
+        let detected =
+            Config { release: WindowsRelease::Server2025, ..test_config() };
+        let mut request = test_request(None);
+        request.config = asserted;
+        assert_eq!(
+            answer_file(&request, &detected).unwrap(),
+            crate::unattend::build(&detected).unwrap()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1195,6 +1324,7 @@ mod whole_image {
                 repo_root().join("assets"),
             ),
             enable_ems: true,
+            unattend: None,
         };
         let mount_media = || Media::Directory(PathBuf::from(&mount));
 
@@ -1300,6 +1430,30 @@ mod whole_image {
             .expect("native build through the engine");
             assert_identical(&rs, &via_engine);
             let _ = std::fs::remove_file(&via_engine);
+        }
+
+        // Supplying the generated answer file must be indistinguishable from
+        // generating it. If these differ, the supplied path is not verbatim, and
+        // "use my own file" would silently mean "use something like my own file".
+        {
+            let supplied_path = scratch.join("supplied.img");
+            // The same config `assemble` would build from: same release (the media
+            // is Server2022, matching the request, so nothing is overridden) and
+            // the same chosen image index the first build above picked.
+            let mut config = request_for(mount_media(), &supplied_path).config;
+            config.image_index = Some(output.image_index);
+            let generated = crate::unattend::build(&config).expect("generate");
+            let mut supplied_request =
+                request_for(mount_media(), &supplied_path);
+            supplied_request.unattend = Some(generated);
+            build(
+                &supplied_request,
+                &Reporter::silent(),
+                &crate::engine::Cancel::new(),
+            )
+            .expect("native build with a supplied answer file");
+            assert_identical(&rs, &supplied_path);
+            let _ = std::fs::remove_file(&supplied_path);
         }
 
         let _ = std::fs::remove_file(&rs);
