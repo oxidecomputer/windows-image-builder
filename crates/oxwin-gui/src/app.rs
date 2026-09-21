@@ -75,6 +75,15 @@ pub struct Draft {
     pub region: String,
     /// Windows time zone ID.
     pub timezone: String,
+    /// The target disk's layout. `partition::default_layout()` until edited.
+    pub partitions: Vec<oxwin_core::partition::Partition>,
+    /// Whether the layout editor is open. Closed by default: the default layout is
+    /// right for essentially every Oxide guest, and a table of partition rows on the
+    /// first screen implies a decision nobody needs to make.
+    pub show_partitions: bool,
+    /// Size fields as typed, so a half-typed number is not parsed into a smaller
+    /// one and written back under the cursor. Parallel to `partitions`.
+    pub partition_sizes: Vec<String>,
 }
 
 impl Default for Draft {
@@ -102,6 +111,12 @@ impl Default for Draft {
             ui_language: d.ui_language.clone(),
             region: d.region.clone(),
             timezone: d.timezone.clone(),
+            partitions: oxwin_core::partition::default_layout(),
+            show_partitions: false,
+            partition_sizes: oxwin_core::partition::default_layout()
+                .iter()
+                .map(|p| p.size_mb.map(|mb| mb.to_string()).unwrap_or_default())
+                .collect(),
         }
     }
 }
@@ -150,9 +165,7 @@ impl Draft {
             region: self.region.clone(),
             timezone: self.timezone.clone(),
             target_disk: self.target_disk,
-            // Task 9 replaces this with a `Draft` field once the GUI offers a
-            // layout editor.
-            partitions: oxwin_core::partition::default_layout(),
+            partitions: self.partitions.clone(),
         }
     }
 }

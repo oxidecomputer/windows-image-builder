@@ -12,6 +12,7 @@ use crate::theme;
 use egui::{RichText, Ui};
 use oxwin_core::builder;
 use oxwin_core::media::{self, Media, MediaInfo};
+use oxwin_core::partition;
 use oxwin_core::wim;
 use std::path::{Path, PathBuf};
 
@@ -555,17 +556,21 @@ impl App {
                         ));
                     }
                     _ => {
-                        egui::ComboBox::from_label("Display language")
-                            .selected_text(self.draft.ui_language.clone())
-                            .show_ui(ui, |ui| {
-                                for language in &media_languages {
-                                    ui.selectable_value(
-                                        &mut self.draft.ui_language,
-                                        language.clone(),
-                                        language,
-                                    );
-                                }
-                            });
+                        ui.horizontal(|ui| {
+                            ui.label("Display language");
+                            egui::ComboBox::from_id_salt("ui_language")
+                                .selected_text(self.draft.ui_language.clone())
+                                .width(360.0)
+                                .show_ui(ui, |ui| {
+                                    for language in &media_languages {
+                                        ui.selectable_value(
+                                            &mut self.draft.ui_language,
+                                            language.clone(),
+                                            language,
+                                        );
+                                    }
+                                });
+                        });
                     }
                 }
 
@@ -573,37 +578,45 @@ impl App {
                 // twenty-odd rows, and as radio buttons it would push
                 // everything below it off the screen. Same reason the
                 // edition picker is one.
-                egui::ComboBox::from_label("Region and keyboard")
-                    .selected_text(
-                        oxwin_core::locale::region(&self.draft.region)
-                            .map(|r| r.label)
-                            .unwrap_or(self.draft.region.as_str()),
-                    )
-                    .show_ui(ui, |ui| {
-                        for r in oxwin_core::locale::REGIONS {
-                            ui.selectable_value(
-                                &mut self.draft.region,
-                                r.tag.to_string(),
-                                r.label,
-                            );
-                        }
-                    });
+                ui.horizontal(|ui| {
+                    ui.label("Region and keyboard");
+                    egui::ComboBox::from_id_salt("region")
+                        .selected_text(
+                            oxwin_core::locale::region(&self.draft.region)
+                                .map(|r| r.label)
+                                .unwrap_or(self.draft.region.as_str()),
+                        )
+                        .width(360.0)
+                        .show_ui(ui, |ui| {
+                            for r in oxwin_core::locale::REGIONS {
+                                ui.selectable_value(
+                                    &mut self.draft.region,
+                                    r.tag.to_string(),
+                                    r.label,
+                                );
+                            }
+                        });
+                });
 
-                egui::ComboBox::from_label("Time zone")
-                    .selected_text(
-                        oxwin_core::locale::time_zone(&self.draft.timezone)
-                            .map(|z| z.label)
-                            .unwrap_or(self.draft.timezone.as_str()),
-                    )
-                    .show_ui(ui, |ui| {
-                        for z in oxwin_core::locale::TIME_ZONES {
-                            ui.selectable_value(
-                                &mut self.draft.timezone,
-                                z.id.to_string(),
-                                z.label,
-                            );
-                        }
-                    });
+                ui.horizontal(|ui| {
+                    ui.label("Time zone");
+                    egui::ComboBox::from_id_salt("timezone")
+                        .selected_text(
+                            oxwin_core::locale::time_zone(&self.draft.timezone)
+                                .map(|z| z.label)
+                                .unwrap_or(self.draft.timezone.as_str()),
+                        )
+                        .width(360.0)
+                        .show_ui(ui, |ui| {
+                            for z in oxwin_core::locale::TIME_ZONES {
+                                ui.selectable_value(
+                                    &mut self.draft.timezone,
+                                    z.id.to_string(),
+                                    z.label,
+                                );
+                            }
+                        });
+                });
 
                 hint(
                     ui,
@@ -645,6 +658,10 @@ impl App {
                     );
                 });
 
+                ui.add_space(6.0);
+                section(ui, "Partition layout");
+                self.ui_partition_editor(ui);
+
                 // Warnings live here, in the flow, because they are commentary on the
                 // choices around them. Blockers do not: they belong beside the button
                 // they are blocking, where they cannot be scrolled out of sight.
@@ -657,6 +674,126 @@ impl App {
                 }
                 ui.add_space(12.0);
             });
+    }
+
+    /// The partition layout editor, closed by default: the default layout is right
+    /// for essentially every Oxide guest, and a table of partition rows on the first
+    /// screen implies a decision nobody needs to make.
+    fn ui_partition_editor(&mut self, ui: &mut Ui) {
+        ui.checkbox(
+            &mut self.draft.show_partitions,
+            "Customise the partition layout",
+        );
+        if !self.draft.show_partitions {
+            return;
+        }
+
+        hint(
+            ui,
+            "Sizes are in MB. Leave a size empty for \"the rest of the disk\". \
+             This tool cannot check that they fit: the disk is created on the \
+             rack after the image is built.",
+        );
+
+        let mut remove: Option<usize> = None;
+        for i in 0..self.draft.partitions.len() {
+            ui.horizontal(|ui| {
+                // Order and PartitionID are derived from position and are
+                // deliberately not editable -- see oxwin_core::partition.
+                ui.label(format!("{}.", i + 1));
+
+                egui::ComboBox::from_id_salt(("partition-kind", i))
+                    .selected_text(self.draft.partitions[i].kind.type_name())
+                    .show_ui(ui, |ui| {
+                        for kind in [
+                            partition::Kind::Efi,
+                            partition::Kind::Msr,
+                            partition::Kind::Primary,
+                        ] {
+                            ui.selectable_value(
+                                &mut self.draft.partitions[i].kind,
+                                kind,
+                                kind.type_name(),
+                            );
+                        }
+                    });
+
+                // Typed text, parsed on change rather than bound directly: binding
+                // an integer to a text field turns "1024" mid-type into "1" and
+                // writes it back under the cursor.
+                let size = &mut self.draft.partition_sizes[i];
+                let changed = ui
+                    .add(
+                        egui::TextEdit::singleline(size)
+                            .desired_width(70.0)
+                            .hint_text("rest"),
+                    )
+                    .changed();
+                if changed {
+                    self.draft.partitions[i].size_mb =
+                        self.draft.partition_sizes[i].trim().parse().ok();
+                }
+
+                let mut letter = self.draft.partitions[i]
+                    .letter
+                    .map(String::from)
+                    .unwrap_or_default();
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut letter)
+                            .desired_width(24.0),
+                    )
+                    .changed()
+                {
+                    self.draft.partitions[i].letter =
+                        letter.chars().next().map(|c| c.to_ascii_uppercase());
+                }
+
+                let mut label =
+                    self.draft.partitions[i].label.clone().unwrap_or_default();
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut label)
+                            .desired_width(120.0),
+                    )
+                    .changed()
+                {
+                    self.draft.partitions[i].label =
+                        Some(label).filter(|l| !l.is_empty());
+                }
+
+                if ui.button("Remove").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            self.draft.partitions.remove(i);
+            self.draft.partition_sizes.remove(i);
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Add partition").clicked() {
+                self.draft.partitions.push(partition::Partition {
+                    kind: partition::Kind::Primary,
+                    size_mb: None,
+                    label: None,
+                    letter: None,
+                    format: Some(partition::Format::Ntfs),
+                });
+                self.draft.partition_sizes.push(String::new());
+            }
+            if ui.button("Reset to default").clicked() {
+                self.draft.partitions = partition::default_layout();
+                self.draft.partition_sizes = self
+                    .draft
+                    .partitions
+                    .iter()
+                    .map(|p| {
+                        p.size_mb.map(|mb| mb.to_string()).unwrap_or_default()
+                    })
+                    .collect();
+            }
+        });
     }
 
     /// Ask where the image should go, then start building it.
@@ -1447,10 +1584,21 @@ impl App {
                 }
             }
             if !ready {
+                // Name what is actually wrong, not that something is: the reason
+                // may live behind a collapsed disclosure (the partition editor,
+                // for one) and so be invisible rather than merely scrolled away.
+                let reason = self
+                    .draft
+                    .to_settings()
+                    .problems()
+                    .into_iter()
+                    .find(|p| p.blocking)
+                    .map(|p| p.message)
+                    .unwrap_or_else(|| {
+                        "Something here is not ready yet.".into()
+                    });
                 ui.label(
-                    RichText::new("Resolve the items above first")
-                        .color(theme::TEXT_DIM)
-                        .size(12.0),
+                    RichText::new(reason).color(theme::TEXT_DIM).size(12.0),
                 );
             }
         });
