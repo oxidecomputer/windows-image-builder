@@ -15,6 +15,7 @@ pub mod locale;
 pub mod mbr;
 pub mod media;
 pub mod notices;
+pub mod partition;
 pub mod progress;
 pub mod settings;
 pub mod sparse;
