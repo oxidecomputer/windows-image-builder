@@ -32,6 +32,9 @@
 use crate::settings::{Deployment, Settings, WindowsRelease};
 use anyhow::{Result, bail};
 
+mod lint;
+pub use lint::{LintContext, lint};
+
 /// Label of the volume carrying `autounattend.xml`, `bootstrap.ps1`, drivers and
 /// OpenSSH. The image builder must label the volume with this same string.
 pub const VOLUME_LABEL: &str = "WINSETUP";
