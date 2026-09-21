@@ -172,7 +172,21 @@ pub struct Config {
     pub inject_drivers: bool,
     pub enable_serial_console: bool,
     pub target_disk: u8,
-    pub locale: String,
+    /// What Setup and the installed shell are rendered in.
+    ///
+    /// **Constrained by the media**: this needs a language pack present in the
+    /// image, and most media carries exactly one. `media::MediaInfo::languages`
+    /// reads which. A value the media does not carry is a warning rather than a
+    /// refusal, because what Setup does then has not been established here — see
+    /// the design note in `docs/superpowers/specs/2026-09-21-customization-design.md`.
+    pub ui_language: String,
+    /// Formats, currency, and keyboard layout: `UserLocale`, `SystemLocale` and
+    /// `InputLocale`.
+    ///
+    /// Unconstrained by the media — any tag works on any ISO. Kept apart from
+    /// `ui_language` because collapsing the two is only correct while both are
+    /// `en-US`, which is the only reason one field sufficed until now.
+    pub region: String,
     pub timezone: String,
     pub product_key: Option<String>,
     /// Console autologon. For debugging installs only.
@@ -259,8 +273,9 @@ impl Config {
             inject_drivers: settings.inject_drivers,
             enable_serial_console: settings.enable_serial_console,
             target_disk: settings.target_disk,
-            locale: "en-US".into(),
-            timezone: "UTC".into(),
+            ui_language: settings.ui_language.clone(),
+            region: settings.region.clone(),
+            timezone: settings.timezone.clone(),
             product_key: settings.product_key.clone(),
             auto_logon: false,
             generalize: settings.deployment.is_golden(),
@@ -404,18 +419,19 @@ fn windows_pe_pass(
     target: &Target,
     edition: &Edition,
 ) -> Result<String> {
-    let locale = xml_escape(&config.locale);
+    let language = xml_escape(&config.ui_language);
+    let region = xml_escape(&config.region);
     let mut components: Vec<String> = Vec::new();
 
     components.push(format!(
         "    <component name=\"Microsoft-Windows-International-Core-WinPE\" {ARCH}>\n\
          \x20     <SetupUILanguage>\n\
-         \x20       <UILanguage>{locale}</UILanguage>\n\
+         \x20       <UILanguage>{language}</UILanguage>\n\
          \x20     </SetupUILanguage>\n\
-         \x20     <InputLocale>{locale}</InputLocale>\n\
-         \x20     <SystemLocale>{locale}</SystemLocale>\n\
-         \x20     <UILanguage>{locale}</UILanguage>\n\
-         \x20     <UserLocale>{locale}</UserLocale>\n\
+         \x20     <InputLocale>{region}</InputLocale>\n\
+         \x20     <SystemLocale>{region}</SystemLocale>\n\
+         \x20     <UILanguage>{language}</UILanguage>\n\
+         \x20     <UserLocale>{region}</UserLocale>\n\
          \x20   </component>"
     ));
 
@@ -759,12 +775,13 @@ fn oobe_pass(config: &Config, international: bool) -> String {
     let international = if international {
         format!(
             "    <component name=\"Microsoft-Windows-International-Core\" {ARCH}>\n\
-             \x20     <InputLocale>{locale}</InputLocale>\n\
-             \x20     <SystemLocale>{locale}</SystemLocale>\n\
-             \x20     <UILanguage>{locale}</UILanguage>\n\
-             \x20     <UserLocale>{locale}</UserLocale>\n\
+             \x20     <InputLocale>{region}</InputLocale>\n\
+             \x20     <SystemLocale>{region}</SystemLocale>\n\
+             \x20     <UILanguage>{language}</UILanguage>\n\
+             \x20     <UserLocale>{region}</UserLocale>\n\
              \x20   </component>\n",
-            locale = xml_escape(&config.locale)
+            language = xml_escape(&config.ui_language),
+            region = xml_escape(&config.region)
         )
     } else {
         String::new()
@@ -830,7 +847,8 @@ mod tests {
             inject_drivers: true,
             enable_serial_console: true,
             target_disk: 1,
-            locale: "en-US".into(),
+            ui_language: "en-US".into(),
+            region: "en-US".into(),
             timezone: "UTC".into(),
             product_key: None,
             auto_logon: false,
@@ -988,6 +1006,29 @@ mod tests {
                     ..base()
                 },
             ),
+            // Locale is the one setting whose failure is a wizard page on a guest
+            // with no framebuffer, so it gets pinned rather than trusted.
+            (
+                "locale-de-de",
+                "German display language and region",
+                Config {
+                    ui_language: "de-DE".into(),
+                    region: "de-DE".into(),
+                    timezone: "W. Europe Standard Time".into(),
+                    ..base()
+                },
+            ),
+            // The case one picker would have made unreachable: English media, German
+            // formats and keyboard. Common, and correct on any ISO.
+            (
+                "locale-split",
+                "English display language with a German region",
+                Config {
+                    ui_language: "en-US".into(),
+                    region: "de-DE".into(),
+                    ..base()
+                },
+            ),
         ]
     }
 
@@ -1045,6 +1086,65 @@ mod tests {
             cases.len(),
             failures.join("\n")
         );
+    }
+
+    /// Display language and region are different axes and must land in different
+    /// elements. One string driving both is only correct while it is always en-US.
+    #[test]
+    fn language_and_region_land_in_the_right_elements() {
+        let config = Config {
+            ui_language: "en-US".into(),
+            region: "de-DE".into(),
+            ..base()
+        };
+        let xml = build(&config).expect("build");
+        // UI language: what Setup and the shell are rendered in. Needs a pack.
+        assert!(xml.contains("<UILanguage>en-US</UILanguage>"));
+        assert!(xml.contains("<SetupUILanguage>"));
+        // Region: formats and keyboard. Works on any media.
+        assert!(xml.contains("<InputLocale>de-DE</InputLocale>"));
+        assert!(xml.contains("<SystemLocale>de-DE</SystemLocale>"));
+        assert!(xml.contains("<UserLocale>de-DE</UserLocale>"));
+    }
+
+    /// The sysprep file is where getting this wrong reproduces the Localization hang:
+    /// windowsPE does not run on a generalize cycle, so this component is the only
+    /// thing that sets the locale at all.
+    #[test]
+    fn the_sysprep_file_carries_the_chosen_locale_not_en_us() {
+        let config = Config {
+            ui_language: "de-DE".into(),
+            region: "de-DE".into(),
+            generalize: true,
+            ..base()
+        };
+        let xml = build_sysprep(&config).expect("build_sysprep");
+        assert!(xml.contains(r#"name="Microsoft-Windows-International-Core""#));
+        assert!(xml.contains("<UILanguage>de-DE</UILanguage>"));
+        assert!(xml.contains("<UserLocale>de-DE</UserLocale>"));
+        assert!(!xml.contains("en-US"), "hardcoded en-US survived: {xml}");
+    }
+
+    #[test]
+    fn the_timezone_reaches_specialize() {
+        let config =
+            Config { timezone: "W. Europe Standard Time".into(), ..base() };
+        let xml = build(&config).expect("build");
+        assert!(
+            xml.contains("<TimeZone>W. Europe Standard Time</TimeZone>"),
+            "{xml}"
+        );
+    }
+
+    /// The safety property for this whole phase. If it fails, the split changed bytes
+    /// it had no business changing.
+    #[test]
+    fn the_default_locale_produces_the_same_bytes_as_before() {
+        let config = base();
+        assert_eq!(config.ui_language, "en-US");
+        assert_eq!(config.region, "en-US");
+        assert_eq!(config.timezone, "UTC");
+        // `matches_the_goldens` is the real assertion; this names the reason.
     }
 
     /// The generator must satisfy its own linter, for every case and both deployment

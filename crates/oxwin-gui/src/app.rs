@@ -136,6 +136,11 @@ impl Draft {
                 let k = self.product_key.trim();
                 if k.is_empty() { None } else { Some(k.to_string()) }
             },
+            // Task 6 replaces these with real `Draft` fields and their own
+            // controls; this is a minimal build fix, not a feature.
+            ui_language: Settings::default().ui_language,
+            region: Settings::default().region,
+            timezone: Settings::default().timezone,
             target_disk: self.target_disk,
         }
     }

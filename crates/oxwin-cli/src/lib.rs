@@ -102,6 +102,11 @@ usage: oxwin doctor
                          specialize, so reaching it proves windowsPE finished
   --no-ems               do not patch the media BCD for serial; Windows Setup
                          then says nothing on COM1 until the install finishes
+  --ui-language=<tag>    display language, e.g. de-DE. Needs a language pack on
+                         the media; warns if the media does not carry it.
+  --region=<tag>         formats and keyboard, e.g. de-DE. Works on any media.
+  --timezone=<id>        Windows time zone ID, e.g. \"W. Europe Standard Time\".
+                         Not an IANA name; default UTC.
   --log-path=<path>      where Setup writes setupact.log/setuperr.log. Its
                          default is the WinPE RAM disk, so a stalled install
                          loses its own explanation on reset
@@ -325,9 +330,18 @@ fn config_from_args(args: &[String]) -> Result<Config> {
             .unwrap_or("1")
             .parse()
             .context("--target-disk must be a disk index")?,
-        locale: "en-US".into(),
-        timezone: "UTC".into(),
-        product_key: opt("product-key"),
+        ui_language: opt("ui-language")
+            .unwrap_or_else(|| oxwin_core::locale::DEFAULT_REGION.into()),
+        region: opt("region")
+            .unwrap_or_else(|| oxwin_core::locale::DEFAULT_REGION.into()),
+        timezone: opt("timezone")
+            .unwrap_or_else(|| oxwin_core::locale::DEFAULT_TIME_ZONE.into()),
+        // An empty or whitespace-only `--product-key=` is not "no key was given" --
+        // `opt` still returns `Some("")` -- and an empty `<Key>` element is not the
+        // same as omitting it: Setup treats it as a key to resolve, matches no
+        // edition, and stalls at the licence-terms page with no error. Treat it as
+        // `None`, matching what the GUI already does in `Draft::to_settings`.
+        product_key: opt("product-key").filter(|k| !k.trim().is_empty()),
         auto_logon: false,
         generalize: flag("generalize") || opt("name").as_deref() == Some("*"),
         verbose_serial: flag("verbose-serial"),
@@ -1320,6 +1334,32 @@ mod tests {
         assert!(ems_enabled(&[]));
         assert!(ems_enabled(&["--verbose-serial".into()]));
         assert!(!ems_enabled(&["--no-ems".into()]));
+    }
+
+    /// `--product-key=` with nothing after the `=` is not "install with no key" by
+    /// accident -- it must become `None`, not `Some("")`. An empty `<Key>` element
+    /// in the answer file is not the same as omitting it: Setup treats it as a key
+    /// to resolve, matches no edition, and stalls at the licence-terms page with no
+    /// error anywhere.
+    #[test]
+    fn an_empty_product_key_flag_is_none() {
+        let args = vec![
+            "--password=0xide!230xide!23".to_string(),
+            "--product-key=".to_string(),
+        ];
+        let config = config_from_args(&args).unwrap();
+        assert_eq!(config.product_key, None);
+    }
+
+    /// Whitespace-only is the same defect wearing a disguise.
+    #[test]
+    fn a_whitespace_only_product_key_flag_is_none() {
+        let args = vec![
+            "--password=0xide!230xide!23".to_string(),
+            "--product-key=   ".to_string(),
+        ];
+        let config = config_from_args(&args).unwrap();
+        assert_eq!(config.product_key, None);
     }
 
     /// An explicit flag beats an inherited environment, the same rule `--assets`

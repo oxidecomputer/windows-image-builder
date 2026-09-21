@@ -244,6 +244,14 @@ pub struct Settings {
     pub enable_ems: bool,
     /// A retail/volume key, or `None` for evaluation media (which rejects keys).
     pub product_key: Option<String>,
+    /// What Setup and the shell are rendered in. Detected from the media where the
+    /// media says; `locale::DEFAULT_REGION` otherwise.
+    pub ui_language: String,
+    /// Formats and keyboard: one choice driving `UserLocale`, `SystemLocale` and
+    /// `InputLocale`. See [`crate::locale`] for why these are not one field.
+    pub region: String,
+    /// A Windows time zone ID, never an IANA name.
+    pub timezone: String,
     /// Disk index Setup installs onto. 1 = the second disk, because disk 0 is our
     /// own install media.
     pub target_disk: u8,
@@ -263,6 +271,9 @@ impl Default for Settings {
             enable_serial_console: true,
             enable_ems: true,
             product_key: None,
+            ui_language: crate::locale::DEFAULT_REGION.to_string(),
+            region: crate::locale::DEFAULT_REGION.to_string(),
+            timezone: crate::locale::DEFAULT_TIME_ZONE.to_string(),
             target_disk: 1,
         }
     }
@@ -380,6 +391,34 @@ impl Settings {
                 format!(
                     "{} has not been verified on an Oxide rack yet.",
                     self.release.label()
+                ),
+            ));
+        }
+
+        // The tables are the only validation there is: an unknown tag reaches the
+        // answer file untouched and Windows ignores it without a word, leaving a
+        // guest whose keyboard or clock is quietly wrong. A warning rather than a
+        // refusal, because the tables are curated and somebody may legitimately
+        // know a tag they do not carry.
+        if crate::locale::region(&self.region).is_none() {
+            v.push(Problem::warn(
+                "region",
+                format!(
+                    "{:?} is not a region this tool knows. It will be written to \
+                     the answer file as given; Windows ignores an unrecognised \
+                     one without an error.",
+                    self.region
+                ),
+            ));
+        }
+        if crate::locale::time_zone(&self.timezone).is_none() {
+            v.push(Problem::warn(
+                "timezone",
+                format!(
+                    "{:?} is not a Windows time zone ID. Windows wants \
+                     \"W. Europe Standard Time\", not \"Europe/Berlin\", and \
+                     ignores an unknown one silently, leaving the guest on UTC.",
+                    self.timezone
                 ),
             ));
         }
@@ -683,5 +722,37 @@ mod tests {
     fn malformed_product_key_blocks() {
         let s = Settings { product_key: Some("ABC-DEF".into()), ..base() };
         assert!(!s.is_buildable());
+    }
+
+    /// Defaults must be exactly what every committed golden was built with.
+    #[test]
+    fn locale_defaults_match_the_goldens() {
+        let s = Settings::default();
+        assert_eq!(s.ui_language, crate::locale::DEFAULT_REGION);
+        assert_eq!(s.region, crate::locale::DEFAULT_REGION);
+        assert_eq!(s.timezone, crate::locale::DEFAULT_TIME_ZONE);
+    }
+
+    /// An unknown tag reaches the answer file untouched and Windows ignores it in
+    /// silence, so the table is the only check there is. A warning, not a refusal:
+    /// someone may know a tag this curated list does not carry.
+    #[test]
+    fn an_unknown_region_warns_but_does_not_block() {
+        let s = Settings { region: "xx-XX".into(), ..base() };
+        assert!(s.is_buildable());
+        assert!(
+            s.problems().iter().any(|p| p.field == "region" && !p.blocking),
+            "{:?}",
+            s.problems()
+        );
+    }
+
+    #[test]
+    fn an_unknown_timezone_warns_but_does_not_block() {
+        let s = Settings { timezone: "Europe/Berlin".into(), ..base() };
+        assert!(s.is_buildable());
+        assert!(
+            s.problems().iter().any(|p| p.field == "timezone" && !p.blocking)
+        );
     }
 }
