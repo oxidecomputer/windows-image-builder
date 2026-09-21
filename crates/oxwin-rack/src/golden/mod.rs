@@ -41,6 +41,12 @@ pub struct GoldenSpec {
     /// What the finished image reports about itself.
     pub os: String,
     pub version: String,
+    /// What the media turned out to be, for the description of the instance that
+    /// installs it. Overlaps `version` — the release label is in both — because the two
+    /// describe different resources and a rack shows them in different places: this one
+    /// is read in `oxide instance list` while the run is still going, and `version` is
+    /// read off the image for months afterwards.
+    pub installed: crate::Installed,
 }
 
 /// A finished run.
@@ -351,7 +357,8 @@ impl Rack {
                     let disk = DiskSpec {
                         name: names.installer_disk(),
                         description: format!(
-                            "Windows installer for golden run {}",
+                            "{}, golden run {}",
+                            spec.installed.installer_description(),
                             names.run()
                         ),
                         block_size: crate::upload::INSTALLER_BLOCK_SIZE,
@@ -370,6 +377,7 @@ impl Rack {
                         &names.instance(),
                         &names.installer_disk(),
                     );
+                    instance.description = spec.installed.description();
                     instance.system_disk = Some(names.system_disk());
                     instance.system_disk_gib = spec.system_disk_gib;
                     instance.ncpus = spec.ncpus;

@@ -127,7 +127,9 @@ upload options:
   --profile=<name>       which `oxide auth login` profile to use. Omitted, the
                          SDK resolves OXIDE_TOKEN, then OXIDE_PROFILE, then the
                          default profile — naming one here disables OXIDE_TOKEN
-  --description=<text>   disk description
+  --description=<text>   disk description. Omitted, it is just Installer for
+                         Windows: an .img is all this path is given, so there
+                         is no media here to read the release off
   --block-size=<n>       512 (default), 2048 or 4096. Leave it alone for an
                          installer image: the MBR lays partitions out in
                          512-byte sectors, and any other value points them at
@@ -139,6 +141,10 @@ instance options:
                          the control plane owns boot order and there is no
                          fallthrough. Required
   --profile=<name>       as for upload
+  --description=<text>   what `oxide instance list` shows. Omitted, it is just
+                         Windows: this path is handed a disk, not media, so
+                         there is nothing here to read the release off. A
+                         `golden` run fills it in from the media it built
   --cpus=<n>             vCPUs (default 4)
   --memory-gib=<n>       RAM in GiB (default 8)
   --system-disk=<name>   blank disk to install onto (default <name>-system)
@@ -504,8 +510,11 @@ fn upload(args: &[String]) -> Result<()> {
 
     let spec = oxwin_rack::DiskSpec {
         name: disk,
-        description: opt("description")
-            .unwrap_or_else(|| "Windows installer, built by oxwin".into()),
+        // An .img is all this path is given, so there is no media to read a release
+        // off. `golden`, which built the image itself, fills it in.
+        description: opt("description").unwrap_or_else(|| {
+            oxwin_rack::Installed::default().installer_description()
+        }),
         block_size: opt("block-size")
             .as_deref()
             .unwrap_or("512")
@@ -549,6 +558,11 @@ fn instance(args: &[String]) -> Result<()> {
         .context("--installer-disk is required: it becomes the boot disk")?;
 
     let mut spec = oxwin_rack::InstanceSpec::for_installer(name, &installer);
+    // Nothing here has seen the media -- the installer is a disk on the rack by now --
+    // so the release cannot be detected, only stated.
+    if let Some(v) = opt("description") {
+        spec.description = v;
+    }
     if let Some(v) = opt("cpus") {
         spec.ncpus = v.parse().context("--cpus must be a number")?;
     }
@@ -684,17 +698,32 @@ fn golden(args: &[String]) -> Result<()> {
     // every time -- see build_for_golden for why a resume does not reuse the file
     // it finds.
     let is_image = source.extension().is_some_and(|e| e == "img");
-    let (image_path, version) = if is_image {
+    let (image_path, built) = if is_image {
+        // An .img has no WIM to read, so the only thing known about it is whatever the
+        // caller said. Passing that through as the release is better than describing
+        // the instance as a bare "Windows" when they did name one.
+        let version = opt("image-version");
         (
             source.clone(),
-            opt("image-version").unwrap_or_else(|| "unknown".into()),
+            BuiltMedia {
+                installed: oxwin_rack::Installed {
+                    release: version.clone(),
+                    ..Default::default()
+                },
+                version: version.unwrap_or_else(|| "unknown".into()),
+            },
         )
     } else {
         let out = opt("image-out")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(format!("{run}.img")));
-        let detected = build_for_golden(&source, &out, args, quiet)?;
-        (out, opt("image-version").unwrap_or(detected))
+        let mut built = build_for_golden(&source, &out, args, quiet)?;
+        // The override names the *image's* version. What the instance says it is
+        // installing stays what the media said, because that is a fact.
+        if let Some(v) = opt("image-version") {
+            built.version = v;
+        }
+        (out, built)
     };
 
     let mut spec = oxwin_rack::golden::GoldenSpec {
@@ -709,7 +738,8 @@ fn golden(args: &[String]) -> Result<()> {
         ncpus: 4,
         memory_gib: 8,
         os: opt("os").unwrap_or_else(|| "windows".into()),
-        version,
+        version: built.version,
+        installed: built.installed,
     };
     if let Some(v) = opt("timeout") {
         spec.watch.timeout = oxwin_rack::golden::watch::parse_duration(&v)?;
@@ -798,7 +828,16 @@ fn golden(args: &[String]) -> Result<()> {
     }
 }
 
-/// Build media for a golden run, and report the release the media turned out to be.
+/// What a golden build learned about its media, for the two resources that carry it.
+struct BuiltMedia {
+    /// The version string the finished image reports, read months later in
+    /// `oxide image list`. The release label, not the slug.
+    version: String,
+    /// The same media, for the description of the instance that installs it.
+    installed: oxwin_rack::Installed,
+}
+
+/// Build media for a golden run, and report what the media turned out to be.
 ///
 /// `generalize` is set here, not taken from a flag. Media built without it installs
 /// perfectly and never shuts down, and the watcher cannot tell that apart from a
@@ -818,7 +857,7 @@ fn build_for_golden(
     out: &std::path::Path,
     args: &[String],
     quiet: bool,
-) -> Result<String> {
+) -> Result<BuiltMedia> {
     let mut config = config_from_args(args)?;
     config.generalize = true;
     config.computer_name = "*".into();
@@ -861,7 +900,17 @@ fn build_for_golden(
     }
     // The label, not the slug: this becomes the image's version string, which
     // someone reads in `oxide image list` months later.
-    Ok(output.release.label().to_string())
+    //
+    // Everything here comes off `output`, never off the flags: `assemble` overwrites
+    // the asserted release with the detected one, so this is what was actually built.
+    Ok(BuiltMedia {
+        version: output.release.label().to_string(),
+        installed: oxwin_rack::Installed {
+            release: Some(output.release.label().to_string()),
+            build: output.build,
+            edition: Some(output.edition_id.clone()),
+        },
+    })
 }
 
 /// Prove the image boots: clone it, and watch it come up and stay up.

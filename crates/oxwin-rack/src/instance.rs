@@ -56,12 +56,72 @@ pub struct InstanceSpec {
     pub start: bool,
 }
 
+/// What the media turned out to be, for the description the rack shows.
+///
+/// `oxide instance list` shows the description and nothing else about the guest, so a
+/// fixed string was the one place someone could have learned which Windows this is and
+/// it said nothing — on a rack carrying several of these, all of them alike.
+///
+/// Every field here was **read off the media**, never asserted: `builder::assemble`
+/// overwrites the caller's release with the detected one, so this describes what went on
+/// the disk rather than what was asked for. Each is optional because each is separately
+/// absent on real media, and [`Installed::description`] has to read as a sentence either
+/// way.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Installed {
+    /// `WindowsRelease::label`, e.g. `Windows Server 2022`.
+    pub release: Option<String>,
+    /// The **base** build the WIM reported, not the patch level: media whose filename
+    /// says 19045 reports 19041.
+    pub build: Option<u32>,
+    /// `EDITIONID` of the image that was applied, e.g. `ServerDatacenterEval`. The
+    /// image index is deliberately not here: it selects, it does not describe, and it
+    /// means nothing to someone reading a list of instances.
+    pub edition: Option<String>,
+}
+
+impl Installed {
+    /// `Windows Server 2022 (20348), ServerDatacenterEval`.
+    pub fn description(&self) -> String {
+        /// Blank is absent. The GUI holds raw strings, so an empty field reaches here
+        /// rather than a `None`.
+        fn field(v: &Option<String>) -> Option<&str> {
+            v.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        }
+        // "Windows" rather than nothing, so the description is never empty and never
+        // opens with a comma. This is also the whole description on the one path with
+        // no media in hand, `oxwin instance` against an already-uploaded disk.
+        let mut out = field(&self.release).unwrap_or("Windows").to_string();
+        if let Some(build) = self.build {
+            out.push_str(&format!(" ({build})"));
+        }
+        if let Some(edition) = field(&self.edition) {
+            out.push_str(&format!(", {edition}"));
+        }
+        out
+    }
+
+    /// The same, for the disk the media was uploaded to: `Installer for Windows Server
+    /// 2022 (20348), ServerDatacenterEval`.
+    ///
+    /// A word in front rather than a second format, because the two resources sit
+    /// beside each other in a project and disagreeing about what the media is would be
+    /// worse than saying it twice.
+    pub fn installer_description(&self) -> String {
+        format!("Installer for {}", self.description())
+    }
+}
+
 impl InstanceSpec {
     /// Sensible defaults for a Windows install, given the disk that was uploaded.
+    ///
+    /// The description says only `Windows`: every caller that knows what the media was
+    /// overwrites it with an [`Installed::description`], and a caller that does not know
+    /// must not claim otherwise.
     pub fn for_installer(name: &str, installer_disk: &str) -> Self {
         Self {
             name: name.to_string(),
-            description: "Windows, installed by oxwin".into(),
+            description: Installed::default().description(),
             hostname: name.to_string(),
             ncpus: 4,
             memory_gib: 8,
@@ -343,6 +403,92 @@ mod tests {
     fn nothing_created_means_nothing_to_clean_up() {
         assert!(Leftovers::default().is_empty());
         assert!(Leftovers::default().cleanup_commands("danb").is_empty());
+    }
+
+    /// Everything the media said, in the order someone reads it.
+    #[test]
+    fn a_description_names_the_release_the_build_and_the_edition() {
+        let installed = Installed {
+            release: Some("Windows Server 2022".into()),
+            build: Some(20348),
+            edition: Some("ServerDatacenterEval".into()),
+        };
+        assert_eq!(
+            installed.description(),
+            "Windows Server 2022 (20348), ServerDatacenterEval"
+        );
+    }
+
+    /// Each field is separately absent on real media: a build with no release is an
+    /// unfamiliar build, and an edition with no build is media omitting the tag. None
+    /// of them may turn into an empty pair of brackets or a dangling comma.
+    #[test]
+    fn a_description_degrades_one_field_at_a_time() {
+        let full = Installed {
+            release: Some("Windows Server 2022".into()),
+            build: Some(20348),
+            edition: Some("ServerDatacenterEval".into()),
+        };
+        assert_eq!(
+            Installed { build: None, ..full.clone() }.description(),
+            "Windows Server 2022, ServerDatacenterEval"
+        );
+        assert_eq!(
+            Installed { edition: None, ..full.clone() }.description(),
+            "Windows Server 2022 (20348)"
+        );
+        assert_eq!(
+            Installed { release: None, ..full.clone() }.description(),
+            "Windows (20348), ServerDatacenterEval"
+        );
+        assert_eq!(
+            Installed { release: None, build: None, ..full }.description(),
+            "Windows, ServerDatacenterEval"
+        );
+    }
+
+    /// The disk is described by what it installs, so it is the same string with a word
+    /// in front of it: an installer disk and the instance that boots it sit next to each
+    /// other in a project, and they should agree about what is on the media.
+    #[test]
+    fn an_installer_disk_is_described_by_what_it_installs() {
+        let installed = Installed {
+            release: Some("Windows Server 2022".into()),
+            build: Some(20348),
+            edition: Some("ServerDatacenterEval".into()),
+        };
+        assert_eq!(
+            installed.installer_description(),
+            "Installer for Windows Server 2022 (20348), ServerDatacenterEval"
+        );
+        assert_eq!(
+            Installed::default().installer_description(),
+            "Installer for Windows"
+        );
+    }
+
+    /// The `oxwin instance` path has no media in hand at all, so this is what it gets
+    /// when the user names no description.
+    #[test]
+    fn a_description_of_nothing_is_still_a_description() {
+        assert_eq!(Installed::default().description(), "Windows");
+        assert_eq!(
+            InstanceSpec::for_installer("w", "installer").description,
+            "Windows"
+        );
+    }
+
+    /// Blank is not the same as absent anywhere else in this workspace, and it is not
+    /// here either: the GUI's `Draft` holds raw strings, so an empty edition reaches
+    /// this rather than a `None`.
+    #[test]
+    fn a_blank_field_is_an_absent_field() {
+        let installed = Installed {
+            release: Some(String::new()),
+            build: None,
+            edition: Some("  ".into()),
+        };
+        assert_eq!(installed.description(), "Windows");
     }
 
     /// The RDP warning is not optional detail. It is the single most common surprise on

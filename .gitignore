@@ -1,3 +1,4 @@
+/dist
 /target
 
 # Third-party payload. Fetched by tools/fetch-payload.sh, never committed — CI runs

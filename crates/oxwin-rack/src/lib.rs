@@ -29,7 +29,7 @@ pub mod profile;
 pub mod upload;
 
 pub use golden::{Keep, Names, Resource};
-pub use instance::{Created, InstanceSpec, Leftovers};
+pub use instance::{Created, Installed, InstanceSpec, Leftovers};
 pub use profile::{
     Profile, Selector, environment_profile, profiles, profiles_in,
 };

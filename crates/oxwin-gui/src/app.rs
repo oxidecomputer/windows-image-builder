@@ -482,6 +482,29 @@ impl App {
         });
     }
 
+    /// What the media says is going onto the disk, for the instance's description.
+    ///
+    /// Read off `self.media`, which stage 1 filled in from the WIM itself, and off the
+    /// image the user picked out of that media's own list — never off `draft.release`
+    /// alone, which is a display copy. A rack carrying several of these otherwise shows
+    /// a column of identical descriptions.
+    fn installed(&self) -> oxwin_rack::Installed {
+        let Some(info) = self.media.as_ref() else {
+            return oxwin_rack::Installed::default();
+        };
+        // The four identity fields are per-image, so prefer the image that was picked;
+        // `info.build` is the first image's and stands in before one has been.
+        let chosen = self
+            .draft
+            .image_index
+            .and_then(|i| info.images.iter().find(|img| img.index == i));
+        oxwin_rack::Installed {
+            release: info.release.map(|r| r.label().to_string()),
+            build: chosen.and_then(|i| i.build).or(info.build),
+            edition: chosen.map(|i| i.edition_id.clone()),
+        }
+    }
+
     /// Run the whole golden cycle: install, generalize, snapshot, image, tidy up.
     ///
     /// The same shape as [`Self::start_upload`] — a thread, a channel of
@@ -543,6 +566,7 @@ impl App {
                 .and_then(|m| m.release)
                 .map(|r| r.label().to_string())
                 .unwrap_or_else(|| "unknown".into()),
+            installed: self.installed(),
         };
         let cancel_for_thread = cancel.clone();
 
@@ -635,9 +659,10 @@ impl App {
 
         let project = self.project.clone();
         let goal = self.upload_goal;
+        let installed = self.installed();
         let spec = oxwin_rack::DiskSpec {
             name: self.disk_name.clone(),
-            description: "Windows installer, built by oxwin".into(),
+            description: installed.installer_description(),
             block_size: oxwin_rack::INSTALLER_BLOCK_SIZE,
         };
         let instance_name = self.instance_name.clone();
@@ -691,6 +716,7 @@ impl App {
                         &instance_name,
                         &uploaded.disk,
                     );
+                    instance.description = installed.description();
                     instance.system_disk_gib = system_disk_gib;
                     match rack.create_instance(&instance, &reporter) {
                         Ok(created) => {

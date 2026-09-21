@@ -396,6 +396,11 @@ impl Rack {
                 &names.clone_instance(),
                 &names.clone_disk(),
             );
+            // Not an install: this booted from a finished image. Saying so keeps it
+            // apart from the instance that installed Windows, which is still in the
+            // same project under a name one character different.
+            spec.description =
+                format!("Clone of image {}, to prove it boots", names.image());
             // The image is the system disk. A clone needs no second one.
             spec.system_disk = None;
             self.create_instance(&spec, reporter).map_err(|f| f.error)?;

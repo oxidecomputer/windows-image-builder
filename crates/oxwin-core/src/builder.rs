@@ -222,6 +222,14 @@ pub struct Output {
     pub copied_bytes: u64,
     pub image_index: u32,
     pub edition_id: String,
+    /// The **base** build of the image applied, as the WIM reported it. `None` when the
+    /// media omitted the tag.
+    ///
+    /// Not the patch level — media whose filename says 19045 reports 19041 — and not an
+    /// identity on its own: Server 2025 and Windows 11 24H2 are both 26100. It is here
+    /// to be *shown*, next to the release that `PRODUCTTYPE` and `BUILD` together
+    /// decided.
+    pub build: Option<u32>,
     pub media_files: usize,
     /// The release the *media* turned out to be, not the one the caller asserted.
     ///
@@ -671,6 +679,7 @@ fn assemble(
         total_bytes: layout.total_bytes(),
         copied_bytes: copied,
         image_index: chosen.index,
+        build: chosen.build,
         edition_id: chosen.edition_id,
         media_files: media_files.len(),
         release: config.release,
