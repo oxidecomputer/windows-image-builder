@@ -68,6 +68,13 @@ pub struct Draft {
     pub enable_ems: bool,
     pub product_key: String,
     pub target_disk: u8,
+    /// Display language. Seeded from the media in `set_iso`, like `image_index`:
+    /// the media is read there, and a second reader is how two routes drift.
+    pub ui_language: String,
+    /// Formats and keyboard.
+    pub region: String,
+    /// Windows time zone ID.
+    pub timezone: String,
 }
 
 impl Default for Draft {
@@ -92,6 +99,9 @@ impl Default for Draft {
             enable_ems: d.enable_ems,
             product_key: String::new(),
             target_disk: d.target_disk,
+            ui_language: d.ui_language.clone(),
+            region: d.region.clone(),
+            timezone: d.timezone.clone(),
         }
     }
 }
@@ -136,11 +146,9 @@ impl Draft {
                 let k = self.product_key.trim();
                 if k.is_empty() { None } else { Some(k.to_string()) }
             },
-            // Task 6 replaces these with real `Draft` fields and their own
-            // controls; this is a minimal build fix, not a feature.
-            ui_language: Settings::default().ui_language,
-            region: Settings::default().region,
-            timezone: Settings::default().timezone,
+            ui_language: self.ui_language.clone(),
+            region: self.region.clone(),
+            timezone: self.timezone.clone(),
             target_disk: self.target_disk,
         }
     }

@@ -51,6 +51,14 @@ impl App {
                 }
                 self.draft.image_index =
                     media::default_image(&info.images).map(|i| i.index);
+                // A media default only overrides a value the user has not touched.
+                // `ui_language` starts equal to `DEFAULT_REGION` (see `Settings::
+                // default`), so that equality is what "untouched" means here.
+                if self.draft.ui_language == oxwin_core::locale::DEFAULT_REGION
+                    && let Some(default) = info.default_language()
+                {
+                    self.draft.ui_language = default;
+                }
                 self.media = Some(info);
             }
             Err(e) => self.media_error = Some(format!("{e:#}")),
@@ -523,6 +531,108 @@ impl App {
                     &mut self.draft.inject_drivers,
                     "Inject virtio drivers (required for networking)",
                 );
+
+                ui.add_space(6.0);
+                section(ui, "Language and region");
+                let media_languages: Vec<String> = self
+                    .media
+                    .as_ref()
+                    .map(|m| m.languages())
+                    .unwrap_or_default();
+                // One option is furniture. Single-language media is the
+                // overwhelming case, so it reads as a label naming the
+                // language rather than a picker offering one choice; media
+                // that reports nothing gets no control at all, because an
+                // empty list means "the media did not say", not "no
+                // languages".
+                match media_languages.len() {
+                    0 => {}
+                    1 => {
+                        ui.label(format!(
+                            "Display language: {} (the only one this media \
+                             carries)",
+                            media_languages[0]
+                        ));
+                    }
+                    _ => {
+                        egui::ComboBox::from_label("Display language")
+                            .selected_text(self.draft.ui_language.clone())
+                            .show_ui(ui, |ui| {
+                                for language in &media_languages {
+                                    ui.selectable_value(
+                                        &mut self.draft.ui_language,
+                                        language.clone(),
+                                        language,
+                                    );
+                                }
+                            });
+                    }
+                }
+
+                // A ComboBox rather than a list of radio buttons: this is
+                // twenty-odd rows, and as radio buttons it would push
+                // everything below it off the screen. Same reason the
+                // edition picker is one.
+                egui::ComboBox::from_label("Region and keyboard")
+                    .selected_text(
+                        oxwin_core::locale::region(&self.draft.region)
+                            .map(|r| r.label)
+                            .unwrap_or(self.draft.region.as_str()),
+                    )
+                    .show_ui(ui, |ui| {
+                        for r in oxwin_core::locale::REGIONS {
+                            ui.selectable_value(
+                                &mut self.draft.region,
+                                r.tag.to_string(),
+                                r.label,
+                            );
+                        }
+                    });
+
+                egui::ComboBox::from_label("Time zone")
+                    .selected_text(
+                        oxwin_core::locale::time_zone(&self.draft.timezone)
+                            .map(|z| z.label)
+                            .unwrap_or(self.draft.timezone.as_str()),
+                    )
+                    .show_ui(ui, |ui| {
+                        for z in oxwin_core::locale::TIME_ZONES {
+                            ui.selectable_value(
+                                &mut self.draft.timezone,
+                                z.id.to_string(),
+                                z.label,
+                            );
+                        }
+                    });
+
+                hint(
+                    ui,
+                    "Display language needs a language pack on the media. \
+                     Region and time zone work on any ISO.",
+                );
+
+                // Warn, never block: what Setup does with a language the
+                // media lacks has not been established, and a guess in
+                // either direction is worse than saying so. Silence when the
+                // media reported nothing: an empty list means the media did
+                // not say, not that it has none, and a warning on every ISO
+                // whose WIM omits the tag is noise that teaches people to
+                // ignore warnings.
+                if !media_languages.is_empty()
+                    && !media_languages.contains(&self.draft.ui_language)
+                {
+                    problem_box(
+                        ui,
+                        theme::WARNING,
+                        "Display language may not be available",
+                        &format!(
+                            "This media reports {}. Setup may fall back to \
+                             the media's own language. Region and time zone \
+                             are unaffected.",
+                            media_languages.join(", ")
+                        ),
+                    );
+                }
 
                 ui.add_space(6.0);
                 section(ui, "Optional");
