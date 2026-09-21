@@ -798,6 +798,52 @@ mod tests {
         assert!(info.is_evaluation());
     }
 
+    /// `languages()` is a union across images, not one image's list — offering a
+    /// language that only some images carry beats offering none, since the display
+    /// language is picked before the edition. The literal result pins both dedup
+    /// (`de-DE` appears on both images but once in the answer) and first-seen order
+    /// in one assertion: a regression that sorted alphabetically or deduped by a
+    /// different rule would produce a different vector and fail here.
+    #[test]
+    fn languages_are_the_union_in_first_seen_order() {
+        let mut first = image("ServerNT", 20348, "Server");
+        first.languages = vec!["en-US".into(), "de-DE".into()];
+        let mut second =
+            wim::Image { index: 2, ..image("ServerNT", 20348, "Server") };
+        second.languages = vec!["de-DE".into(), "fr-FR".into()];
+
+        let info = info(vec![first, second]);
+        assert_eq!(
+            info.languages(),
+            vec!["en-US".to_string(), "de-DE".to_string(), "fr-FR".to_string()]
+        );
+    }
+
+    /// No image naming a default has to come back as `None`, never `Some("")`. The
+    /// GUI renders an empty language list as silence — no control, no warning — and
+    /// `Some("")` would be a language nobody can select, not the same statement as
+    /// "the media did not say".
+    #[test]
+    fn default_language_is_none_when_no_image_names_one() {
+        let first = image("ServerNT", 20348, "Server");
+        let second =
+            wim::Image { index: 2, ..image("ServerNT", 20348, "Server") };
+        let info = info(vec![first, second]);
+        assert_eq!(info.default_language(), None);
+    }
+
+    /// The one image that does name a default is the answer, even alongside others
+    /// that say nothing.
+    #[test]
+    fn default_language_is_read_from_the_first_image_that_names_one() {
+        let first = image("ServerNT", 20348, "Server");
+        let mut second =
+            wim::Image { index: 2, ..image("ServerNT", 20348, "Server") };
+        second.default_language = "de-DE".into();
+        let info = info(vec![first, second]);
+        assert_eq!(info.default_language(), Some("de-DE".to_string()));
+    }
+
     /// Arm64 media builds an unbootable image in silence today. It has to be refused, and
     /// the message has to name the architecture rather than say "unsupported media".
     #[test]
