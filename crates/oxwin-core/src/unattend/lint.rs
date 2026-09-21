@@ -174,7 +174,17 @@ pub fn lint(xml: &str, cx: &LintContext) -> Vec<Problem> {
     // A generalize cycle never runs windowsPE, so nothing sets the locale, OOBE's
     // Localization page becomes active, and it stops there waiting for a click.
     // Caught on a rack: `SETACTIVE: wizard page for page Localization`.
+    //
+    // This only applies to the sysprep answer file itself — the one `build_sysprep`
+    // emits, which has no `windowsPE` pass at all. A normal `autounattend.xml` for a
+    // golden build (`cx.generalize` true, but a `windowsPE` pass present) sets the
+    // locale from `Microsoft-Windows-International-Core-WinPE` in that pass instead,
+    // and deliberately omits the non-WinPE component; firing here would tell a user
+    // to add a component that belongs in a different document.
+    let has_windows_pe =
+        passes(xml).iter().any(|(pass, _)| pass == "windowsPE");
     if cx.generalize
+        && !has_windows_pe
         && !xml.contains(r#"name="Microsoft-Windows-International-Core""#)
     {
         v.push(Problem::warn(
@@ -377,8 +387,35 @@ mod tests {
 
     #[test]
     fn a_golden_build_without_international_core_warns() {
+        // The sysprep answer file — the one `build_sysprep` emits — has no
+        // windowsPE pass at all, which is the shape this rule actually guards:
+        // nothing else in the document sets the locale.
         let cx = LintContext { target_disk: 1, generalize: true };
-        assert!(fields(&lint(&clean(), &cx)).contains(&"unattend_locale"));
+        let xml = clean().replace(
+            r#"  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64">
+      <DiskConfiguration>
+        <Disk wcm:action="add"><DiskID>1</DiskID></Disk>
+      </DiskConfiguration>
+    </component>
+  </settings>
+"#,
+            "",
+        );
+        assert!(fields(&lint(&xml, &cx)).contains(&"unattend_locale"));
+    }
+
+    /// A normal `autounattend.xml` for a golden build: `windowsPE` is present (it
+    /// sets the locale through `International-Core-WinPE`, which this fixture
+    /// does not model) and the non-WinPE `International-Core` component is
+    /// deliberately absent, per `oobe_pass`'s doc comment. This must not warn —
+    /// doing so would tell a user to add a component that belongs in a different
+    /// document (the sysprep file), not this one.
+    #[test]
+    fn a_golden_build_with_a_windows_pe_pass_is_fine_without_international_core()
+     {
+        let cx = LintContext { target_disk: 1, generalize: true };
+        assert!(!fields(&lint(&clean(), &cx)).contains(&"unattend_locale"));
     }
 
     #[test]

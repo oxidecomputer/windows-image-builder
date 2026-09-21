@@ -1077,6 +1077,29 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// The normal answer file, built for a golden image (`generalize: true`), must
+    /// still lint clean. This is the false-positive `unattend_locale` could throw
+    /// pinned from the other side: `build` always emits `windowsPE`, which sets the
+    /// locale through `International-Core-WinPE`, so the rule must not ask for the
+    /// non-WinPE component that only belongs in the sysprep file.
+    #[test]
+    fn generated_output_is_clean_for_a_golden_build() {
+        let config = Config { generalize: true, ..base() };
+        let xml = build(&config).expect("build");
+        let cx = LintContext {
+            target_disk: config.target_disk,
+            generalize: config.generalize,
+        };
+        // Same filter and reason as `generated_output_is_clean`: `show_ui_on_error`
+        // defaults to true, which is a real hazard but a separate decision from
+        // this plan.
+        let found: Vec<_> = lint(&xml, &cx)
+            .into_iter()
+            .filter(|p| p.field != "unattend_will_show_ui")
+            .collect();
+        assert!(found.is_empty(), "{found:#?}");
+    }
+
     /// The sysprep answer file has its own shape — two passes, no windowsPE — and its
     /// own way of being wrong, which is exactly the Localization hang.
     #[test]
