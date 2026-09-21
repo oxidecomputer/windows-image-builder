@@ -52,10 +52,12 @@ macro_rules! regions {
     };
 }
 
-// Region labels are deliberately ASCII. Glyphs that might not exist in the
-// default font must never be typed — the codebase learned this the hard way
-// when a missing-glyph box shipped next to a button. Keep diacritics out of
-// these labels even when a language name wants them.
+// Labels are deliberately ASCII: this codebase forbids glyphs that may be
+// missing from the default font, and it shipped a missing-glyph box next to a
+// button once already. An uncommented ASCII label invites a future editor to
+// "correct" it. Time zones are labelled by cities (following Microsoft's own
+// convention) rather than countries, because a zone is a set of cities and
+// city names are neutral, accurate, and useful when choosing.
 regions! {
     "en-US" => "English (United States)",
     "en-GB" => "English (United Kingdom)",
@@ -78,9 +80,9 @@ regions! {
     "tr-TR" => "Turkish (Turkiye)",
     "ru-RU" => "Russian (Russia)",
     "ja-JP" => "Japanese (Japan)",
-    "ko-KR" => "Korean (Korea)",
-    "zh-CN" => "Chinese (Simplified, China)",
-    "zh-TW" => "Chinese (Traditional, Taiwan)",
+    "ko-KR" => "Korean (South Korea)",
+    "zh-CN" => "Chinese (Simplified)",
+    "zh-TW" => "Chinese (Traditional)",
 }
 
 macro_rules! zones {
@@ -97,19 +99,19 @@ zones! {
     "Central Standard Time" => "Central (US & Canada)",
     "Eastern Standard Time" => "Eastern (US & Canada)",
     "Atlantic Standard Time" => "Atlantic (Canada)",
-    "GMT Standard Time" => "United Kingdom, Ireland, Portugal",
-    "W. Europe Standard Time" => "Western Europe",
-    "Central Europe Standard Time" => "Central Europe",
-    "Central European Standard Time" => "Poland, Croatia, Bosnia",
-    "Romance Standard Time" => "France, Spain, Belgium",
-    "FLE Standard Time" => "Finland, Baltics, Ukraine",
+    "GMT Standard Time" => "London, Dublin, Lisbon",
+    "W. Europe Standard Time" => "Amsterdam, Berlin, Rome, Stockholm",
+    "Central Europe Standard Time" => "Belgrade, Budapest, Prague",
+    "Central European Standard Time" => "Warsaw, Sarajevo, Zagreb",
+    "Romance Standard Time" => "Paris, Madrid, Brussels",
+    "FLE Standard Time" => "Helsinki, Kyiv, Riga",
     "Russian Standard Time" => "Moscow",
-    "India Standard Time" => "India",
-    "China Standard Time" => "China, Hong Kong",
-    "Tokyo Standard Time" => "Japan",
-    "Korea Standard Time" => "Korea",
-    "AUS Eastern Standard Time" => "Eastern Australia",
-    "New Zealand Standard Time" => "New Zealand",
+    "India Standard Time" => "Kolkata, New Delhi",
+    "China Standard Time" => "Beijing, Hong Kong",
+    "Tokyo Standard Time" => "Tokyo",
+    "Korea Standard Time" => "Seoul",
+    "AUS Eastern Standard Time" => "Sydney, Melbourne",
+    "New Zealand Standard Time" => "Auckland, Wellington",
 }
 
 /// Exact match only. A near miss here would write a tag Windows ignores silently,
