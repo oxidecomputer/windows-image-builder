@@ -428,6 +428,29 @@ fn assemble(
     reporter: &Reporter,
     cancel: &crate::engine::Cancel,
 ) -> Result<Output> {
+    // Before anything is opened. The GUI reaches these checks through
+    // `Settings::problems` as well, which is what gives it live feedback while the
+    // form is being filled in; this copy is the one that covers the CLI, which
+    // builds a `Config` straight from flags and never constructs a `Settings`.
+    // Without it `--partition=primary:extend:C:NTFS:Windows` wrote media with no
+    // EFI system partition and said nothing -- a guest that shows a black screen
+    // and no more. The display-language warning below is duplicated the same way,
+    // and for the same reason.
+    for problem in crate::partition::problems(&request.config.partitions) {
+        if problem.blocking {
+            bail!("{}", problem.message);
+        }
+        reporter.log(format!("  ({})", problem.message));
+    }
+    // Region and time zone warn only: the media does not constrain either, and
+    // the tables are curated rather than exhaustive.
+    for problem in crate::locale::problems(
+        &request.config.region,
+        &request.config.timezone,
+    ) {
+        reporter.log(format!("  ({})", problem.message));
+    }
+
     let mut source = Source::open(&request.media)?;
 
     // --- pick the edition from the WIM's own metadata ----------------------
@@ -1210,6 +1233,46 @@ mod tests {
             answer_file(&request, &config).unwrap(),
             crate::unattend::build(&config).unwrap()
         );
+    }
+
+    /// A layout with no EFI system partition is refused by the builder itself,
+    /// not only by `Settings::problems`. The CLI hands `builder::build` a `Config`
+    /// assembled from flags and never constructs a `Settings`, so a check that
+    /// lived only there let `--partition=primary:extend:C:NTFS:Windows` write
+    /// unbootable media without a word.
+    ///
+    /// The media path here does not exist, which is the point: the refusal has to
+    /// come before anything is opened, so the error names the layout rather than a
+    /// missing file.
+    #[test]
+    fn a_layout_with_no_efi_partition_is_refused_before_the_media_is_opened() {
+        let mut request = test_request(None);
+        request.config.partitions = crate::partition::default_layout()
+            .into_iter()
+            .filter(|p| p.kind != crate::partition::Kind::Efi)
+            .collect();
+        let err = build(&request, &Reporter::silent(), &Default::default())
+            .err()
+            .expect("a build with no ESP must be refused")
+            .to_string();
+        assert!(
+            err.contains("EFI system partition"),
+            "refused for the wrong reason: {err}"
+        );
+    }
+
+    /// The same path, for the coherence rule: an ESP the firmware cannot read is
+    /// as unbootable as no ESP at all, and `--partition=efi:260` leaves one.
+    #[test]
+    fn an_efi_partition_that_is_not_fat32_is_refused_by_the_builder() {
+        let mut request = test_request(None);
+        request.config.partitions = crate::partition::default_layout();
+        request.config.partitions[0].format = None;
+        let err = build(&request, &Reporter::silent(), &Default::default())
+            .err()
+            .expect("an unformatted ESP must be refused")
+            .to_string();
+        assert!(err.contains("EFI system partition"), "wrong reason: {err}");
     }
 
     /// `config`, never `request.config`. The local one carries the release

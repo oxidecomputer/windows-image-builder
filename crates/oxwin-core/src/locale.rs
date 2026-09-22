@@ -124,6 +124,48 @@ pub fn time_zone(id: &str) -> Option<&'static TimeZone> {
     TIME_ZONES.iter().find(|z| z.id == id)
 }
 
+/// What is wrong with a region tag and a time zone ID, as warnings.
+///
+/// A function rather than two inline checks because both callers need it and
+/// neither can stand in for the other: [`crate::settings::Settings::problems`]
+/// runs it so the GUI can say so before a build starts, and
+/// `builder::assemble` runs it again because the CLI builds a `Config` from
+/// flags and calls the builder directly, never touching `Settings` at all.
+///
+/// Never blocking. The tables are curated rather than exhaustive, and somebody
+/// may legitimately know a tag they do not carry.
+pub fn problems(
+    region_tag: &str,
+    time_zone_id: &str,
+) -> Vec<crate::settings::Problem> {
+    use crate::settings::Problem;
+    let mut v = Vec::new();
+    // The tables are the only validation there is: an unknown tag reaches the
+    // answer file untouched and Windows ignores it without a word, leaving a
+    // guest whose keyboard or clock is quietly wrong.
+    if region(region_tag).is_none() {
+        v.push(Problem::warn(
+            "region",
+            format!(
+                "{region_tag:?} is not a region this tool knows. It will be \
+                 written to the answer file as given; Windows ignores an \
+                 unrecognised one without an error."
+            ),
+        ));
+    }
+    if time_zone(time_zone_id).is_none() {
+        v.push(Problem::warn(
+            "timezone",
+            format!(
+                "{time_zone_id:?} is not a Windows time zone ID. Windows wants \
+                 \"W. Europe Standard Time\", not \"Europe/Berlin\", and \
+                 ignores an unknown one silently, leaving the guest on UTC."
+            ),
+        ));
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

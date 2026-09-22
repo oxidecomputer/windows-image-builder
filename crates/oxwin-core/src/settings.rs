@@ -409,33 +409,11 @@ impl Settings {
             ));
         }
 
-        // The tables are the only validation there is: an unknown tag reaches the
-        // answer file untouched and Windows ignores it without a word, leaving a
-        // guest whose keyboard or clock is quietly wrong. A warning rather than a
-        // refusal, because the tables are curated and somebody may legitimately
-        // know a tag they do not carry.
-        if crate::locale::region(&self.region).is_none() {
-            v.push(Problem::warn(
-                "region",
-                format!(
-                    "{:?} is not a region this tool knows. It will be written to \
-                     the answer file as given; Windows ignores an unrecognised \
-                     one without an error.",
-                    self.region
-                ),
-            ));
-        }
-        if crate::locale::time_zone(&self.timezone).is_none() {
-            v.push(Problem::warn(
-                "timezone",
-                format!(
-                    "{:?} is not a Windows time zone ID. Windows wants \
-                     \"W. Europe Standard Time\", not \"Europe/Berlin\", and \
-                     ignores an unknown one silently, leaving the guest on UTC.",
-                    self.timezone
-                ),
-            ));
-        }
+        // Deliberately duplicated with `builder::assemble`, which runs the same
+        // check: this copy is what gives the GUI live feedback before a build
+        // starts, and that one is what covers the CLI, which builds a `Config`
+        // from flags and never constructs a `Settings` at all.
+        v.extend(crate::locale::problems(&self.region, &self.timezone));
 
         if let Some(key) = &self.product_key {
             if !looks_like_product_key(key) {
@@ -446,6 +424,9 @@ impl Settings {
             }
         }
 
+        // Also duplicated with `builder::assemble`, for the same reason and
+        // deliberately: without the copy there the CLI can write media with no
+        // EFI system partition and nothing says a word.
         v.extend(crate::partition::problems(&self.partitions));
 
         if let Some(xml) = &self.unattend {

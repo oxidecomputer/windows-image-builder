@@ -112,10 +112,10 @@ pub fn os_partition_id(layout: &[Partition]) -> u32 {
     (lettered.or(last_primary).unwrap_or(0) + 1) as u32
 }
 
-/// Two refusals and seven warnings.
+/// Three refusals and nine warnings.
 ///
-/// The two refusals are the cases that produce a disk that cannot boot at all. On a
-/// guest with no framebuffer the only symptom is a black screen, which looks like
+/// The three refusals are the cases that produce a disk that cannot boot at all. On
+/// a guest with no framebuffer the only symptom is a black screen, which looks like
 /// every other failure, so letting those through costs a rack cycle to learn
 /// nothing. Everything else warns: the user typed a layout on purpose.
 pub fn problems(layout: &[Partition]) -> Vec<Problem> {
@@ -136,7 +136,29 @@ pub fn problems(layout: &[Partition]) -> Vec<Problem> {
         ));
     }
 
+    // An ESP that is not FAT32 is a disk that cannot boot, for the same reason as
+    // one that is absent: UEFI firmware reads FAT, nothing else, so it finds no
+    // loader and the guest shows a black screen and no message at all. This is
+    // reachable by a couple of clicks -- add a partition, set its kind to EFI --
+    // and by `--partition=efi:260`, which leaves the format unset.
     if let Some(efi) = layout.iter().find(|p| p.kind == Kind::Efi) {
+        if efi.format != Some(Format::Fat32) {
+            v.push(Problem::block(
+                "partitions",
+                match efi.format {
+                    Some(f) => format!(
+                        "The EFI system partition is formatted {}. UEFI firmware \
+                         reads FAT32 and nothing else, so it would find no loader \
+                         and the guest would show nothing at all.",
+                        f.name()
+                    ),
+                    None => "The EFI system partition has no format. UEFI \
+                             firmware reads FAT32; unformatted, it would hold no \
+                             loader and the guest would show nothing at all."
+                        .to_string(),
+                },
+            ));
+        }
         if efi.size_mb.is_some_and(|mb| mb < 100) {
             v.push(Problem::warn(
                 "partition_efi_size",
@@ -159,6 +181,27 @@ pub fn problems(layout: &[Partition]) -> Vec<Problem> {
             "partition_msr",
             "No Microsoft Reserved partition. Windows disk tooling expects one on \
              a GPT disk and some operations need it later.",
+        ));
+    }
+    // An MSR carries no filesystem, so it can carry neither a label nor a letter
+    // either. Setting kind to MSR in the editor leaves whatever the row had.
+    if layout.iter().any(|p| {
+        p.kind == Kind::Msr
+            && (p.label.is_some() || p.letter.is_some() || p.format.is_some())
+    }) {
+        v.push(Problem::warn(
+            "partition_msr_fields",
+            "A Microsoft Reserved partition has a label, a drive letter or a \
+             format. It holds no filesystem, so Setup has nothing to apply any \
+             of those to.",
+        ));
+    }
+    // Unformatted, Setup has nowhere to lay the image down.
+    if layout.iter().any(|p| p.kind == Kind::Primary && p.format.is_none()) {
+        v.push(Problem::warn(
+            "partition_primary_format",
+            "A Primary partition has no format. Windows installs onto NTFS, and \
+             an unformatted partition is not somewhere Setup can put it.",
         ));
     }
 
@@ -259,6 +302,52 @@ mod tests {
             .filter(|p| p.kind != Kind::Primary)
             .collect();
         assert!(problems(&l).iter().any(|p| p.blocking));
+    }
+
+    /// Blocking, and for the same reason as a missing one: UEFI firmware reads
+    /// FAT32 and nothing else, so an NTFS ESP holds a loader nothing can find. The
+    /// GUI could reach this in two clicks before the format picker existed.
+    #[test]
+    fn an_efi_that_is_not_fat32_blocks() {
+        let mut l = default_layout();
+        l[0].format = Some(Format::Ntfs);
+        let found = problems(&l);
+        assert!(found.iter().any(|p| p.field == "partitions" && p.blocking));
+        assert!(found.iter().any(|p| p.message.contains("NTFS")));
+
+        // Unformatted is the `--partition=efi:260` case, and just as unbootable.
+        l[0].format = None;
+        assert!(
+            problems(&l).iter().any(|p| p.field == "partitions" && p.blocking)
+        );
+    }
+
+    #[test]
+    fn an_msr_with_a_label_letter_or_format_warns() {
+        for mutate in [
+            (|p: &mut Partition| p.label = Some("Reserved".into()))
+                as fn(&mut Partition),
+            |p: &mut Partition| p.letter = Some('R'),
+            |p: &mut Partition| p.format = Some(Format::Ntfs),
+        ] {
+            let mut l = default_layout();
+            mutate(&mut l[1]);
+            let found = problems(&l);
+            assert!(
+                fields(&found).contains(&"partition_msr_fields"),
+                "no finding for {found:?}"
+            );
+            assert!(found.iter().all(|p| !p.blocking));
+        }
+    }
+
+    #[test]
+    fn a_primary_with_no_format_warns() {
+        let mut l = default_layout();
+        l[2].format = None;
+        let found = problems(&l);
+        assert!(fields(&found).contains(&"partition_primary_format"));
+        assert!(found.iter().all(|p| !p.blocking));
     }
 
     #[test]
