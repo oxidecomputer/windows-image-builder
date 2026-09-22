@@ -169,6 +169,75 @@ using the names you chose. Work down it in order.
 
 ---
 
+## Customising the image
+
+Everything below is optional. Skip it and you get `en-US`, `UTC`, and the standard
+EFI/MSR/Windows partition layout — what every build has used until now.
+
+### Locale
+
+Three separate controls, because "locale" is not one setting on Windows:
+
+- **Display language** — what Setup itself is shown in. This is the one control the
+  media limits: it needs a language pack already in the image, so the app only offers
+  languages the ISO actually carries. If the media does not say which languages it
+  carries, the control disappears rather than offering a guess — pick a different ISO
+  if you need a specific language and the picker is not there.
+- **Region** — number formats, currency, and keyboard layout. Any of the 24 offered
+  tags works on any media, because this does not need a language pack.
+- **Time zone** — a separate choice again, from a curated list of 19. The label names
+  a city (`Amsterdam, Berlin, Rome, Stockholm`), not a country, because a zone covers
+  several countries and Windows itself uses cities in its own list.
+
+CLI: `--ui-language=<tag>`, `--region=<tag>`, `--timezone=<id>` (a Windows ID, e.g.
+`"W. Europe Standard Time"` — not the `Europe/Berlin` form). Picking a display
+language the media does not carry is a warning, not a refusal: it still builds, and
+Setup decides what to do with it.
+
+### Partition layout
+
+Behind a "Customise the partition layout" disclosure in the app, closed by default.
+The default is EFI / MSR / a Windows partition that takes the rest of the disk, which
+is what every build has used until now and is fine to leave alone.
+
+**What this cannot check: whether your partitions fit.** The image this app builds is
+installer media; the disk it installs onto is created on the rack afterward and this
+app never sees it. If your sizes do not add up, Setup discovers that, not this tool.
+
+On the CLI, `--partition=kind:size:letter:format:label` is repeatable and replaces the
+whole layout — `size` may be `extend` for "the rest of the disk". For example, the
+default layout spelled out by hand:
+
+```
+--partition=efi:260::FAT32:System --partition=msr:16 --partition=primary:extend:C:NTFS:Windows
+```
+
+Leave `--partition=` out entirely to get that same default layout without typing it.
+
+### Supplying your own answer file
+
+If the generated `autounattend.xml` does not do what you need, you can hand it your
+own: `--unattend=<file>` on the CLI, or in the app, on the Settings stage. It is
+checked for known hazards (a missing password, an answer file meant for the wrong
+disk, and the rest of the trap list below) and used regardless — the check only warns.
+
+**Two things a supplied file does not get:**
+
+- **`bootstrap.ps1` is still generated from your settings and copied onto the media
+  separately.** If your answer file does not run `setup\bootstrap.ps1`, Windows will
+  install fine and you will have no way to reach it — no SSH keys, no RDP, no
+  `C:\oxide-bootstrap.log`.
+- **The release detected from the ISO is not applied to a supplied file.** The normal
+  build overwrites the release with whatever the media actually is; a file you hand in
+  is used exactly as written, so it has to already agree with the media.
+
+A file you export from this app (`oxwin unattend`, or "Save answer file" in the app)
+is a one-time snapshot, not a live template — regenerate it if you change settings
+afterward. `oxwin unattend` prints to stdout only, never to a file next to the image,
+because it contains the account password in plain text.
+
+---
+
 ## What happens on the rack
 
 Worth knowing, because otherwise the middle of the install looks broken.
