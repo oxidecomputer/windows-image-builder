@@ -745,7 +745,7 @@ impl App {
                 if ui
                     .add(
                         egui::TextEdit::singleline(&mut letter)
-                            .desired_width(24.0)
+                            .desired_width(48.0)
                             .hint_text("letter"),
                     )
                     .changed()
