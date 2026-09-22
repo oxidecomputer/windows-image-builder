@@ -869,6 +869,11 @@ impl App {
                      generated from the settings above, and the release \
                      detected from the media is not applied to this file.",
                 );
+                hint(
+                    ui,
+                    "Read when chosen; edits made to it since will not take \
+                     effect until it is chosen again.",
+                );
                 if ui.button("Use the generated one instead").clicked() {
                     self.draft.supplied_unattend = None;
                 }
