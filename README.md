@@ -221,7 +221,7 @@ own: `--unattend=<file>` on the CLI, or in the app, on the Settings stage. It is
 checked for known hazards (a missing password, an answer file meant for the wrong
 disk, and the rest of the trap list below) and used regardless — the check only warns.
 
-**Two things a supplied file does not get:**
+**What a supplied file does not get:**
 
 - **`bootstrap.ps1` is still generated from your settings and copied onto the media
   separately.** If your answer file does not run `setup\bootstrap.ps1`, Windows will
@@ -230,6 +230,13 @@ disk, and the rest of the trap list below) and used regardless — the check onl
 - **The release detected from the ISO is not applied to a supplied file.** The normal
   build overwrites the release with whatever the media actually is; a file you hand in
   is used exactly as written, so it has to already agree with the media.
+- **The display language, region and time zone are not applied either.** Those
+  settings only reach the generated answer file, so `--ui-language`, `--region` and
+  `--timezone` (and the pickers in the app) do nothing once you supply your own file.
+  Whatever locale your file names is what the guest gets.
+- **Nor is the partition layout.** `--partition` and the layout editor write the
+  `DiskConfiguration` block of the *generated* file; a supplied one carries its own,
+  and it is that block Setup acts on.
 
 A file you export from this app (`oxwin unattend`, or "Save answer file" in the app)
 is a one-time snapshot, not a live template — regenerate it if you change settings

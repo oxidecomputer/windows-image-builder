@@ -262,10 +262,13 @@ pub struct Settings {
     /// this crate does not read files on a caller's behalf. `None` means the
     /// generated answer file, built from every other field above.
     ///
-    /// A supplied file bypasses two things silently: `bootstrap.ps1` is still
-    /// generated from these settings, so a file that never invokes
-    /// `setup\bootstrap.ps1` builds an image that installs and leaves the guest
-    /// unreachable; and the release detected from the media is not applied to it.
+    /// A supplied file replaces the generated one entirely, so everything the
+    /// generator would have written from these settings is silently bypassed:
+    /// the release detected from the media, `ui_language`, `region`, `timezone`
+    /// and `partitions` all become dead. `bootstrap.ps1` is the exception -- it
+    /// is still generated from these settings and copied separately, so a file
+    /// that never invokes `setup\bootstrap.ps1` builds an image that installs
+    /// and leaves the guest unreachable.
     pub unattend: Option<String>,
 }
 

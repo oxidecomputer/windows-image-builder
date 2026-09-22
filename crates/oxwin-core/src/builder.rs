@@ -612,8 +612,9 @@ fn assemble(
         if request.unattend.is_some() {
             reporter.log(
                 "answer file: supplied by the caller, used verbatim. \
-                 bootstrap.ps1 is still generated, and the release detected \
-                 from the media is not applied to it",
+                 bootstrap.ps1 is still generated, but the release detected \
+                 from the media, the locale settings and the partition layout \
+                 reach only the generated file, not this one",
             );
         }
         p1.add_file(

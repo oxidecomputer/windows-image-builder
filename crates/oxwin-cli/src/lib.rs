@@ -488,8 +488,10 @@ fn build(args: &[String]) -> Result<()> {
             }
             eprintln!(
                 "note  using {path} verbatim. bootstrap.ps1 is still generated \
-                 from the flags, and the release detected from the media is not \
-                 applied to this file."
+                 from the flags, but nothing else that shapes an answer file \
+                 reaches this one: not the release detected from the media, \
+                 not --ui-language, --region or --timezone, and not \
+                 --partition."
             );
             Some(xml)
         }

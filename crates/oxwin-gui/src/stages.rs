@@ -909,8 +909,10 @@ impl App {
                 hint(
                     ui,
                     "Used verbatim. The guest bootstrap script is still \
-                     generated from the settings above, and the release \
-                     detected from the media is not applied to this file.",
+                     generated from the settings above, but nothing else that \
+                     shapes an answer file reaches this one: not the release \
+                     detected from the media, not the display language, region \
+                     or time zone, and not the partition layout.",
                 );
                 hint(
                     ui,
