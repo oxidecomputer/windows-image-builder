@@ -185,6 +185,11 @@ impl Draft {
                 .supplied_unattend
                 .as_ref()
                 .map(|(_, xml)| xml.clone()),
+            // The Draft has no widgets for either yet -- that's a later task --
+            // so this carries `Settings::default`'s values rather than asserting
+            // something the UI cannot actually offer.
+            cloud_init: Settings::default().cloud_init,
+            extras: Vec::new(),
         }
     }
 }

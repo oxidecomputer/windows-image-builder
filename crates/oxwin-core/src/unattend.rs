@@ -251,6 +251,14 @@ pub struct Config {
     pub ssh_keys: Vec<String>,
     /// Install and start OpenSSH in the guest. Also read only by the bootstrap.
     pub enable_ssh: bool,
+    /// Cloud-init in the guest: install it, configure it, and run it once per
+    /// clone. Read by `bootstrap` and by [`build_sysprep`].
+    pub cloud_init: Option<crate::settings::CloudInit>,
+    /// Whether this build carries any extra files, which is all the guest
+    /// script needs to know -- what they are is `builder`'s business. A bool
+    /// rather than the list, so the answer file and the bootstrap cannot
+    /// disagree with the volume about what is on it.
+    pub has_extras: bool,
 }
 
 impl Config {
@@ -291,6 +299,8 @@ impl Config {
             skip_image_install: false,
             ssh_keys: settings.credentials.keys.clone(),
             enable_ssh: true,
+            cloud_init: settings.cloud_init,
+            has_extras: !settings.extras.is_empty(),
         }
     }
 }
@@ -902,6 +912,8 @@ mod tests {
             skip_image_install: false,
             ssh_keys: Vec::new(),
             enable_ssh: true,
+            cloud_init: None,
+            has_extras: false,
         }
     }
 

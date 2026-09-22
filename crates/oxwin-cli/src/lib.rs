@@ -379,6 +379,11 @@ fn config_from_args(args: &[String]) -> Result<Config> {
             .map(str::to_string)
             .collect(),
         enable_ssh: opt("ssh").as_deref() != Some("0"),
+        // Flags arrive in the CLI task; the defaults match `Settings::default`.
+        cloud_init: Some(oxwin_core::settings::CloudInit {
+            manage_account: false,
+        }),
+        has_extras: false,
     };
     Ok(config)
 }

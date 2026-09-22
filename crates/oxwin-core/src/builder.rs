@@ -1193,6 +1193,8 @@ mod tests {
                 "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 dan@example".to_string(),
             ],
             enable_ssh: true,
+            cloud_init: None,
+            has_extras: false,
         }
     }
 
@@ -1380,6 +1382,8 @@ mod whole_image {
                     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 dan@example".to_string(),
                 ],
                 enable_ssh: true,
+                cloud_init: None,
+                has_extras: false,
             },
             edition_hint: None,
             ei_channel: None,

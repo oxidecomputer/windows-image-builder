@@ -434,6 +434,8 @@ mod tests {
             skip_image_install: false,
             ssh_keys: Vec::new(),
             enable_ssh: true,
+            cloud_init: None,
+            has_extras: false,
         }
     }
 

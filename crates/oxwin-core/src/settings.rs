@@ -71,6 +71,46 @@ impl Default for Credentials {
     }
 }
 
+/// Cloud-init (cloudbase-init) in the guest.
+///
+/// Present means on: the MSI is installed offline during the install, the
+/// service is configured to read an Oxide no-cloud config drive, and each clone
+/// gets its own hostname, its own metadata SSH keys, a `C:` extended to the
+/// real disk, and whatever its `user_data` says. `None` means an image
+/// byte-identical to one built before this existed.
+///
+/// A password is still mandatory and the answer file still creates the account
+/// in both modes: the serial console is the one way into a guest whose network
+/// never came up, and SAC authenticates with a password and knows nothing about
+/// SSH keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudInit {
+    /// Let cloud-init own the account (`CreateUserPlugin`).
+    ///
+    /// **This resets the password to a per-instance random one**, because
+    /// upstream's only way to create the Windows *profile* that
+    /// `SetUserSSHPublicKeysPlugin` needs is `CreateUserPlugin`, and it sets a
+    /// password on every path it takes -- including the branch for an account
+    /// that already exists. `false` keeps the typed password and materialises
+    /// the profile ourselves instead.
+    pub manage_account: bool,
+}
+
+/// One file the user wants on the media, copied to `C:\oxide\extras`.
+///
+/// Not the vehicle for anything this tool does: execution stays with
+/// cloud-init's `user_data`, which runs per instance rather than being baked
+/// into an image. This exists because the supplied-answer-file escape hatch can
+/// reference `E:\whatever` and until now there was no way to get a file there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Extra {
+    /// Where to read it from, on the machine running the build.
+    pub source: PathBuf,
+    /// Where it lands on the installer volume. Always under `/extras/`, and
+    /// built by the caller from the file's name -- never typed by a user.
+    pub volume_path: String,
+}
+
 /// A random password strong enough for a Windows administrator account, satisfying
 /// the default complexity policy (upper, lower, digit, symbol).
 ///
@@ -270,6 +310,10 @@ pub struct Settings {
     /// that never invokes `setup\bootstrap.ps1` builds an image that installs
     /// and leaves the guest unreachable.
     pub unattend: Option<String>,
+    /// Cloud-init in the guest. See [`CloudInit`]. On by default.
+    pub cloud_init: Option<CloudInit>,
+    /// Files that ride the installer volume and land in `C:\oxide\extras`.
+    pub extras: Vec<Extra>,
 }
 
 impl Default for Settings {
@@ -292,6 +336,8 @@ impl Default for Settings {
             target_disk: 1,
             partitions: crate::partition::default_layout(),
             unattend: None,
+            cloud_init: Some(CloudInit { manage_account: false }),
+            extras: Vec::new(),
         }
     }
 }
@@ -440,6 +486,21 @@ impl Settings {
             v.extend(crate::unattend::lint(xml, &cx));
         }
 
+        v.extend(extra_problems(&self.extras));
+
+        if let Some(cloud_init) = &self.cloud_init {
+            if cloud_init.manage_account {
+                v.push(Problem::warn(
+                    "cloud_init",
+                    "Cloud-init will manage this account, which replaces the \
+                     password you typed with a per-instance random one the \
+                     first time it runs on a clone. The typed password works \
+                     from install until then. Choose \"just add keys\" to keep \
+                     it.",
+                ));
+            }
+        }
+
         v
     }
 
@@ -499,6 +560,51 @@ fn is_reserved_username(name: &str) -> bool {
         "public",
     ];
     RESERVED.contains(&name.trim().to_ascii_lowercase().as_str())
+}
+
+/// Everything wrong with a set of extra files.
+///
+/// The volume path is constructed by the caller from the file's name, so every
+/// rule here is a caller bug rather than user error -- which is exactly why it
+/// blocks: an extra that escaped `/extras/` would overwrite the media's own
+/// tree, and two extras on one path would lose a file in silence.
+pub fn extra_problems(extras: &[Extra]) -> Vec<Problem> {
+    let mut v = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    for e in extras {
+        if e.source.as_os_str().is_empty() {
+            v.push(Problem::block("extras", "An extra file has no path."));
+            continue;
+        }
+        let name = e.volume_path.strip_prefix("/extras/").unwrap_or("");
+        if name.is_empty()
+            || name.starts_with('/')
+            || name.contains('\\')
+            || name.split('/').any(|c| c == ".." || c.is_empty())
+        {
+            v.push(Problem::block(
+                "extras",
+                format!(
+                    "{:?} is not a path under /extras/ on the media.",
+                    e.volume_path
+                ),
+            ));
+            continue;
+        }
+        if seen.contains(&e.volume_path.as_str()) {
+            v.push(Problem::block(
+                "extras",
+                format!(
+                    "Two files would both land on {}. Rename one, or pick \
+                     their parent directory so the structure is preserved.",
+                    e.volume_path
+                ),
+            ));
+            continue;
+        }
+        seen.push(&e.volume_path);
+    }
+    v
 }
 
 fn key_problem(key: &str) -> Option<Problem> {
@@ -800,5 +906,99 @@ mod tests {
             "{:?}",
             s.problems()
         );
+    }
+
+    /// On by default, in the safer of the two modes: nothing in a default build
+    /// resets the password the user typed.
+    #[test]
+    fn cloud_init_is_on_by_default_and_does_not_manage_the_account() {
+        let s = Settings::default();
+        assert_eq!(s.cloud_init, Some(CloudInit { manage_account: false }));
+        assert!(s.extras.is_empty());
+    }
+
+    #[test]
+    fn cloud_init_off_is_representable() {
+        let s = Settings { cloud_init: None, ..base() };
+        assert!(s.is_buildable(), "{:?}", s.problems());
+    }
+
+    /// Mode B resets the account's password to a per-instance random one the
+    /// first time cloud-init runs, because upstream's only way to create the
+    /// profile the key plugin needs is `CreateUserPlugin`, which sets a
+    /// password on every path. The user has to be told, not left to find out.
+    #[test]
+    fn managing_the_account_warns_that_the_password_will_be_replaced() {
+        let s = Settings {
+            cloud_init: Some(CloudInit { manage_account: true }),
+            ..base()
+        };
+        assert!(s.is_buildable(), "{:?}", s.problems());
+        assert!(
+            s.problems().iter().any(|p| p.field == "cloud_init"
+                && !p.blocking
+                && p.message.contains("password")),
+            "{:?}",
+            s.problems()
+        );
+    }
+
+    fn extra(source: &str, volume_path: &str) -> Extra {
+        Extra {
+            source: PathBuf::from(source),
+            volume_path: volume_path.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_plain_extra_file_is_fine() {
+        let s = Settings {
+            extras: vec![extra("/tmp/a.zip", "/extras/a.zip")],
+            ..base()
+        };
+        assert!(s.is_buildable(), "{:?}", s.problems());
+    }
+
+    /// The volume path is ours to build, never the user's to supply, so
+    /// anything that escapes `/extras/` is a bug in a caller rather than user
+    /// error -- and it would write into the media's own tree.
+    #[test]
+    fn an_extra_escaping_the_extras_directory_blocks() {
+        for path in [
+            "/sources/install.wim",
+            "/extras/../autounattend.xml",
+            "extras/a.zip",
+            "/extras/",
+        ] {
+            let s =
+                Settings { extras: vec![extra("/tmp/a.zip", path)], ..base() };
+            assert!(!s.is_buildable(), "{path} should be refused");
+            assert!(
+                s.problems().iter().any(|p| p.field == "extras" && p.blocking)
+            );
+        }
+    }
+
+    /// Two files with the same basename from different directories both want
+    /// `/extras/<name>`. exFAT would take one and drop the other in silence.
+    #[test]
+    fn two_extras_landing_on_the_same_path_block() {
+        let s = Settings {
+            extras: vec![
+                extra("/tmp/one/a.zip", "/extras/a.zip"),
+                extra("/tmp/two/a.zip", "/extras/a.zip"),
+            ],
+            ..base()
+        };
+        assert!(!s.is_buildable(), "{:?}", s.problems());
+        assert!(s.problems().iter().any(|p| {
+            p.field == "extras" && p.blocking && p.message.contains("a.zip")
+        }));
+    }
+
+    #[test]
+    fn an_extra_with_no_source_blocks() {
+        let s = Settings { extras: vec![extra("", "/extras/a.zip")], ..base() };
+        assert!(!s.is_buildable());
     }
 }
