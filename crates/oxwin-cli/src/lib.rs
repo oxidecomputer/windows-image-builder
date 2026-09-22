@@ -412,8 +412,29 @@ fn partitions_from_args(args: &[String]) -> Result<Vec<Partition>> {
                     format!("partition size {mb:?} is not a number of MB")
                 })?),
             };
-            let letter =
-                f.get(2).and_then(|l| l.chars().next()).filter(|c| *c != ' ');
+            // Strict, like the kind and format fields beside it. Taking the
+            // first character of whatever was typed accepted "C:" as C and a
+            // stray space as nothing, and with the layout unvalidated until
+            // recently nothing downstream looked at the result either.
+            let letter = match f.get(2).copied() {
+                None | Some("") => None,
+                Some(l) => {
+                    let mut chars = l.chars();
+                    match (chars.next(), chars.next()) {
+                        (Some(c), None) if c.is_ascii_alphabetic() => {
+                            // Uppercased, because `os_partition_id` looks for
+                            // C: a lowercase one pointed <InstallTo> at the
+                            // wrong partition and said nothing.
+                            Some(c.to_ascii_uppercase())
+                        }
+                        _ => bail!(
+                            "drive letter {l:?} is not a single letter; write \
+                             one letter, as in primary:extend:C:NTFS:Windows, \
+                             or leave the field empty"
+                        ),
+                    }
+                }
+            };
             let format = match f.get(3).copied() {
                 None | Some("") => None,
                 Some("FAT32") | Some("fat32") => Some(Format::Fat32),
@@ -535,14 +556,19 @@ fn build(args: &[String]) -> Result<()> {
 /// cleartext, and writing one out as a side effect of a build is how a secret ends
 /// up somewhere nobody meant to put it.
 fn unattend_cmd(args: &[String]) -> Result<()> {
-    let config = config_from_args(args)?;
-    let xml = if flag_in(args, "sysprep") {
-        oxwin_core::unattend::build_sysprep(&config)?
-    } else {
-        oxwin_core::unattend::build(&config)?
-    };
-    print!("{xml}");
+    print!("{}", unattend_xml(args)?);
     Ok(())
+}
+
+/// What `unattend_cmd` prints, separated from the printing so a test can compare
+/// it with `unattend::build` rather than with a captured stdout.
+fn unattend_xml(args: &[String]) -> Result<String> {
+    let config = config_from_args(args)?;
+    if flag_in(args, "sysprep") {
+        oxwin_core::unattend::build_sysprep(&config)
+    } else {
+        oxwin_core::unattend::build(&config)
+    }
 }
 
 /// Shared by `build` and `build_for_golden`, which otherwise printed the
@@ -1580,5 +1606,174 @@ mod tests {
         let args = vec![format!("--password-file={}", path.display())];
         assert!(password_from_args(&args).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|a| a.to_string()).collect()
+    }
+
+    /// The documented spec forms, each one a row. `--partition` is the only
+    /// place a layout can be typed on the CLI, and until the builder started
+    /// checking the result nothing downstream read it at all.
+    #[test]
+    fn partition_specs_parse_as_documented() {
+        let cases: &[(&str, Partition)] = &[
+            (
+                "efi:260::FAT32:System",
+                Partition {
+                    kind: Kind::Efi,
+                    size_mb: Some(260),
+                    label: Some("System".into()),
+                    letter: None,
+                    format: Some(Format::Fat32),
+                },
+            ),
+            // Short: everything after the size omitted entirely.
+            (
+                "msr:16",
+                Partition {
+                    kind: Kind::Msr,
+                    size_mb: Some(16),
+                    label: None,
+                    letter: None,
+                    format: None,
+                },
+            ),
+            // `extend` is the rest of the disk, which is `None` in the model.
+            (
+                "primary:extend:C:NTFS:Windows",
+                Partition {
+                    kind: Kind::Primary,
+                    size_mb: None,
+                    label: Some("Windows".into()),
+                    letter: Some('C'),
+                    format: Some(Format::Ntfs),
+                },
+            ),
+            // An empty size field means the same as `extend`.
+            (
+                "primary::D:ntfs:Data",
+                Partition {
+                    kind: Kind::Primary,
+                    size_mb: None,
+                    label: Some("Data".into()),
+                    letter: Some('D'),
+                    format: Some(Format::Ntfs),
+                },
+            ),
+            // A lowercase letter is uppercased: `os_partition_id` looks for C,
+            // so a lowercase one would point <InstallTo> elsewhere in silence.
+            (
+                "primary:1024:e:fat32:",
+                Partition {
+                    kind: Kind::Primary,
+                    size_mb: Some(1024),
+                    label: None,
+                    letter: Some('E'),
+                    format: Some(Format::Fat32),
+                },
+            ),
+        ];
+        for (spec, want) in cases {
+            let got =
+                partitions_from_args(&args(&[&format!("--partition={spec}")]))
+                    .unwrap_or_else(|e| panic!("{spec:?}: {e}"));
+            assert_eq!(got, vec![want.clone()], "{spec:?}");
+        }
+    }
+
+    /// No `--partition` at all is the overwhelming case, and it has to be the
+    /// layout every committed golden was built with.
+    #[test]
+    fn no_partition_flag_is_the_default_layout() {
+        assert_eq!(
+            partitions_from_args(&args(&["--password=x"])).unwrap(),
+            oxwin_core::partition::default_layout()
+        );
+    }
+
+    /// Repeated flags replace the whole layout, in the order given.
+    #[test]
+    fn repeated_partition_flags_are_the_whole_layout() {
+        let got = partitions_from_args(&args(&[
+            "--partition=efi:260::FAT32:System",
+            "--partition=primary:extend:C:NTFS:Windows",
+        ]))
+        .unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].kind, Kind::Efi);
+        assert_eq!(got[1].kind, Kind::Primary);
+    }
+
+    /// Every malformed field is refused rather than silently reinterpreted. The
+    /// drive letter is the one that was not: it took the first character of
+    /// whatever it was given, so "C:" was C and " " was nothing.
+    #[test]
+    fn malformed_partition_specs_are_refused() {
+        let cases: &[(&str, &str)] = &[
+            ("disk:100", "unknown partition kind"),
+            ("primary:100:C:EXFAT:Data", "unknown format"),
+            ("primary:sixty:C:NTFS:Data", "not a number of MB"),
+            ("primary:100:CD:NTFS:Data", "not a single letter"),
+            ("primary:100: :NTFS:Data", "not a single letter"),
+            ("primary:100:3:NTFS:Data", "not a single letter"),
+        ];
+        for (spec, expected) in cases {
+            let err =
+                partitions_from_args(&args(&[&format!("--partition={spec}")]))
+                    .err()
+                    .unwrap_or_else(|| panic!("{spec:?} was accepted"));
+            let text = format!("{err:#}");
+            assert!(
+                text.contains(expected),
+                "{spec:?}: wanted {expected:?}, got {text:?}"
+            );
+        }
+    }
+
+    /// `oxwin unattend` exists to show what a build would write. If it can
+    /// diverge from what a build actually writes it is worse than nothing.
+    #[test]
+    fn unattend_prints_what_a_build_would_write() {
+        // A password file rather than `--password=`, which prints a warning:
+        // a test that scrolls a warning past every run teaches people to
+        // ignore the real one.
+        let dir = std::env::temp_dir().join(format!(
+            "oxwin-pw-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pw = dir.join("pw");
+        std::fs::write(&pw, "0xide!230xide!23\n").unwrap();
+        let flags = args(&[
+            &format!("--password-file={}", pw.display()),
+            "--name=win-server-01",
+            "--edition=datacenter",
+            "--region=de-DE",
+            "--timezone=W. Europe Standard Time",
+            "--ui-language=de-DE",
+            "--partition=efi:260::FAT32:System",
+            "--partition=msr:16",
+            "--partition=primary:extend:C:NTFS:Windows",
+        ]);
+        let config = config_from_args(&flags).unwrap();
+        assert_eq!(
+            unattend_xml(&flags).unwrap(),
+            oxwin_core::unattend::build(&config).unwrap()
+        );
+
+        // And `--sysprep` prints the other document, not the same one.
+        let mut sysprep = flags.clone();
+        sysprep.push("--sysprep".into());
+        let config = config_from_args(&sysprep).unwrap();
+        assert_eq!(
+            unattend_xml(&sysprep).unwrap(),
+            oxwin_core::unattend::build_sysprep(&config).unwrap()
+        );
+        assert_ne!(
+            unattend_xml(&sysprep).unwrap(),
+            unattend_xml(&flags).unwrap()
+        );
     }
 }
