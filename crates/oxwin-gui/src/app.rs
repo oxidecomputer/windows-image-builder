@@ -71,6 +71,13 @@ pub struct Draft {
     /// Display language. Seeded from the media in `set_iso`, like `image_index`:
     /// the media is read there, and a second reader is how two routes drift.
     pub ui_language: String,
+    /// Whether the user has picked a display language themselves. `set_iso`
+    /// adopts the media's default only while this is false, and it is a flag
+    /// rather than a comparison with `DEFAULT_REGION` because that comparison
+    /// answers a different question: someone whose first ISO was German ends up
+    /// unequal to the default without having chosen anything, and the choice
+    /// then survived onto media that could not honour it.
+    pub ui_language_edited: bool,
     /// Formats and keyboard.
     pub region: String,
     /// Windows time zone ID.
@@ -115,6 +122,7 @@ impl Default for Draft {
             product_key: String::new(),
             target_disk: d.target_disk,
             ui_language: d.ui_language.clone(),
+            ui_language_edited: false,
             region: d.region.clone(),
             timezone: d.timezone.clone(),
             partitions: oxwin_core::partition::default_layout(),

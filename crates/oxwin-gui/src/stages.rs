@@ -52,10 +52,15 @@ impl App {
                 }
                 self.draft.image_index =
                     media::default_image(&info.images).map(|i| i.index);
-                // A media default only overrides a value the user has not touched.
-                // `ui_language` starts equal to `DEFAULT_REGION` (see `Settings::
-                // default`), so that equality is what "untouched" means here.
-                if self.draft.ui_language == oxwin_core::locale::DEFAULT_REGION
+                // A media default only overrides a value the user has not
+                // touched, and "touched" is recorded when the picker is used
+                // rather than inferred from equality with a constant. Inferring
+                // it meant that loading a German ISO and then an English one
+                // kept de-DE, while the single-language branch of the editor
+                // rendered a label reading "en-US (the only one this media
+                // carries)" -- the label and the answer file disagreeing, with
+                // no control on screen to settle it.
+                if !self.draft.ui_language_edited
                     && let Some(default) = info.default_language()
                 {
                     self.draft.ui_language = default;
@@ -540,36 +545,61 @@ impl App {
                     .as_ref()
                     .map(|m| m.languages())
                     .unwrap_or_default();
+                // What the picker offers: what the media carries, plus the
+                // chosen language when the media does not carry it. Without
+                // that second part a language kept from an earlier ISO is
+                // unreachable -- the label branch below would name the media's
+                // only language while the answer file carried the other one,
+                // and there would be no control to correct it with.
+                let mut languages = media_languages.clone();
+                if !languages.is_empty()
+                    && !languages.contains(&self.draft.ui_language)
+                {
+                    languages.push(self.draft.ui_language.clone());
+                }
                 // One option is furniture. Single-language media is the
                 // overwhelming case, so it reads as a label naming the
                 // language rather than a picker offering one choice; media
                 // that reports nothing gets no control at all, because an
                 // empty list means "the media did not say", not "no
                 // languages".
-                match media_languages.len() {
+                match languages.len() {
                     0 => {}
                     1 => {
                         ui.label(format!(
                             "Display language: {} (the only one this media \
                              carries)",
-                            media_languages[0]
+                            languages[0]
                         ));
                     }
                     _ => {
                         ui.horizontal(|ui| {
                             ui.label("Display language");
+                            let mut picked = false;
                             egui::ComboBox::from_id_salt("ui_language")
                                 .selected_text(self.draft.ui_language.clone())
                                 .width(360.0)
                                 .show_ui(ui, |ui| {
-                                    for language in &media_languages {
-                                        ui.selectable_value(
-                                            &mut self.draft.ui_language,
-                                            language.clone(),
-                                            language,
-                                        );
+                                    for language in &languages {
+                                        picked |= ui
+                                            .selectable_value(
+                                                &mut self.draft.ui_language,
+                                                language.clone(),
+                                                language,
+                                            )
+                                            .clicked();
                                     }
                                 });
+                            // Whether the user has chosen a display language is
+                            // a fact about the user, and the only honest way to
+                            // know it. `set_iso` used to infer it by comparing
+                            // with DEFAULT_REGION, which said "edited" for
+                            // anyone whose media default happened to differ
+                            // from en-US and then left that value stranded on
+                            // the next ISO.
+                            if picked {
+                                self.draft.ui_language_edited = true;
+                            }
                         });
                     }
                 }
