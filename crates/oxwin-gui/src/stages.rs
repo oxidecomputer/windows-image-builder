@@ -706,8 +706,10 @@ impl App {
                 // deliberately not editable -- see oxwin_core::partition.
                 ui.label(format!("{}.", i + 1));
 
+                let was = self.draft.partitions[i].kind;
                 egui::ComboBox::from_id_salt(("partition-kind", i))
-                    .selected_text(self.draft.partitions[i].kind.type_name())
+                    .selected_text(was.type_name())
+                    .width(88.0)
                     .show_ui(ui, |ui| {
                         for kind in [
                             partition::Kind::Efi,
@@ -721,21 +723,41 @@ impl App {
                             );
                         }
                     });
+                // Changing the kind reconciles the format, which is otherwise
+                // left over from whatever the row was before: an EFI partition
+                // carrying NTFS is an ESP the firmware cannot read, and that is
+                // a black screen with no message behind it.
+                let kind = self.draft.partitions[i].kind;
+                if kind != was {
+                    self.draft.partitions[i].format = default_format(kind);
+                }
 
                 // Typed text, parsed on change rather than bound directly: binding
                 // an integer to a text field turns "1024" mid-type into "1" and
                 // writes it back under the cursor.
+                //
+                // Only an empty field means "the rest of the disk". Parsing with
+                // `.ok()` made "60 GB" mean that too, silently, while the hint
+                // said an empty field was how you asked for it.
+                let typed = self.draft.partition_sizes[i].trim().to_string();
+                let unparseable =
+                    !typed.is_empty() && typed.parse::<u32>().is_err();
                 let size = &mut self.draft.partition_sizes[i];
-                let changed = ui
-                    .add(
-                        egui::TextEdit::singleline(size)
-                            .desired_width(70.0)
-                            .hint_text("rest"),
-                    )
-                    .changed();
-                if changed {
-                    self.draft.partitions[i].size_mb =
-                        self.draft.partition_sizes[i].trim().parse().ok();
+                let mut edit = egui::TextEdit::singleline(size)
+                    .desired_width(70.0)
+                    .hint_text("rest");
+                if unparseable {
+                    edit = edit.text_color(theme::WARNING);
+                }
+                if ui.add(edit).changed() {
+                    let typed = self.draft.partition_sizes[i].trim();
+                    if typed.is_empty() {
+                        self.draft.partitions[i].size_mb = None;
+                    } else if let Ok(mb) = typed.parse() {
+                        self.draft.partitions[i].size_mb = Some(mb);
+                    }
+                    // Otherwise keep what was there: the field is shown in the
+                    // warning colour and the layout is unchanged until it parses.
                 }
 
                 let mut letter = self.draft.partitions[i]
@@ -753,6 +775,26 @@ impl App {
                     self.draft.partitions[i].letter =
                         letter.chars().next().map(|c| c.to_ascii_uppercase());
                 }
+
+                // The format was hardcoded and unreachable, so a row set to EFI
+                // kept whatever it had: <Type>EFI</Type> with <Format>NTFS</Format>
+                // is an ESP the firmware cannot read.
+                egui::ComboBox::from_id_salt(("partition-format", i))
+                    .selected_text(format_name(self.draft.partitions[i].format))
+                    .width(84.0)
+                    .show_ui(ui, |ui| {
+                        for format in [
+                            Some(partition::Format::Fat32),
+                            Some(partition::Format::Ntfs),
+                            None,
+                        ] {
+                            ui.selectable_value(
+                                &mut self.draft.partitions[i].format,
+                                format,
+                                format_name(format),
+                            );
+                        }
+                    });
 
                 let mut label =
                     self.draft.partitions[i].label.clone().unwrap_or_default();
@@ -779,12 +821,13 @@ impl App {
         }
         ui.horizontal(|ui| {
             if ui.button("Add partition").clicked() {
+                let kind = partition::Kind::Primary;
                 self.draft.partitions.push(partition::Partition {
-                    kind: partition::Kind::Primary,
+                    kind,
                     size_mb: None,
                     label: None,
                     letter: None,
-                    format: Some(partition::Format::Ntfs),
+                    format: default_format(kind),
                 });
                 self.draft.partition_sizes.push(String::new());
             }
@@ -1687,6 +1730,27 @@ impl App {
                 );
             }
         });
+    }
+}
+
+/// What a partition of this kind should be formatted as when it is created or
+/// when its kind changes.
+///
+/// UEFI firmware reads FAT32 and nothing else, so an ESP has exactly one right
+/// answer; an MSR holds no filesystem at all; Windows installs onto NTFS.
+fn default_format(kind: partition::Kind) -> Option<partition::Format> {
+    match kind {
+        partition::Kind::Efi => Some(partition::Format::Fat32),
+        partition::Kind::Msr => None,
+        partition::Kind::Primary => Some(partition::Format::Ntfs),
+    }
+}
+
+/// The format picker's text, including the "no filesystem" row an MSR needs.
+fn format_name(format: Option<partition::Format>) -> &'static str {
+    match format {
+        Some(f) => f.name(),
+        None => "none",
     }
 }
 
