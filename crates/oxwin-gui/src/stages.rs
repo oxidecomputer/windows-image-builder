@@ -662,6 +662,10 @@ impl App {
                 section(ui, "Partition layout");
                 self.ui_partition_editor(ui);
 
+                ui.add_space(6.0);
+                section(ui, "Answer file");
+                self.ui_answer_file(ui);
+
                 // Warnings live here, in the flow, because they are commentary on the
                 // choices around them. Blockers do not: they belong beside the button
                 // they are blocking, where they cannot be scrolled out of sight.
@@ -741,7 +745,8 @@ impl App {
                 if ui
                     .add(
                         egui::TextEdit::singleline(&mut letter)
-                            .desired_width(24.0),
+                            .desired_width(24.0)
+                            .hint_text("letter"),
                     )
                     .changed()
                 {
@@ -754,7 +759,8 @@ impl App {
                 if ui
                     .add(
                         egui::TextEdit::singleline(&mut label)
-                            .desired_width(120.0),
+                            .desired_width(120.0)
+                            .hint_text("label"),
                     )
                     .changed()
                 {
@@ -794,6 +800,80 @@ impl App {
                     .collect();
             }
         });
+    }
+
+    /// Save the generated answer file, or supply one to use verbatim instead.
+    ///
+    /// Saving writes only on this explicit click, never as a side effect of a
+    /// build: the file carries the administrator password in cleartext, so it
+    /// must never appear beside an image the user did not ask to see it in.
+    fn ui_answer_file(&mut self, ui: &mut Ui) {
+        match self.draft.supplied_unattend.clone() {
+            None => {
+                ui.label("Generated from the settings above.");
+                ui.horizontal(|ui| {
+                    if ui.button("Save answer file...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_file_name("autounattend.xml")
+                            .save_file()
+                        {
+                            let settings = self.draft.to_settings();
+                            let config =
+                                oxwin_core::unattend::Config::from_settings(
+                                    &settings,
+                                    self.draft.image_index,
+                                );
+                            match oxwin_core::unattend::build(&config) {
+                                Ok(xml) => {
+                                    if let Err(e) = std::fs::write(&path, xml) {
+                                        self.notice = Some(format!(
+                                            "Could not write {}: {e}",
+                                            path.display()
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    self.notice = Some(format!(
+                                        "Could not build the answer file: {e}"
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    if ui.button("Use my own...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("XML", &["xml"])
+                            .pick_file()
+                        {
+                            match std::fs::read_to_string(&path) {
+                                Ok(xml) => {
+                                    self.draft.supplied_unattend =
+                                        Some((path, xml));
+                                }
+                                Err(e) => {
+                                    self.notice = Some(format!(
+                                        "Could not read {}: {e}",
+                                        path.display()
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+            Some((path, _)) => {
+                ui.label(format!("Using {}", file_name(&path)));
+                hint(
+                    ui,
+                    "Used verbatim. The guest bootstrap script is still \
+                     generated from the settings above, and the release \
+                     detected from the media is not applied to this file.",
+                );
+                if ui.button("Use the generated one instead").clicked() {
+                    self.draft.supplied_unattend = None;
+                }
+            }
+        }
     }
 
     /// Ask where the image should go, then start building it.

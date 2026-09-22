@@ -258,6 +258,15 @@ pub struct Settings {
     /// How the target disk is partitioned. `partition::default_layout()` unless the
     /// user changed it.
     pub partitions: Vec<crate::partition::Partition>,
+    /// An answer file the caller supplied, as its text -- never a path, because
+    /// this crate does not read files on a caller's behalf. `None` means the
+    /// generated answer file, built from every other field above.
+    ///
+    /// A supplied file bypasses two things silently: `bootstrap.ps1` is still
+    /// generated from these settings, so a file that never invokes
+    /// `setup\bootstrap.ps1` builds an image that installs and leaves the guest
+    /// unreachable; and the release detected from the media is not applied to it.
+    pub unattend: Option<String>,
 }
 
 impl Default for Settings {
@@ -279,6 +288,7 @@ impl Default for Settings {
             timezone: crate::locale::DEFAULT_TIME_ZONE.to_string(),
             target_disk: 1,
             partitions: crate::partition::default_layout(),
+            unattend: None,
         }
     }
 }
@@ -437,6 +447,14 @@ impl Settings {
         }
 
         v.extend(crate::partition::problems(&self.partitions));
+
+        if let Some(xml) = &self.unattend {
+            let cx = crate::unattend::LintContext {
+                target_disk: self.target_disk,
+                generalize: self.deployment.is_golden(),
+            };
+            v.extend(crate::unattend::lint(xml, &cx));
+        }
 
         v
     }
@@ -759,6 +777,44 @@ mod tests {
         assert!(s.is_buildable());
         assert!(
             s.problems().iter().any(|p| p.field == "timezone" && !p.blocking)
+        );
+    }
+
+    #[test]
+    fn no_supplied_unattend_adds_no_problems() {
+        assert!(base().unattend.is_none());
+        assert!(base().is_buildable(), "{:?}", base().problems());
+    }
+
+    /// A file that is not an answer file at all is the one thing a supplied
+    /// unattend can do that blocks the build -- Setup would refuse it too.
+    #[test]
+    fn a_supplied_file_that_is_not_an_answer_file_blocks() {
+        let s = Settings { unattend: Some("not xml at all".into()), ..base() };
+        assert!(!s.is_buildable(), "{:?}", s.problems());
+        assert!(
+            s.problems().iter().any(|p| p.field == "unattend" && p.blocking)
+        );
+    }
+
+    /// A well-formed but hazardous supplied file warns -- linted, but used
+    /// regardless, because the user chose it on purpose and owns the outcome.
+    /// This one has no reference to `setup\bootstrap.ps1`, so the guest
+    /// bootstrap would never run: the install looks fine and the guest is
+    /// unreachable.
+    #[test]
+    fn a_supplied_file_with_a_hazard_warns_but_stays_buildable() {
+        let s = Settings {
+            unattend: Some("<unattend></unattend>".into()),
+            ..base()
+        };
+        assert!(s.is_buildable(), "{:?}", s.problems());
+        assert!(
+            s.problems()
+                .iter()
+                .any(|p| p.field == "unattend_bootstrap" && !p.blocking),
+            "{:?}",
+            s.problems()
         );
     }
 }

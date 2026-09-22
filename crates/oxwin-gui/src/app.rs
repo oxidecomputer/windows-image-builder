@@ -84,6 +84,12 @@ pub struct Draft {
     /// Size fields as typed, so a half-typed number is not parsed into a smaller
     /// one and written back under the cursor. Parallel to `partitions`.
     pub partition_sizes: Vec<String>,
+    /// An answer file the user supplied: where it came from, and its text. The
+    /// path is kept only to show which file is in use -- the text is what
+    /// actually builds, read once when chosen, so editing the file afterwards
+    /// changes nothing until it is chosen again. `None` means the generated
+    /// answer file.
+    pub supplied_unattend: Option<(PathBuf, String)>,
 }
 
 impl Default for Draft {
@@ -117,6 +123,7 @@ impl Default for Draft {
                 .iter()
                 .map(|p| p.size_mb.map(|mb| mb.to_string()).unwrap_or_default())
                 .collect(),
+            supplied_unattend: None,
         }
     }
 }
@@ -166,6 +173,10 @@ impl Draft {
             timezone: self.timezone.clone(),
             target_disk: self.target_disk,
             partitions: self.partitions.clone(),
+            unattend: self
+                .supplied_unattend
+                .as_ref()
+                .map(|(_, xml)| xml.clone()),
         }
     }
 }
