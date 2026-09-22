@@ -116,15 +116,21 @@ pub fn lint(xml: &str, cx: &LintContext) -> Vec<Problem> {
     }
 
     // Everything in this workspace is amd64: the drivers are amd64 and nothing here
-    // works on arm64.
-    if xml.contains("processorArchitecture=")
-        && !xml.contains(r#"processorArchitecture="amd64""#)
+    // works on arm64. Every occurrence is read, not just the presence of one good
+    // one: a file whose components are amd64 apart from a single arm64 one is the
+    // interesting case, and asking only whether "amd64" appears anywhere reports it
+    // clean.
+    if let Some(other) = attributes(xml, "processorArchitecture")
+        .iter()
+        .find(|arch| arch != &"amd64")
     {
         v.push(Problem::warn(
             "unattend_arch",
-            "No component declares processorArchitecture=\"amd64\". The payload \
-             drivers are amd64 and nothing in this tool supports another \
-             architecture.",
+            format!(
+                "A component declares processorArchitecture={other:?}. The \
+                 payload drivers are amd64 and nothing in this tool supports \
+                 another architecture."
+            ),
         ));
     }
 
@@ -158,15 +164,21 @@ pub fn lint(xml: &str, cx: &LintContext) -> Vec<Problem> {
         ));
     }
 
-    let ids = elements(xml, "DiskID");
+    // Any disk that is not the target, not merely "the target appears nowhere". A
+    // file carrying both <DiskID>0</DiskID> and <DiskID>1</DiskID> is exactly the
+    // case this message describes -- something in it addresses the installer media
+    // -- and the weaker test reported it clean.
     let expected = cx.target_disk.to_string();
-    if !ids.is_empty() && !ids.iter().any(|id| id.trim() == expected) {
+    if let Some(other) =
+        elements(xml, "DiskID").iter().find(|id| id.trim() != expected)
+    {
         v.push(Problem::warn(
             "unattend_disk",
             format!(
-                "No <DiskID> is {expected}, but this build targets disk \
-                 {expected}. Disk 0 is the installer media; installing onto it \
-                 destroys the media mid-install."
+                "A <DiskID> is {}, but this build targets disk {expected}. \
+                 Disk 0 is the installer media; installing onto it destroys the \
+                 media mid-install.",
+                other.trim()
             ),
         ));
     }
@@ -217,6 +229,24 @@ fn elements(xml: &str, tag: &str) -> Vec<String> {
         let Some(end) = rest[from..].find(&close) else { break };
         found.push(rest[from..from + end].to_string());
         rest = &rest[from + end + close.len()..];
+    }
+    found
+}
+
+/// Every `name="…"` attribute value in the document, in order.
+///
+/// The counterpart to [`elements`] for the rules that read an attribute rather than
+/// an element body. Every occurrence, because a rule that asks only whether a good
+/// value appears somewhere cannot see a bad one next to it.
+fn attributes(xml: &str, name: &str) -> Vec<String> {
+    let open = format!("{name}=\"");
+    let mut found = Vec::new();
+    let mut rest = xml;
+    while let Some(at) = rest.find(&open) {
+        let from = at + open.len();
+        let Some(end) = rest[from..].find('"') else { break };
+        found.push(rest[from..from + end].to_string());
+        rest = &rest[from + end + 1..];
     }
     found
 }
@@ -356,6 +386,32 @@ mod tests {
         assert!(fields(&lint(&xml, &cx())).contains(&"unattend_arch"));
     }
 
+    /// The case the rule exists for, and the one the whole-file replacement above
+    /// cannot distinguish: three amd64 components and one arm64 one. Asking only
+    /// whether "amd64" appears anywhere reports this clean, and the component that
+    /// would never install is the one nobody looked at.
+    #[test]
+    fn one_arm64_component_among_amd64_ones_warns() {
+        let xml = clean().replacen(
+            r#"processorArchitecture="amd64""#,
+            r#"processorArchitecture="arm64""#,
+            1,
+        );
+        let found = lint(&xml, &cx());
+        assert!(fields(&found).contains(&"unattend_arch"));
+        assert!(
+            found.iter().any(|p| p.message.contains("arm64")),
+            "the finding should name the architecture it found: {found:?}"
+        );
+    }
+
+    /// And the converse: every component amd64 is silent, so the rule reads the
+    /// values rather than merely counting them.
+    #[test]
+    fn every_component_amd64_is_silent() {
+        assert!(!fields(&lint(&clean(), &cx())).contains(&"unattend_arch"));
+    }
+
     #[test]
     fn a_missing_password_warns() {
         let xml = clean().replace("<Password><Value>0xide!230xide!23</Value><PlainText>true</PlainText></Password>", "");
@@ -383,6 +439,35 @@ mod tests {
     fn a_disk_id_disagreeing_with_the_target_warns() {
         let cx = LintContext { target_disk: 2, generalize: false };
         assert!(fields(&lint(&clean(), &cx)).contains(&"unattend_disk"));
+    }
+
+    /// The dangerous shape the message describes, and the one the earlier rule
+    /// called clean: the target disk is named, so "at least one DiskID matches"
+    /// was satisfied, and disk 0 -- the installer media -- was named as well.
+    #[test]
+    fn a_file_naming_both_the_target_and_disk_zero_warns() {
+        let xml = clean().replace(
+            "<Disk wcm:action=\"add\"><DiskID>1</DiskID></Disk>",
+            "<Disk wcm:action=\"add\"><DiskID>1</DiskID></Disk>\n        \
+             <Disk wcm:action=\"add\"><DiskID>0</DiskID></Disk>",
+        );
+        let found = lint(&xml, &cx());
+        assert!(fields(&found).contains(&"unattend_disk"));
+        assert!(
+            found.iter().any(|p| p.message.contains("A <DiskID> is 0")),
+            "the finding should name the disk it found: {found:?}"
+        );
+    }
+
+    /// A file naming only the target disk, however many times, is silent.
+    #[test]
+    fn every_disk_id_matching_the_target_is_silent() {
+        let xml = clean().replace(
+            "<Disk wcm:action=\"add\"><DiskID>1</DiskID></Disk>",
+            "<Disk wcm:action=\"add\"><DiskID>1</DiskID></Disk>\n        \
+             <InstallTo><DiskID>1</DiskID><PartitionID>3</PartitionID></InstallTo>",
+        );
+        assert!(!fields(&lint(&xml, &cx())).contains(&"unattend_disk"));
     }
 
     #[test]
