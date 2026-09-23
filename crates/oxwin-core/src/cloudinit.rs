@@ -239,9 +239,9 @@ pub fn service_conf(config: &Config) -> String {
 //
 // Two scripts are written *from* `bootstrap.ps1` as single-quoted
 // here-strings, so nothing in them is expanded until they run on a later boot.
-// Anything that has to be fixed at build time -- the account name, the
-// password, whether this is a golden image -- is therefore spliced in here, by
-// Rust, as literal text. Those do not nest, and a line starting `'@` inside
+// Anything that has to be fixed at build time -- the account name, whether
+// this is a golden image -- is therefore spliced in here, by Rust, as literal
+// text. Never the password: see `profile_step`. Those do not nest, and a line starting `'@` inside
 // one ends it: nothing below may start a line that way, which
 // `the_here_strings_balance` checks.
 
@@ -517,20 +517,14 @@ fn profile_step(config: &Config) -> String {
 "#,
     );
     s.push_str(&format!("$user = {}\n", ps_quote(&config.username)));
-    // The password is already cleartext in autounattend.xml and in the sysprep
-    // answer file, so writing it here is no new class of exposure. It is left
-    // out when it is not printable ASCII: this script is written with
-    // -Encoding ASCII, which would turn anything else into '?', and a line
-    // break could put `'@` at the start of a line and end the here-string
-    // this sits in. CreateProfile below needs no password.
-    if config.password.bytes().all(|b| (b' '..=b'~').contains(&b)) {
-        s.push_str(&format!("$password = {}\n", ps_quote(&config.password)));
-    } else {
-        s.push_str(
-            "# The password is not printable ASCII, so it is not written here.\n\
-             $password = $null\n",
-        );
-    }
+    // No password, deliberately. This script lives in
+    // C:\Windows\Setup\Scripts, inherits BUILTIN\Users read access, is never
+    // deleted, and is captured into every clone -- on a named build it would
+    // be the only cleartext copy left on disk, since there is no sysprep
+    // answer file and Windows scrubs its cached one. The only thing a password
+    // could feed is Start-Process -Credential, which is CreateProcessWithLogonW
+    // and documented not to work from LocalSystem, which is what this task
+    // runs as. userenv's CreateProfile needs none.
     s.push_str(
         r#"$sid = $null
 try {
@@ -543,26 +537,17 @@ if ($sid) {
     TLog "profile for $user already exists at $profilePath"
   } else {
     TLog "no profile for $user; making one so cloud-init can write its SSH keys"
-    if ($password) {
-      try {
-        $cred = New-Object System.Management.Automation.PSCredential($user, (ConvertTo-SecureString $password -AsPlainText -Force))
-        Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList '-NoProfile','-Command','exit' -Credential $cred -LoadUserProfile -Wait -ErrorAction Stop
-      } catch { TLog "logging on as $user to load its profile failed: $_" }
-      $profilePath = (Get-ItemProperty -Path $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
-    }
-    # Fallback. Start-Process -Credential is CreateProcessWithLogonW, which is
-    # documented not to work from LocalSystem -- and this task is LocalSystem.
-    # userenv's CreateProfile makes the same ProfileList entry and profile
-    # directory, and needs no password.
-    if (-not $profilePath) {
-      try {
-        Add-Type -Namespace Oxide -Name UserEnv -MemberDefinition '[DllImport("userenv.dll", CharSet = CharSet.Unicode)] public static extern int CreateProfile(string sid, string name, System.Text.StringBuilder path, uint len);' -ErrorAction Stop
-        $buf = New-Object System.Text.StringBuilder 260
-        $hr = [Oxide.UserEnv]::CreateProfile($sid, $user, $buf, 260)
-        TLog ('CreateProfile returned 0x{0:X8}' -f $hr)
-      } catch { TLog "CreateProfile failed: $_" }
-      $profilePath = (Get-ItemProperty -Path $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
-    }
+    # userenv's CreateProfile makes the ProfileList entry and the profile
+    # directory, needs no password, and works from LocalSystem. Logging on as
+    # the user to load its profile does not: that is CreateProcessWithLogonW,
+    # documented not to work from LocalSystem.
+    try {
+      Add-Type -Namespace Oxide -Name UserEnv -MemberDefinition '[DllImport("userenv.dll", CharSet = CharSet.Unicode)] public static extern int CreateProfile(string sid, string name, System.Text.StringBuilder path, uint len);' -ErrorAction Stop
+      $buf = New-Object System.Text.StringBuilder 260
+      $hr = [Oxide.UserEnv]::CreateProfile($sid, $user, $buf, 260)
+      TLog ('CreateProfile returned 0x{0:X8}' -f $hr)
+    } catch { TLog "CreateProfile failed: $_" }
+    $profilePath = (Get-ItemProperty -Path $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
     if ($profilePath) {
       TLog "profile for $user made at $profilePath"
     } else {
@@ -575,11 +560,26 @@ if ($sid) {
     s
 }
 
+/// The .NET regex that finds the administrators-only directive.
+///
+/// It ends `(?=\r?$)`, not `$`: in .NET, `(?m)$` matches only before `\n`,
+/// never before `\r`, and the `sshd_config_default` OpenSSH ships -- which
+/// sshd copies verbatim to `sshd_config` on first start -- is CRLF. With a
+/// bare `$` the rewrite never matched on a real guest, the warning was logged
+/// on every install, and the metadata keys silently did nothing while the
+/// baked keys hid it. The lookahead leaves the `\r` in place rather than
+/// consuming it. Pinned against both line endings by the fixtures in
+/// `testdata/sshd/`.
+const SSHD_KEYS_PATTERN: &str = r"(?m)^[ \t]*#?[ \t]*AuthorizedKeysFile[ \t]+__PROGRAMDATA__/ssh/administrators_authorized_keys[ \t]*(?=\r?$)";
+
 /// The `AuthorizedKeysFile` rewrite. Emitted inside `bootstrap`'s
 /// `enable_ssh` branch, inside its `if (Get-Service sshd)` block, and only when
 /// cloud-init is on: with it off there are no per-user keys to read.
 pub fn sshd_fix_block() -> String {
-    r#"  # Stock sshd_config ends with `Match Group administrators`, which points
+    SSHD_FIX_BLOCK.replace("@PATTERN@", SSHD_KEYS_PATTERN)
+}
+
+const SSHD_FIX_BLOCK: &str = r#"  # Stock sshd_config ends with `Match Group administrators`, which points
   # AuthorizedKeysFile at administrators_authorized_keys only -- so an
   # administrator's own ~/.ssh/authorized_keys is ignored, and the per-instance
   # keys cloud-init writes there do nothing. Name both files rather than
@@ -591,7 +591,7 @@ pub fn sshd_fix_block() -> String {
     if (Test-Path $sshdConf) {
       $want = 'AuthorizedKeysFile .ssh/authorized_keys __PROGRAMDATA__/ssh/administrators_authorized_keys'
       $text = Get-Content -LiteralPath $sshdConf -Raw
-      $new = [regex]::Replace($text, '(?m)^[ \t]*#?[ \t]*AuthorizedKeysFile[ \t]+__PROGRAMDATA__/ssh/administrators_authorized_keys[ \t]*$', $want)
+      $new = [regex]::Replace($text, '@PATTERN@', $want)
       if ($new -ne $text) {
         Set-Content -LiteralPath $sshdConf -Value $new -Encoding ascii
         Log "sshd_config: AuthorizedKeysFile now names both key files"
@@ -602,9 +602,7 @@ pub fn sshd_fix_block() -> String {
     } else {
       Log "WARNING: no sshd_config; per-instance keys will not be read"
     }
-  } catch { Log "WARNING: could not rewrite sshd_config; per-instance keys may be ignored: $_" }"#
-    .to_string()
-}
+  } catch { Log "WARNING: could not rewrite sshd_config; per-instance keys may be ignored: $_" }"#;
 
 /// Copy `\extras` on the media to `C:\oxide\extras`, preserving the relative
 /// structure and logging every file, so `C:\oxide-bootstrap.log` answers "did
@@ -829,12 +827,12 @@ mod tests {
     #[test]
     fn only_mode_a_materialises_the_profile() {
         let keep = install_block(&base());
-        assert!(keep.contains("-LoadUserProfile"));
+        assert!(keep.contains("CreateProfile("));
         let managed = install_block(&Config {
             cloud_init: Some(CloudInit { manage_account: true }),
             ..base()
         });
-        assert!(!managed.contains("-LoadUserProfile"));
+        assert!(!managed.contains("CreateProfile"));
         // Both still register the task: it is what starts the service on the
         // clone's *first* boot rather than its second.
         assert!(managed.contains(TASK_NAME));
@@ -884,6 +882,50 @@ mod tests {
         // And a missing file is a logged warning, never a throw: the script
         // runs under $ErrorActionPreference = 'Stop'.
         assert!(block.contains("Test-Path"));
+        // The pattern is what is emitted, whole.
+        assert!(block.contains(&format!("'{SSHD_KEYS_PATTERN}'")), "{block}");
+        assert!(!block.contains("@PATTERN@"));
+    }
+
+    /// In .NET, `(?m)$` matches before `\n` only, never before `\r`, and the
+    /// sshd_config_default OpenSSH ships is CRLF: a bare `$` never matched on
+    /// a guest. The line end is a lookahead, so the `\r` is kept, not eaten.
+    /// Behaviour against the fixtures is checked with pwsh (see the task-3
+    /// report); what can be held here is the shape.
+    #[test]
+    fn the_sshd_pattern_matches_crlf_line_ends() {
+        assert!(SSHD_KEYS_PATTERN.starts_with("(?m)^"));
+        assert!(
+            SSHD_KEYS_PATTERN.ends_with(r"[ \t]*(?=\r?$)"),
+            "{SSHD_KEYS_PATTERN}"
+        );
+        // No bare `$` anywhere else in it.
+        assert_eq!(SSHD_KEYS_PATTERN.matches('$').count(), 1);
+        // A single-quoted PowerShell string cannot carry a quote unescaped.
+        assert!(!SSHD_KEYS_PATTERN.contains('\''));
+    }
+
+    /// The fixtures are the last lines of the real sshd_config_default in the
+    /// bundled OpenSSH-Win64.zip, verbatim (CRLF), and the same lines as LF.
+    /// Held here so they cannot quietly lose the thing they exist to test.
+    #[test]
+    fn the_sshd_fixtures_carry_the_directive_in_both_line_endings() {
+        let dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/sshd");
+        let directive = "AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys";
+        let crlf = std::fs::read_to_string(
+            dir.join("sshd_config_default-tail-crlf.txt"),
+        )
+        .expect("CRLF fixture");
+        let lf = std::fs::read_to_string(
+            dir.join("sshd_config_default-tail-lf.txt"),
+        )
+        .expect("LF fixture");
+        assert!(crlf.contains("Match Group administrators\r\n"));
+        assert!(crlf.contains(&format!("       {directive}\r\n")));
+        assert_eq!(crlf.matches('\n').count(), crlf.matches("\r\n").count());
+        assert!(!lf.contains('\r'));
+        assert_eq!(lf, crlf.replace("\r\n", "\n"));
     }
 
     #[test]
@@ -927,46 +969,52 @@ mod tests {
         assert!(script.contains(r"$cb\conf\cloudbase-init-unattend.conf"));
     }
 
-    /// Mode A's profile step needs the password, so it is in the task script.
-    /// It is already cleartext in autounattend.xml and the sysprep answer file,
-    /// so this is no new exposure -- but it must survive a single quote, or
-    /// the task script does not parse and no clone ever starts cloud-init.
+    /// The account name is spliced into the task script as a PowerShell
+    /// single-quoted string, so it must survive a quote, or the task script
+    /// does not parse and no clone ever starts cloud-init.
     #[test]
-    fn a_password_or_name_containing_a_quote_is_escaped() {
-        let script = install_block(&Config {
-            username: "o'brien".into(),
-            password: "it's-a-secret".into(),
-            ..base()
-        });
-        assert!(script.contains("$password = 'it''s-a-secret'"), "{script}");
+    fn a_name_containing_a_quote_is_escaped() {
+        let script =
+            install_block(&Config { username: "o'brien".into(), ..base() });
         assert!(script.contains("$user = 'o''brien'"), "{script}");
-        assert!(!script.contains("'it's"));
+        assert!(!script.contains("'o'brien'"));
     }
 
-    /// The task script is written with -Encoding ASCII, so a password that is
-    /// not printable ASCII would arrive as '?', and a line break in one could
-    /// end the here-string it sits in. It is left out; CreateProfile needs no
-    /// password.
+    /// The task script lives in C:\Windows\Setup\Scripts, is readable by
+    /// BUILTIN\Users, is never deleted and is captured into every clone. So
+    /// the password is in nothing this module generates for the guest, in
+    /// either mode, golden or named, escaped or not. (It is in the answer
+    /// files, which is where it belongs.)
     #[test]
-    fn a_password_that_is_not_printable_ascii_is_left_out() {
-        for password in ["p\u{e4}sswort-long", "line\n'@break"] {
-            let script =
-                install_block(&Config { password: password.into(), ..base() });
-            assert!(script.contains("$password = $null"), "{script}");
-            assert!(!script.contains(password));
-            assert!(script.is_ascii());
-            assert!(script.contains("CreateProfile"));
+    fn the_password_is_never_written_by_the_guest_blocks() {
+        for password in [base().password, "it's-a-secret".to_string()] {
+            let escaped = password.replace('\'', "''");
+            for manage_account in [false, true] {
+                for generalize in [true, false] {
+                    let config = Config {
+                        password: password.clone(),
+                        generalize,
+                        computer_name: if generalize {
+                            "*".into()
+                        } else {
+                            "win-server-01".into()
+                        },
+                        cloud_init: Some(CloudInit { manage_account }),
+                        ..base()
+                    };
+                    for out in [
+                        install_block(&config),
+                        sshd_fix_block(),
+                        extras_block(),
+                    ] {
+                        assert!(!out.contains(&password), "{out}");
+                        assert!(!out.contains(&escaped), "{out}");
+                        assert!(!out.contains("$password"), "{out}");
+                        assert!(!out.contains("-Credential"), "{out}");
+                    }
+                }
+            }
         }
-    }
-
-    /// Mode B never needs the password, so it is not written.
-    #[test]
-    fn mode_b_does_not_write_the_password() {
-        let managed = install_block(&Config {
-            cloud_init: Some(CloudInit { manage_account: true }),
-            ..base()
-        });
-        assert!(!managed.contains(&base().password), "{managed}");
     }
 
     /// The task script and the runner are written from inside bootstrap.ps1
@@ -987,8 +1035,8 @@ mod tests {
                 computer_name: "win-server-01".into(),
                 ..base()
             },
-            // A hostile password: quoted, and shaped like a terminator.
-            Config { password: "'@x'@".into(), ..base() },
+            // A hostile account name: quoted, and shaped like a terminator.
+            Config { username: "'@x'@".into(), ..base() },
         ] {
             let script = install_block(&config);
             // Inside a here-string only a closer means anything; outside one,

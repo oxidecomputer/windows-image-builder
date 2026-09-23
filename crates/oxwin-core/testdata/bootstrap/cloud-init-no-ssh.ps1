@@ -118,7 +118,6 @@ if ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {
 # one the plugin raises "User profile not found!" and the instance's keys are
 # silently absent. So make it, before the service runs.
 $user = 'oxide'
-$password = '0xide!230xide!23'
 $sid = $null
 try {
   $sid = (New-Object System.Security.Principal.NTAccount($user)).Translate([System.Security.Principal.SecurityIdentifier]).Value
@@ -130,26 +129,17 @@ if ($sid) {
     TLog "profile for $user already exists at $profilePath"
   } else {
     TLog "no profile for $user; making one so cloud-init can write its SSH keys"
-    if ($password) {
-      try {
-        $cred = New-Object System.Management.Automation.PSCredential($user, (ConvertTo-SecureString $password -AsPlainText -Force))
-        Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList '-NoProfile','-Command','exit' -Credential $cred -LoadUserProfile -Wait -ErrorAction Stop
-      } catch { TLog "logging on as $user to load its profile failed: $_" }
-      $profilePath = (Get-ItemProperty -Path $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
-    }
-    # Fallback. Start-Process -Credential is CreateProcessWithLogonW, which is
-    # documented not to work from LocalSystem -- and this task is LocalSystem.
-    # userenv's CreateProfile makes the same ProfileList entry and profile
-    # directory, and needs no password.
-    if (-not $profilePath) {
-      try {
-        Add-Type -Namespace Oxide -Name UserEnv -MemberDefinition '[DllImport("userenv.dll", CharSet = CharSet.Unicode)] public static extern int CreateProfile(string sid, string name, System.Text.StringBuilder path, uint len);' -ErrorAction Stop
-        $buf = New-Object System.Text.StringBuilder 260
-        $hr = [Oxide.UserEnv]::CreateProfile($sid, $user, $buf, 260)
-        TLog ('CreateProfile returned 0x{0:X8}' -f $hr)
-      } catch { TLog "CreateProfile failed: $_" }
-      $profilePath = (Get-ItemProperty -Path $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
-    }
+    # userenv's CreateProfile makes the ProfileList entry and the profile
+    # directory, needs no password, and works from LocalSystem. Logging on as
+    # the user to load its profile does not: that is CreateProcessWithLogonW,
+    # documented not to work from LocalSystem.
+    try {
+      Add-Type -Namespace Oxide -Name UserEnv -MemberDefinition '[DllImport("userenv.dll", CharSet = CharSet.Unicode)] public static extern int CreateProfile(string sid, string name, System.Text.StringBuilder path, uint len);' -ErrorAction Stop
+      $buf = New-Object System.Text.StringBuilder 260
+      $hr = [Oxide.UserEnv]::CreateProfile($sid, $user, $buf, 260)
+      TLog ('CreateProfile returned 0x{0:X8}' -f $hr)
+    } catch { TLog "CreateProfile failed: $_" }
+    $profilePath = (Get-ItemProperty -Path $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
     if ($profilePath) {
       TLog "profile for $user made at $profilePath"
     } else {

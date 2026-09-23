@@ -104,7 +104,7 @@ if (Get-Service -Name sshd -ErrorAction SilentlyContinue) {
     if (Test-Path $sshdConf) {
       $want = 'AuthorizedKeysFile .ssh/authorized_keys __PROGRAMDATA__/ssh/administrators_authorized_keys'
       $text = Get-Content -LiteralPath $sshdConf -Raw
-      $new = [regex]::Replace($text, '(?m)^[ \t]*#?[ \t]*AuthorizedKeysFile[ \t]+__PROGRAMDATA__/ssh/administrators_authorized_keys[ \t]*$', $want)
+      $new = [regex]::Replace($text, '(?m)^[ \t]*#?[ \t]*AuthorizedKeysFile[ \t]+__PROGRAMDATA__/ssh/administrators_authorized_keys[ \t]*(?=\r?$)', $want)
       if ($new -ne $text) {
         Set-Content -LiteralPath $sshdConf -Value $new -Encoding ascii
         Log "sshd_config: AuthorizedKeysFile now names both key files"
