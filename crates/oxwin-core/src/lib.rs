@@ -7,6 +7,7 @@
 pub mod assets;
 pub mod bootstrap;
 pub mod builder;
+pub mod cidata;
 pub mod cloudinit;
 pub mod engine;
 pub mod exfat;

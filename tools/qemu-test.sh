@@ -23,23 +23,42 @@
 # What it cannot tell you, from CLAUDE.md: a QEMU guest honours its own NVRAM, so after an
 # install it re-enters the installed OS directly and never exercises the chooser's
 # "installed Windows exists" branch. There is no VPC firewall either, so RDP appears to
-# work here and then times out on a rack.
+# work here and then times out on a rack. And --cloud-init below attaches a drive shaped
+# like a NoCloud config drive, built by `oxwin cidata` -- it is not the control plane's
+# own config drive, so this cannot prove the rack's metadata path, only that cloud-init
+# itself, the MSI, the service ordering and the answer file's plumbing all work.
 set -euo pipefail
 
 VNC=0
+CLOUD_INIT=0
 ARGS=()
 for a in "$@"; do
   case "$a" in
     --vnc) VNC=1 ;;
+    --cloud-init) CLOUD_INIT=1 ;;
     *) ARGS+=("$a") ;;
   esac
 done
 IMAGE="${ARGS[0]:-}"
 if [[ -z "$IMAGE" || ! -f "$IMAGE" ]]; then
-  echo "usage: $0 [--vnc] <installer.img> [target-disk-gib]" >&2
+  echo "usage: $0 [--vnc] [--cloud-init] <installer.img> [target-disk-gib]" >&2
   exit 2
 fi
 TARGET_GIB="${ARGS[1]:-60}"
+
+# --cloud-init attaches a NoCloud config drive built by `oxwin cidata`, so cloud-init has
+# something to find under QEMU. $OXWIN_CIDATA names it directly; otherwise a
+# cidata.img beside the installer image is expected -- build one first with
+#   cargo run -p oxwin-cli -- cidata cidata.img --hostname=<name> [--key=<k>]
+if (( CLOUD_INIT )); then
+  CIDATA="${OXWIN_CIDATA:-$(dirname "$IMAGE")/cidata.img}"
+  if [[ ! -f "$CIDATA" ]]; then
+    echo "--cloud-init needs a NoCloud drive: set OXWIN_CIDATA=<path> or put" >&2
+    echo "cidata.img next to $IMAGE. Build one with:" >&2
+    echo "  cargo run -p oxwin-cli -- cidata $(dirname "$IMAGE")/cidata.img --hostname=<name>" >&2
+    exit 2
+  fi
+fi
 
 # Oxide imports the *target* disk at 4096 bytes and the installer at 512. Matching that
 # matters: a 4Kn disk changes how Setup partitions and aligns, and "it worked locally"
@@ -85,10 +104,21 @@ echo "target:  $target (${TARGET_GIB} GiB sparse)"
 echo "vcpus:   $vcpus (tcg, no hardware acceleration on arm64), ${MEM} MiB"
 echo "target bs: $TARGET_BS (Oxide uses 4096 for the target disk)"
 echo "scratch: $run"
+if (( CLOUD_INIT )); then
+  echo "cidata:  $CIDATA"
+fi
 if (( VNC )); then
   echo "vnc:     open vnc://127.0.0.1:$((5900 + VNC_PORT))   (Screen Sharing, or any VNC client)"
 fi
 echo "--- serial console follows; ctrl-a x quits ---"
+
+CIDATA_ARGS=()
+if (( CLOUD_INIT )); then
+  CIDATA_ARGS=(
+    -drive file="$CIDATA",if=none,id=cidata,format=raw
+    -device nvme,drive=cidata,serial=cidata
+  )
+fi
 
 exec qemu-system-x86_64 \
   -machine q35 \
@@ -100,6 +130,7 @@ exec qemu-system-x86_64 \
   -drive if=pflash,format=raw,unit=1,file="$vars" \
   -drive file="$IMAGE",if=none,id=installer,format=raw,snapshot=on \
   -device nvme,drive=installer,serial=installer \
+  "${CIDATA_ARGS[@]+"${CIDATA_ARGS[@]}"}" \
   -drive file="$target",if=none,id=target,format=raw \
   -device nvme,drive=target,serial=target,logical_block_size="$TARGET_BS",physical_block_size="$TARGET_BS" \
   -netdev user,id=net0 \

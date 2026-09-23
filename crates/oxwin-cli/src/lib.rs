@@ -39,7 +39,7 @@ use std::path::PathBuf;
 /// ends together.
 pub const COMMANDS: &[&str] = &[
     "doctor", "build", "unattend", "upload", "instance", "watch", "snapshot",
-    "image", "teardown", "golden", "verify", "licenses",
+    "image", "teardown", "golden", "verify", "licenses", "cidata",
 ];
 
 /// Run the CLI. `args` is the argument list with the program name already removed.
@@ -62,6 +62,7 @@ pub fn run(args: &[String]) -> Result<()> {
         "golden" => golden(&args[1..]),
         "verify" => verify(&args[1..]),
         "licenses" => licenses(&args[1..]),
+        "cidata" => cidata(&args[1..]),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())
@@ -86,6 +87,7 @@ usage: oxwin doctor
        oxwin golden <iso-or-mount-or-img> --run=<name> --project=<p>
        oxwin verify <run> --project=<p>
        oxwin licenses [--full]
+       oxwin cidata <out.img> --hostname=<name> [--key=<k>] [--user-data=<file>]
 
   --name=<hostname>      computer name, or * for a golden image
   --generalize           after the install finishes, sysprep /generalize and
@@ -222,7 +224,20 @@ golden options:
   golden-image options rather than trusting a flag: media built without them
   installs perfectly and never shuts down, which the watcher cannot tell
   apart from a hang. Given an .img it cannot know, so build that with
-  --name=* or --generalize.";
+  --name=* or --generalize.
+
+cidata options:
+  A local NoCloud config drive, for exercising cloud-init under
+  tools/qemu-test.sh --cloud-init before spending a rack cycle on it. The
+  rack's own config drive comes from the control plane and is never built
+  by this command.
+  --hostname=<name>      local-hostname in meta-data. Required
+  --instance-id=<id>     instance-id in meta-data. Default derived from
+                         --hostname
+  --key=<pubkey>         repeatable; an SSH public key line for public-keys
+  --user-data=<file>     user_data, read verbatim from this file. Omitted,
+                         user-data is written empty -- NoCloud wants it
+                         present either way";
 
 /// Where the password may come from, in order of precedence.
 ///
@@ -1406,6 +1421,54 @@ fn licenses(args: &[String]) -> Result<()> {
         } else {
             oxwin_core::notices::summary()
         }
+    );
+    Ok(())
+}
+
+/// Write a local NoCloud config drive: `oxwin cidata`.
+///
+/// A test drive only, so this exists to be exercised under
+/// `tools/qemu-test.sh --cloud-init` before a rack cycle is spent. Nothing
+/// here prompts, and nothing here ships in a built image -- the rack's own
+/// config drive comes from the control plane, through `oxwin_core::cidata`
+/// carrying the same `Drive`/`build` this reaches through.
+fn cidata(args: &[String]) -> Result<()> {
+    let positional: Vec<&String> =
+        args.iter().filter(|a| !a.starts_with("--")).collect();
+    let [out] = positional.as_slice() else {
+        bail!("cidata needs exactly one output path\n\n{USAGE}");
+    };
+    let opt = |name: &str| -> Option<String> {
+        let prefix = format!("--{name}=");
+        args.iter().find_map(|a| a.strip_prefix(&prefix).map(str::to_string))
+    };
+    let keys: Vec<String> = args
+        .iter()
+        .filter_map(|a| a.strip_prefix("--key="))
+        .map(str::to_string)
+        .collect();
+    let hostname = opt("hostname").context("--hostname is required")?;
+    let instance_id =
+        opt("instance-id").unwrap_or_else(|| format!("i-{hostname}"));
+    let user_data = match opt("user-data") {
+        Some(path) => Some(
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("reading --user-data={path}"))?,
+        ),
+        None => None,
+    };
+
+    let drive =
+        oxwin_core::cidata::Drive { hostname, instance_id, keys, user_data };
+    let bytes = oxwin_core::cidata::build(&drive)?;
+    let out = PathBuf::from(out);
+    std::fs::write(&out, &bytes)
+        .with_context(|| format!("writing {}", out.display()))?;
+    println!(
+        "wrote {} ({:.1} MiB, label {})",
+        out.display(),
+        bytes.len() as f64 / (1024.0 * 1024.0),
+        oxwin_core::cidata::LABEL
     );
     Ok(())
 }
