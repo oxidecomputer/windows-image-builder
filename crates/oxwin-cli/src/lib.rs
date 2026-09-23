@@ -27,7 +27,7 @@ use oxwin_core::engine::Cancel;
 use oxwin_core::media::Media;
 use oxwin_core::partition::{Format, Kind, Partition};
 use oxwin_core::progress::{Event, Reporter};
-use oxwin_core::settings::WindowsRelease;
+use oxwin_core::settings::{CloudInit, Extra, WindowsRelease, extra_problems};
 use oxwin_core::unattend::Config;
 use std::path::PathBuf;
 
@@ -139,6 +139,17 @@ usage: oxwin doctor
   --unattend=<file>      use this answer file instead of the generated one. It is
                          checked for known hazards and used regardless; only a file
                          that is not an answer file at all is refused.
+  --no-cloud-init        do not install cloud-init. Without it a clone keeps
+                         the image's hostname and its baked keys only
+  --cloud-init-account=<keep|manage>
+                         keep: the account and password you set here stay as
+                         they are, and cloud-init only adds the instance's
+                         keys (default). manage: cloud-init owns the account,
+                         which replaces the password with a per-instance
+                         random one the first time it runs on a clone
+  --extra=<path>         repeatable; a file or directory copied onto the media
+                         and into C:\\oxide\\extras in the guest. Nothing runs
+                         it -- use cloud-init user-data for that
   --quiet
 
 unattend options:
@@ -394,13 +405,132 @@ fn config_from_args(args: &[String]) -> Result<Config> {
             .map(str::to_string)
             .collect(),
         enable_ssh: opt("ssh").as_deref() != Some("0"),
-        // Flags arrive in the CLI task; the defaults match `Settings::default`.
-        cloud_init: Some(oxwin_core::settings::CloudInit {
-            manage_account: false,
-        }),
-        has_extras: false,
+        cloud_init: cloud_init_from_args(args)?,
+        has_extras: !extras_from_args(args)?.is_empty(),
     };
     Ok(config)
+}
+
+/// `--no-cloud-init` and `--cloud-init-account=<keep|manage>`.
+///
+/// On by default, in the mode that leaves the typed account and password
+/// alone: cloud-init only adds the instance's keys until something asks it to
+/// do more. A typo in the mode is refused rather than silently landing on
+/// `keep`, since that would leave the user believing cloud-init owns the
+/// account when it does not; and naming a mode while also turning cloud-init
+/// off is refused as a contradiction rather than guessed at.
+fn cloud_init_from_args(args: &[String]) -> Result<Option<CloudInit>> {
+    let off = flag_in(args, "no-cloud-init");
+    let mode =
+        args.iter().find_map(|a| a.strip_prefix("--cloud-init-account="));
+    if off && mode.is_some() {
+        bail!(
+            "--no-cloud-init and --cloud-init-account= contradict each \
+             other; use one or the other"
+        );
+    }
+    if off {
+        return Ok(None);
+    }
+    let manage_account = match mode {
+        None => false,
+        Some("keep") => false,
+        Some("manage") => true,
+        Some(other) => {
+            bail!("unknown --cloud-init-account={other}; known: keep manage")
+        }
+    };
+    Ok(Some(CloudInit { manage_account }))
+}
+
+/// `--extra=<path>`, repeatable. A file becomes `/extras/<file name>`; a
+/// directory is walked and each file becomes
+/// `/extras/<dir name>/<relative path>`, with `/` separators regardless of
+/// host platform because this is a path on the Windows volume, not on the
+/// machine doing the build.
+///
+/// `read_dir` order differs between filesystems, and that order decides which
+/// clusters each file gets — see "The media file list must be sorted by the
+/// path the file will have on the volume" in `CLAUDE.md` — so a directory is
+/// walked with an explicit sort at every level rather than trusted as given.
+/// A symlink inside a directory extra is followed: `fs::metadata` (which
+/// follows links) rather than `symlink_metadata` decides file-vs-directory,
+/// so the walk is deterministic in what it includes rather than in how it
+/// arrived there.
+fn extras_from_args(args: &[String]) -> Result<Vec<Extra>> {
+    let mut extras = Vec::new();
+    for path in args
+        .iter()
+        .filter_map(|a| a.strip_prefix("--extra="))
+        .map(PathBuf::from)
+    {
+        let meta = std::fs::metadata(&path).with_context(|| {
+            format!("--extra={}: not found", path.display())
+        })?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                anyhow!(
+                    "--extra={}: not a valid UTF-8 file name",
+                    path.display()
+                )
+            })?
+            .to_string();
+        if meta.is_dir() {
+            walk_extra_dir(&path, &format!("/extras/{name}"), &mut extras)?;
+        } else {
+            extras.push(Extra {
+                source: path.clone(),
+                volume_path: format!("/extras/{name}"),
+            });
+        }
+    }
+    Ok(extras)
+}
+
+/// One level of `extras_from_args`' directory walk, called recursively.
+///
+/// `volume_prefix` already carries `/extras/<dir name>` (and, on recursion,
+/// every subdirectory name below it), so each entry only has to add its own
+/// name.
+fn walk_extra_dir(
+    dir: &std::path::Path,
+    volume_prefix: &str,
+    out: &mut Vec<Extra>,
+) -> Result<()> {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .map(|e| e.map(|e| e.path()))
+        .collect::<std::io::Result<_>>()
+        .with_context(|| format!("reading {}", dir.display()))?;
+    entries.sort_unstable();
+
+    for path in entries {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                anyhow!(
+                    "--extra: {} is not a valid UTF-8 file name",
+                    path.display()
+                )
+            })?
+            .to_string();
+        let volume_path = format!("{volume_prefix}/{name}");
+        // Follows symlinks, so a link inside an --extra directory is walked
+        // like the file or directory it points at, deterministically -- the
+        // alternative, skipping links, is just as defensible but would leave
+        // silently missing files with no message naming them.
+        let meta = std::fs::metadata(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if meta.is_dir() {
+            walk_extra_dir(&path, &volume_path, out)?;
+        } else {
+            out.push(Extra { source: path, volume_path });
+        }
+    }
+    Ok(())
 }
 
 /// `--partition=<kind>:<size|extend>[:<letter>][:<format>][:<label>]`, repeated.
@@ -507,6 +637,14 @@ fn build(args: &[String]) -> Result<()> {
 
     let config = config_from_args(args)?;
     let assets = assets_from_args(args)?;
+    let extras = extras_from_args(args)?;
+    // Refused here rather than left to the engine, so a collision between two
+    // `--extra=` files is reported before an ISO gets opened and copied.
+    if let Some(problem) =
+        extra_problems(&extras).into_iter().find(|p| p.blocking)
+    {
+        bail!("{}", problem.message);
+    }
 
     let unattend = match args.iter().find_map(|a| a.strip_prefix("--unattend="))
     {
@@ -549,7 +687,7 @@ fn build(args: &[String]) -> Result<()> {
         assets,
         enable_ems: ems_enabled(args),
         unattend,
-        extras: Vec::new(),
+        extras,
     };
 
     let quiet = flag("quiet");
@@ -1045,6 +1183,12 @@ fn build_for_golden(
     } else {
         Media::Iso(source.to_path_buf())
     };
+    let extras = extras_from_args(args)?;
+    if let Some(problem) =
+        extra_problems(&extras).into_iter().find(|p| p.blocking)
+    {
+        bail!("{}", problem.message);
+    }
     let request = Request {
         media,
         out: out.to_path_buf(),
@@ -1061,7 +1205,7 @@ fn build_for_golden(
         assets: assets_from_args(args)?,
         enable_ems: ems_enabled(args),
         unattend: None,
-        extras: Vec::new(),
+        extras,
     };
 
     let (reporter, printer) = printer(quiet, "copying");
@@ -1339,6 +1483,18 @@ fn doctor() -> Result<()> {
                     }
                 }
             }
+            // Cloud-init is on by default, so a payload without the MSI means
+            // the default build cannot do what the tickbox says it does.
+            match assets.read("cloudbase/CloudbaseInitSetup_x64.msi") {
+                Ok(data) if !data.is_empty() => println!(
+                    "ok    asset cloudbase-init MSI ({} bytes)",
+                    data.len()
+                ),
+                _ => println!(
+                    "warn  no cloudbase-init MSI in the payload — cloud-init \
+                     builds will be refused; run ./tools/fetch-payload.sh"
+                ),
+            }
         }
         Some(problem) => {
             println!("FAIL  payload: {problem}");
@@ -1541,6 +1697,109 @@ mod tests {
                 "USAGE does not mention {cmd}"
             );
         }
+    }
+
+    /// On by default, in the mode that does not touch the password.
+    #[test]
+    fn cloud_init_defaults_to_on_and_keeps_the_account() {
+        let c = cloud_init_from_args(&args(&[])).unwrap();
+        assert_eq!(c, Some(CloudInit { manage_account: false }));
+    }
+
+    #[test]
+    fn no_cloud_init_turns_it_off() {
+        assert_eq!(
+            cloud_init_from_args(&args(&["--no-cloud-init"])).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_account_mode_is_explicit() {
+        assert_eq!(
+            cloud_init_from_args(&args(&["--cloud-init-account=manage"]))
+                .unwrap(),
+            Some(CloudInit { manage_account: true })
+        );
+        assert_eq!(
+            cloud_init_from_args(&args(&["--cloud-init-account=keep"]))
+                .unwrap(),
+            Some(CloudInit { manage_account: false })
+        );
+    }
+
+    /// A typo must not silently pick a mode. Choosing `keep` for
+    /// `--cloud-init-account=mange` would leave the user believing cloud-init
+    /// owns the account when it does not.
+    #[test]
+    fn an_unknown_account_mode_is_refused() {
+        let err = cloud_init_from_args(&args(&["--cloud-init-account=mange"]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("keep"), "{err}");
+        assert!(err.contains("manage"), "{err}");
+    }
+
+    /// Asking for a mode and also turning cloud-init off is a contradiction,
+    /// and guessing which one was meant is how a user ends up with an image
+    /// they did not ask for.
+    #[test]
+    fn a_mode_with_cloud_init_off_is_refused() {
+        assert!(
+            cloud_init_from_args(&args(&[
+                "--no-cloud-init",
+                "--cloud-init-account=manage"
+            ]))
+            .is_err()
+        );
+    }
+
+    /// Repeatable, and the volume path is built from the file's name -- never
+    /// from anything the user types, which is what keeps it inside /extras.
+    #[test]
+    fn extras_are_repeatable_and_land_under_extras() {
+        let dir = std::env::temp_dir()
+            .join(format!("oxwin-extras-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.zip"), b"a").unwrap();
+        std::fs::write(dir.join("b.txt"), b"b").unwrap();
+        let extras = extras_from_args(&args(&[
+            &format!("--extra={}", dir.join("a.zip").display()),
+            &format!("--extra={}", dir.join("b.txt").display()),
+        ]))
+        .unwrap();
+        let paths: Vec<&str> =
+            extras.iter().map(|e| e.volume_path.as_str()).collect();
+        assert_eq!(paths, ["/extras/a.zip", "/extras/b.txt"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A directory keeps its structure, so `--extra=./tools` is one flag rather
+    /// than one per file.
+    #[test]
+    fn a_directory_extra_preserves_its_structure() {
+        let dir = std::env::temp_dir()
+            .join(format!("oxwin-extras-dir-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("inner")).unwrap();
+        std::fs::write(dir.join("inner/c.txt"), b"c").unwrap();
+        let extras =
+            extras_from_args(&args(&[&format!("--extra={}", dir.display())]))
+                .unwrap();
+        assert_eq!(extras.len(), 1);
+        assert!(
+            extras[0].volume_path.ends_with("/inner/c.txt"),
+            "{}",
+            extras[0].volume_path
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_missing_extra_is_refused_by_the_flag() {
+        let err = extras_from_args(&args(&["--extra=/nonexistent/x.zip"]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("x.zip"), "{err}");
     }
 
     #[test]
