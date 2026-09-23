@@ -389,9 +389,13 @@ fn cloud_init_volume_paths(config: &Config, bare: bool) -> Vec<&'static str> {
     if bare || config.cloud_init.is_none() {
         return Vec::new();
     }
-    // Sorted by the path the file will have on the volume. That order
-    // decides which clusters each file gets, so it decides the bytes of the
-    // volume.
+    // `.sort()` here is load-bearing, not a defensive no-op: the constants
+    // are listed above in MSI/service/unattend order, but that is not their
+    // sorted order. `-` (0x2D) sorts before `.` (0x2E), so
+    // `cloudbase-init-unattend.conf` sorts before `cloudbase-init.conf`, and
+    // the volume-path order is actually MSI, unattend conf, service conf.
+    // Getting this wrong changes which clusters each file gets, so it
+    // changes the bytes of the volume.
     let mut paths = vec![
         crate::cloudinit::MSI_VOLUME_PATH,
         crate::cloudinit::SERVICE_CONF_VOLUME_PATH,
@@ -1607,6 +1611,29 @@ mod whole_image {
         let rs = scratch.join("rs.img");
         let again = scratch.join("again.img");
 
+        // Two extras, on every route, supplied here in the opposite of
+        // volume-path order ("/extras/sub/a.txt" sorts after
+        // "/extras/b.txt"), and one nested under a subdirectory. This is
+        // the only test that proves the extras path through `plan` and
+        // `p1.add_file` is deterministic against real media -- the unit
+        // tests below cover `read_extras`'s sort in isolation, but not
+        // through a real build.
+        let extras_src = scratch.join("extras-src");
+        std::fs::create_dir_all(extras_src.join("sub")).unwrap();
+        std::fs::write(extras_src.join("sub").join("a.txt"), b"extra a")
+            .unwrap();
+        std::fs::write(extras_src.join("b.txt"), b"extra b").unwrap();
+        let extras = vec![
+            crate::settings::Extra {
+                source: extras_src.join("sub").join("a.txt"),
+                volume_path: "/extras/sub/a.txt".to_string(),
+            },
+            crate::settings::Extra {
+                source: extras_src.join("b.txt"),
+                volume_path: "/extras/b.txt".to_string(),
+            },
+        ];
+
         // A factory rather than one value cloned: `Request` is not `Clone`, and widening
         // a public type to suit a test is the wrong way round.
         let request_for = |media: Media, out: &Path| Request {
@@ -1639,7 +1666,7 @@ mod whole_image {
                 ],
                 enable_ssh: true,
                 cloud_init: None,
-                has_extras: false,
+                has_extras: true,
             },
             edition_hint: None,
             ei_channel: None,
@@ -1649,7 +1676,7 @@ mod whole_image {
             ),
             enable_ems: true,
             unattend: None,
-            extras: Vec::new(),
+            extras: extras.clone(),
         };
         let mount_media = || Media::Directory(PathBuf::from(&mount));
 
@@ -1746,6 +1773,7 @@ mod whole_image {
                 // keeps this an apples-to-apples determinism comparison
                 // rather than a payload refusal.
                 cloud_init: None,
+                extras: extras.clone(),
                 ..Settings::default()
             };
             // A directory rather than the embedded payload, so this test compares like
