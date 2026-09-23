@@ -35,6 +35,10 @@ pub struct LintContext {
     /// Whether this build syspreps. Changes which passes run, and therefore which
     /// components have to be present.
     pub generalize: bool,
+    /// Whether this build carries cloud-init. It is installed by
+    /// `bootstrap.ps1`, so an answer file that never invokes the bootstrap
+    /// produces a clone where every cloud-init command fails.
+    pub cloud_init: bool,
 }
 
 /// Every rule is scanned rather than parsed, matching `wim::parse_xml`: the shape is
@@ -112,6 +116,16 @@ pub fn lint(xml: &str, cx: &LintContext) -> Vec<Problem> {
             "Nothing references setup\\bootstrap.ps1, so the guest bootstrap never \
              runs: no SSH keys, no RDP configuration and no \
              C:\\oxide-bootstrap.log. The install will still appear to succeed.",
+        ));
+    }
+
+    if cx.cloud_init && !xml.contains("bootstrap.ps1") {
+        v.push(Problem::warn(
+            "unattend_cloud_init",
+            "This file does not invoke setup\\bootstrap.ps1, which is what \
+             installs cloud-init. The generated sysprep answer file still runs \
+             it on each clone, so every one of those commands will fail with \
+             nothing installed to run.",
         ));
     }
 
@@ -276,7 +290,7 @@ mod tests {
     use super::*;
 
     fn cx() -> LintContext {
-        LintContext { target_disk: 1, generalize: false }
+        LintContext { target_disk: 1, generalize: false, cloud_init: false }
     }
 
     fn fields(problems: &[Problem]) -> Vec<&str> {
@@ -437,7 +451,11 @@ mod tests {
 
     #[test]
     fn a_disk_id_disagreeing_with_the_target_warns() {
-        let cx = LintContext { target_disk: 2, generalize: false };
+        let cx = LintContext {
+            target_disk: 2,
+            generalize: false,
+            cloud_init: false,
+        };
         assert!(fields(&lint(&clean(), &cx)).contains(&"unattend_disk"));
     }
 
@@ -475,7 +493,8 @@ mod tests {
         // The sysprep answer file — the one `build_sysprep` emits — has no
         // windowsPE pass at all, which is the shape this rule actually guards:
         // nothing else in the document sets the locale.
-        let cx = LintContext { target_disk: 1, generalize: true };
+        let cx =
+            LintContext { target_disk: 1, generalize: true, cloud_init: false };
         let xml = clean().replace(
             r#"  <settings pass="windowsPE">
     <component name="Microsoft-Windows-Setup" processorArchitecture="amd64">
@@ -499,13 +518,15 @@ mod tests {
     #[test]
     fn a_golden_build_with_a_windows_pe_pass_is_fine_without_international_core()
      {
-        let cx = LintContext { target_disk: 1, generalize: true };
+        let cx =
+            LintContext { target_disk: 1, generalize: true, cloud_init: false };
         assert!(!fields(&lint(&clean(), &cx)).contains(&"unattend_locale"));
     }
 
     #[test]
     fn a_golden_build_with_international_core_is_fine() {
-        let cx = LintContext { target_disk: 1, generalize: true };
+        let cx =
+            LintContext { target_disk: 1, generalize: true, cloud_init: false };
         let xml = clean().replace(
             r#"<settings pass="oobeSystem">"#,
             r#"<settings pass="oobeSystem">
@@ -524,6 +545,42 @@ mod tests {
         assert!(
             found.iter().all(|p| !p.blocking),
             "a non-parse finding blocked: {found:?}"
+        );
+    }
+
+    /// `build_sysprep` is ours either way, so the clone-side specialize run
+    /// survives a supplied answer file. But if that file never invokes
+    /// `setup\bootstrap.ps1`, the MSI is never installed, and every one of
+    /// those commands fails on a clone -- silently. Same family as the existing
+    /// bootstrap warning, and it belongs beside it.
+    #[test]
+    fn a_supplied_file_with_no_bootstrap_warns_about_cloud_init_too() {
+        let cx = LintContext { cloud_init: true, ..cx() };
+        let problems = lint("<unattend></unattend>", &cx);
+        assert!(
+            fields(&problems).contains(&"unattend_cloud_init"),
+            "{problems:?}"
+        );
+        assert!(problems.iter().all(|p| !p.blocking || p.field == "unattend"));
+    }
+
+    #[test]
+    fn a_file_that_does_invoke_the_bootstrap_says_nothing_about_cloud_init() {
+        let cx = LintContext { cloud_init: true, ..cx() };
+        let xml = clean();
+        assert!(
+            !fields(&lint(&xml, &cx)).contains(&"unattend_cloud_init"),
+            "{:?}",
+            lint(&xml, &cx)
+        );
+    }
+
+    #[test]
+    fn with_cloud_init_off_the_rule_is_silent() {
+        let cx = LintContext { cloud_init: false, ..cx() };
+        assert!(
+            !fields(&lint("<unattend></unattend>", &cx))
+                .contains(&"unattend_cloud_init")
         );
     }
 }

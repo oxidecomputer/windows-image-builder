@@ -505,6 +505,7 @@ fn build(args: &[String]) -> Result<()> {
             let cx = oxwin_core::unattend::LintContext {
                 target_disk: config.target_disk,
                 generalize: config.generalize,
+                cloud_init: config.cloud_init.is_some(),
             };
             for problem in oxwin_core::unattend::lint(&xml, &cx) {
                 if problem.blocking {

@@ -482,6 +482,7 @@ impl Settings {
             let cx = crate::unattend::LintContext {
                 target_disk: self.target_disk,
                 generalize: self.deployment.is_golden(),
+                cloud_init: self.cloud_init.is_some(),
             };
             v.extend(crate::unattend::lint(xml, &cx));
         }
