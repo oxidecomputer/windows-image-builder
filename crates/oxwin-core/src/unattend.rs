@@ -1674,19 +1674,15 @@ mod tests {
     fn every_path_stays_under_the_schema_limit() {
         // The 259-char cap is what rejected an entire answer file once, with an error
         // naming only the pass. Check the decoded length, which is what the schema
-        // sees, across every branch that can add commands. The Windows 11 case is the
-        // longest one left: the diskpart command that used to beat it went with
-        // `install_from_label`, so add a config here for any new RunSynchronous branch
-        // rather than assuming the remaining two cover it.
-        for config in [
-            base(),
-            Config {
-                release: WindowsRelease::Windows11,
-                edition: "pro".into(),
-                ..base()
-            },
-        ] {
-            let xml = build(&config).expect("build");
+        // sees, across every branch that can add commands, in **both** `build` and
+        // `build_sysprep` -- the cloud-init runner is reachable only through the
+        // latter, since it is gated on `for_sysprep`. The Windows 11 case is the
+        // longest one left of the install-time branches; the diskpart command that
+        // used to beat it went with `install_from_label`. So add a config here for
+        // any new RunSynchronous branch rather than assuming the existing ones cover
+        // it, and check it through whichever of `build`/`build_sysprep` can reach
+        // the branch it exercises.
+        fn assert_paths_ok(xml: &str) {
             for chunk in xml.split("<Path>").skip(1) {
                 let raw = chunk.split("</Path>").next().expect("closing tag");
                 let decoded = raw
@@ -1701,6 +1697,26 @@ mod tests {
                     decoded.len()
                 );
             }
+        }
+        for config in [
+            base(),
+            Config {
+                release: WindowsRelease::Windows11,
+                edition: "pro".into(),
+                ..base()
+            },
+            // The cloud-init runner's `<Path>`, which only build_sysprep can reach.
+            Config {
+                generalize: true,
+                computer_name: "*".into(),
+                cloud_init: Some(crate::settings::CloudInit {
+                    manage_account: false,
+                }),
+                ..base()
+            },
+        ] {
+            assert_paths_ok(&build(&config).expect("build"));
+            assert_paths_ok(&build_sysprep(&config).expect("build_sysprep"));
         }
     }
 
