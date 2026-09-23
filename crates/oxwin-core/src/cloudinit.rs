@@ -330,6 +330,16 @@ try {
         r#"        if (-not (Test-Path "$cbDir\bin\mlabel.exe") -or "$cbDir\bin\" -ne $mtools) {
           Log "WARNING: cloud-init: the confs set mtools_path=$mtools but cloudbase-init is at $cbDir (mlabel.exe present: $(Test-Path "$cbDir\bin\mlabel.exe")); the config drive will not be read"
         }
+        # mtools' own sanity check refuses any FAT volume whose total sector
+        # count is not a multiple of its declared sectors-per-track (63) --
+        # the exact "mlabel failed with error ... not a multiple of sectors
+        # per track" line in cloudbase-init-unattend.log. Our own config
+        # drive (cidata.rs) is sized to pass; the control plane's is not ours
+        # to size, so every drive cloudbase-init might be pointed at gets a
+        # pass on the check. Machine-scoped so a service started at the next
+        # boot inherits it -- before the clone's task runs cloudbase-init.
+        [Environment]::SetEnvironmentVariable('MTOOLS_SKIP_CHECK', '1', 'Machine')
+        Log "cloud-init: MTOOLS_SKIP_CHECK=1 set machine-wide"
 "#,
     );
     s.push_str(&format!(
@@ -426,6 +436,12 @@ $exe = "$cb\Python\Scripts\cloudbase-init.exe"
 $ulogSkip = 0
 if (Test-Path -LiteralPath $ulog) { $ulogSkip = @(Get-Content -LiteralPath $ulog -ErrorAction SilentlyContinue).Count }
 $code = $null
+# The specialize pass may not have picked up the Machine MTOOLS_SKIP_CHECK
+# set at install time (services and processes read Machine variables at
+# their own next start, not this one's), so set it for this process too --
+# same mtools "not a multiple of sectors per track" mlabel failure this
+# guards against on the install side.
+$env:MTOOLS_SKIP_CHECK = '1'
 try {
   $proc = Start-Process -FilePath $exe -ArgumentList "--config-file","`"$conf`"" -Wait -PassThru -ErrorAction Stop
   $code = $proc.ExitCode
@@ -982,6 +998,45 @@ mod tests {
         assert!(script.contains(r#"Test-Path "$cbDir\bin\mlabel.exe""#));
         assert!(script.contains(r#""$cbDir\bin\" -ne $mtools"#));
         assert!(script.contains(&format!("$mtools = '{MTOOLS_PATH}'")));
+    }
+
+    /// Task 12: mtools' own sanity check refuses any FAT volume whose total
+    /// sector count is not a multiple of its declared sectors-per-track,
+    /// which cloudbase-init's direct `mlabel` call cannot be told to skip
+    /// except through mtools' own configuration. The install side sets the
+    /// Machine environment variable, once, so a later boot's service run
+    /// inherits it before the clone-side runner ever starts cloudbase-init.
+    #[test]
+    fn the_install_sets_mtools_skip_check_machine_wide() {
+        let script = install_block(&base());
+        assert!(script.contains(
+            "[Environment]::SetEnvironmentVariable('MTOOLS_SKIP_CHECK', \
+             '1', 'Machine')"
+        ));
+        assert!(script.contains("MTOOLS_SKIP_CHECK=1 set machine-wide"));
+        // Inside the same guarded try/catch as the rest of the MSI install,
+        // so a failure here logs a warning rather than aborting the
+        // bootstrap under $ErrorActionPreference = 'Stop'.
+        let set = script.find("SetEnvironmentVariable").unwrap();
+        let try_start = script.find("try {\n").unwrap();
+        let catch = script
+            .find(r#"} catch { Log "WARNING: cloud-init install failed"#)
+            .unwrap();
+        assert!(try_start < set && set < catch, "{script}");
+    }
+
+    /// The clone runner cannot rely on the Machine variable the install set:
+    /// the specialize pass that runs it may not have picked it up yet. It
+    /// sets the process variable for itself before calling cloudbase-init.exe,
+    /// so `Start-Process`'s child inherits it either way.
+    #[test]
+    fn the_runner_sets_mtools_skip_check_before_running_cloudbase_init() {
+        let script = install_block(&base());
+        let runner = here_string(&script, "$runner");
+        assert!(runner.contains("$env:MTOOLS_SKIP_CHECK = '1'"));
+        let set = runner.find("$env:MTOOLS_SKIP_CHECK").unwrap();
+        let run = runner.find("Start-Process -FilePath $exe").unwrap();
+        assert!(set < run, "{runner}");
     }
 
     /// Finding 2 asked for `raw_hdd`/`cdrom` to go, for their deprecation

@@ -37,11 +37,27 @@ use anyhow::Result;
 /// the module doc for where that was verified.
 pub const LABEL: &str = "CIDATA";
 
-/// 64 MiB with 512-byte clusters, matching `Options::esp`: FAT32 needs at least
-/// 65 525 clusters, so a smaller volume is not a FAT32 volume.
-const SIZE_BYTES: u64 = 64 * 1024 * 1024;
-const SECTOR: u64 = 512;
-const SECTORS: u32 = (SIZE_BYTES / SECTOR) as u32;
+/// ~64 MiB with 512-byte clusters, matching `Options::esp`: FAT32 needs at
+/// least 65 525 clusters, so a smaller volume is not a FAT32 volume.
+///
+/// `fat32.rs` writes a fixed CHS geometry into the boot sector -- 63 sectors
+/// per track, 255 heads, shared with the ESP whose golden must not move --
+/// and mtools' own sanity check (`vfat.c`'s "sectors per track" test)
+/// refuses to read *any* FAT volume whose total sector count is not an
+/// exact multiple of that 63. A plain 64 MiB (131072 sectors) fails it:
+/// 131072 / 63 is not an integer, and cloudbase-init calls `mlabel` directly
+/// with no way to pass `mtools_skip_check=1`. `Fat32Builder::new` places no
+/// power-of-two requirement on `size_bytes` (`geometry_for` in `fat32.rs`
+/// only ever divides and rounds), so the fix is to round the sector count
+/// to a multiple of 63 rather than to pick a different cluster size.
+///
+/// `SparseImage::new` (`sparse.rs`) separately requires the image size be a
+/// multiple of its 512 KiB (1024-sector) block, so the count also has to be
+/// a multiple of 1024. `lcm(63, 1024) == 64512` sectors (they share no
+/// factor), and two such tracks-of-blocks -- 129024 sectors, 63 MiB -- is
+/// the closest multiple of both to 64 MiB and comfortably above the
+/// 65 525-cluster FAT32 floor.
+const SECTORS: u32 = 129024;
 
 /// What a local NoCloud drive needs. The rack's own config drive comes from
 /// the control plane and never goes through this struct.
@@ -120,6 +136,12 @@ pub fn build(drive: &Drive) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// The BPB's hardcoded sectors-per-track (`fat32.rs`, boot-sector offset
+    /// 24) and the sector size, needed here to check the arithmetic that
+    /// [`super::SECTORS`] was chosen to satisfy -- see its doc comment.
+    const SECTORS_PER_TRACK: u32 = 63;
+    const SECTOR: u64 = 512;
+
     fn drive() -> Drive {
         Drive {
             hostname: "clone-01".into(),
@@ -188,16 +210,42 @@ mod tests {
 
     /// The root directory also carries a volume-label entry (FAT32's
     /// `ATTR_VOLUME_ID` entry, written by `volume_label_entry` at cluster 2 --
-    /// `data_start_sector` for this geometry, sector 2064) and that is the
+    /// `data_start_sector` for this geometry, sector 2032) and that is the
     /// copy Windows itself reports, not the boot sector's.
     #[test]
     fn the_root_directory_carries_the_same_label() {
         let image = build(&drive()).unwrap();
-        // data_start_sector for this 64 MiB / 1-sector-cluster geometry is
-        // 2064, matching fat32.rs's own `geometry_matches_the_reference_volume`.
-        let at = (2064 * SECTOR) as usize;
+        // data_start_sector for this 129024-sector, 1-sector-cluster geometry
+        // is 2032: reserved_sectors (32) plus two 1000-sector FATs. Recompute
+        // rather than trust this comment if SECTORS or reserved_sectors ever
+        // change -- geometry_for's arithmetic in fat32.rs is the source of
+        // truth.
+        let at = (2032 * SECTOR) as usize;
         let entry = &image[at..at + 11];
         assert_eq!(String::from_utf8_lossy(entry).trim_end(), LABEL);
+    }
+
+    /// mtools' own sanity check -- the exact failure this task fixes --
+    /// refuses a FAT volume whose BPB-declared total sector count
+    /// (`BPB_TotSec32`, boot-sector offset 32) is not a multiple of its
+    /// declared sectors per track (offset 24). `fat32.rs` hardcodes 63
+    /// there; regenerate the volume with `SECTORS` accordingly whenever this
+    /// starts failing rather than special-casing the check away.
+    #[test]
+    fn total_sectors_is_a_whole_number_of_tracks() {
+        let image = build(&drive()).unwrap();
+        let sectors_per_track =
+            u32::from(u16::from_le_bytes([image[24], image[25]]));
+        let total_sectors =
+            u32::from_le_bytes([image[32], image[33], image[34], image[35]]);
+        assert_eq!(sectors_per_track, SECTORS_PER_TRACK);
+        assert_eq!(total_sectors, SECTORS);
+        assert_eq!(
+            total_sectors % sectors_per_track,
+            0,
+            "mtools' mlabel refuses this exact mismatch -- see the \
+             mlabel-failed trap in CLAUDE.md"
+        );
     }
 
     #[test]

@@ -150,6 +150,16 @@ try {
         if (-not (Test-Path "$cbDir\bin\mlabel.exe") -or "$cbDir\bin\" -ne $mtools) {
           Log "WARNING: cloud-init: the confs set mtools_path=$mtools but cloudbase-init is at $cbDir (mlabel.exe present: $(Test-Path "$cbDir\bin\mlabel.exe")); the config drive will not be read"
         }
+        # mtools' own sanity check refuses any FAT volume whose total sector
+        # count is not a multiple of its declared sectors-per-track (63) --
+        # the exact "mlabel failed with error ... not a multiple of sectors
+        # per track" line in cloudbase-init-unattend.log. Our own config
+        # drive (cidata.rs) is sized to pass; the control plane's is not ours
+        # to size, so every drive cloudbase-init might be pointed at gets a
+        # pass on the check. Machine-scoped so a service started at the next
+        # boot inherits it -- before the clone's task runs cloudbase-init.
+        [Environment]::SetEnvironmentVariable('MTOOLS_SKIP_CHECK', '1', 'Machine')
+        Log "cloud-init: MTOOLS_SKIP_CHECK=1 set machine-wide"
         foreach ($conf in "$root\cloudbase\cloudbase-init.conf", "$root\cloudbase\cloudbase-init-unattend.conf") {
           if (Test-Path $conf) {
             Copy-Item -LiteralPath $conf -Destination (Join-Path "$cbDir\conf" (Split-Path -Leaf $conf)) -Force

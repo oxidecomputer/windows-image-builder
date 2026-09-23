@@ -150,6 +150,16 @@ try {
         if (-not (Test-Path "$cbDir\bin\mlabel.exe") -or "$cbDir\bin\" -ne $mtools) {
           Log "WARNING: cloud-init: the confs set mtools_path=$mtools but cloudbase-init is at $cbDir (mlabel.exe present: $(Test-Path "$cbDir\bin\mlabel.exe")); the config drive will not be read"
         }
+        # mtools' own sanity check refuses any FAT volume whose total sector
+        # count is not a multiple of its declared sectors-per-track (63) --
+        # the exact "mlabel failed with error ... not a multiple of sectors
+        # per track" line in cloudbase-init-unattend.log. Our own config
+        # drive (cidata.rs) is sized to pass; the control plane's is not ours
+        # to size, so every drive cloudbase-init might be pointed at gets a
+        # pass on the check. Machine-scoped so a service started at the next
+        # boot inherits it -- before the clone's task runs cloudbase-init.
+        [Environment]::SetEnvironmentVariable('MTOOLS_SKIP_CHECK', '1', 'Machine')
+        Log "cloud-init: MTOOLS_SKIP_CHECK=1 set machine-wide"
         foreach ($conf in "$root\cloudbase\cloudbase-init.conf", "$root\cloudbase\cloudbase-init-unattend.conf") {
           if (Test-Path $conf) {
             Copy-Item -LiteralPath $conf -Destination (Join-Path "$cbDir\conf" (Split-Path -Leaf $conf)) -Force
@@ -205,6 +215,12 @@ if (-not (Test-Path $exe)) { CLog "no cloudbase-init at $exe; nothing to run"; e
 $ulogSkip = 0
 if (Test-Path -LiteralPath $ulog) { $ulogSkip = @(Get-Content -LiteralPath $ulog -ErrorAction SilentlyContinue).Count }
 $code = $null
+# The specialize pass may not have picked up the Machine MTOOLS_SKIP_CHECK
+# set at install time (services and processes read Machine variables at
+# their own next start, not this one's), so set it for this process too --
+# same mtools "not a multiple of sectors per track" mlabel failure this
+# guards against on the install side.
+$env:MTOOLS_SKIP_CHECK = '1'
 try {
   $proc = Start-Process -FilePath $exe -ArgumentList "--config-file","`"$conf`"" -Wait -PassThru -ErrorAction Stop
   $code = $proc.ExitCode
