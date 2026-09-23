@@ -52,21 +52,45 @@ pub struct Drive {
     pub user_data: Option<String>,
 }
 
+/// A YAML double-quoted scalar. `instance-id`, `local-hostname` and each key
+/// are free text -- a hostname or a comment on a key can legally contain
+/// `": "`, a leading `"- "`, a leading `*`, or a `" #"`, every one of which
+/// breaks a plain (unquoted) YAML scalar: the first three refuse to parse at
+/// all, and PyYAML silently truncates the value at a whitespace-preceded
+/// `#`. Double-quoting escapes only `\` and `"`, which is everything a
+/// control-character-free value can contain that YAML's double-quoted form
+/// treats specially. The pattern already exists once in this crate, for a
+/// PowerShell single-quoted string: `cloudinit.rs`'s `ps_quote`.
+fn yaml_quote(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        if c == '\\' || c == '"' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
 /// The `meta-data` file: `instance-id`, then `local-hostname`, then
 /// `public-keys` as a YAML list, in that fixed order. LF line endings --
 /// cloudbase-init runs on Windows but reads this with a YAML parser, which
 /// does not care about line endings, and a fixed order is what makes
 /// [`the_same_drive_builds_the_same_bytes`] a meaningful test rather than a
-/// coincidence.
+/// coincidence. Every free-text value is a double-quoted YAML scalar -- see
+/// [`yaml_quote`] -- because a hostname or a key comment is not writer-
+/// controlled text and any of it can otherwise break the parse or be
+/// silently truncated.
 pub fn meta_data(drive: &Drive) -> String {
     let mut lines = vec![
-        format!("instance-id: {}", drive.instance_id),
-        format!("local-hostname: {}", drive.hostname),
+        format!("instance-id: {}", yaml_quote(&drive.instance_id)),
+        format!("local-hostname: {}", yaml_quote(&drive.hostname)),
     ];
     if !drive.keys.is_empty() {
         lines.push("public-keys:".to_string());
         for key in &drive.keys {
-            lines.push(format!("  - {key}"));
+            lines.push(format!("  - {}", yaml_quote(key)));
         }
     }
     lines.join("\n") + "\n"
@@ -111,9 +135,35 @@ mod tests {
     #[test]
     fn the_metadata_carries_the_hostname_the_id_and_the_keys() {
         let meta = meta_data(&drive());
-        assert!(meta.contains("instance-id: i-0xide0001"));
-        assert!(meta.contains("local-hostname: clone-01"));
-        assert!(meta.contains("ssh-ed25519 AAAAC3Nz dan@example"));
+        assert!(meta.contains(r#"instance-id: "i-0xide0001""#));
+        assert!(meta.contains(r#"local-hostname: "clone-01""#));
+        assert!(meta.contains(r#""ssh-ed25519 AAAAC3Nz dan@example""#));
+    }
+
+    /// `instance-id`, `local-hostname` and each key are free text, not
+    /// writer-controlled, and every one of `": "`, a leading `"- "`, a
+    /// leading `*` and a whitespace-preceded `#` either breaks a plain YAML
+    /// scalar outright or -- for `#` -- truncates it silently. Quoting is
+    /// what keeps a hostname or a key comment from defeating the one thing
+    /// this generator exists to give: a clean signal before a rack cycle.
+    #[test]
+    fn hostile_values_are_yaml_quoted_not_mangled() {
+        let hostile = Drive {
+            hostname: r#"evil: host # comment"#.into(),
+            instance_id: "- leading dash and a \"quote\" and a \\ backslash"
+                .into(),
+            keys: vec!["*alias: not really # a key".into()],
+            user_data: None,
+        };
+        let meta = meta_data(&hostile);
+        let lines: Vec<&str> = meta.lines().collect();
+        assert_eq!(
+            lines[0],
+            r#"instance-id: "- leading dash and a \"quote\" and a \\ backslash""#
+        );
+        assert_eq!(lines[1], r#"local-hostname: "evil: host # comment""#);
+        assert_eq!(lines[2], "public-keys:");
+        assert_eq!(lines[3], r#"  - "*alias: not really # a key""#);
     }
 
     /// The label is what cloudbase-init looks for. Get it wrong and the drive
