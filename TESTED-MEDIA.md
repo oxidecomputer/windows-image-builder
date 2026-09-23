@@ -154,3 +154,27 @@ under `oxwin golden`, port 22 answering at 4m52s and the instance stopped at 6m2
 
 Only Server 2019 and 2022 evaluation media has been through a golden cycle. The other verified rows
 above are ordinary installs.
+
+## Cloud-init
+
+**Unverified on hardware as of 2026-09-23.** Everything above this line predates
+cloud-init; none of those rack installs read a config drive, and a finished install
+proves nothing about that path on its own — see the rack checklist in `README.md` for
+what actually has to be checked on a clone: both log files naming the drive they
+found, the computer name equalling the instance name, both key files authenticating,
+and `C:` at the full disk size.
+
+| Release | Cloud-init status |
+|---|---|
+| Server 2019 | Can be verified on a rack — not yet attempted |
+| Server 2022 | Can be verified on a rack — not yet attempted |
+| Windows 10 22H2 | Can be verified on a rack — not yet attempted |
+| Server 2025 | **Cannot be hardware-verified** — blocked on the Propolis NVMe problem, same as every other install path for this release |
+| Windows 11 22H2 | **Cannot be hardware-verified** — blocked on the Propolis NVMe problem, same as every other install path for this release |
+
+Server 2025 and Windows 11 stay blocked by the same hypervisor issue as the rest of
+this document; do not propose a rack test for either as the way to settle a
+cloud-init question. A clean `tools/qemu-test.sh --cloud-init` run is the only
+evidence available for those two, and it proves less than a rack test would: the
+config drive it attaches is shaped like the control plane's, not the control
+plane's.

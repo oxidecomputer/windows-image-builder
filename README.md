@@ -243,6 +243,66 @@ is a one-time snapshot, not a live template — regenerate it if you change sett
 afterward. `oxwin unattend` prints to stdout only, never to a file next to the image,
 because it contains the account password in plain text.
 
+### Cloud-init
+
+On by default: the image carries the [cloudbase-init](https://github.com/cloudbase/cloudbase-init)
+MSI and installs it during the unattended pass, so a clone made from this media reads
+an Oxide instance's config drive on first boot. Each clone then gets its own hostname
+(taken from the instance name, not the answer file's), its own metadata SSH keys, `C:`
+extended to the real disk size rather than the image's, and whatever the instance's
+`user_data` says to run. Turn it off with `--no-cloud-init` if you want an image
+byte-identical to one built before this existed.
+
+**Two account modes**, `--cloud-init-account=keep|manage`:
+
+- **`keep` (the default).** The account and password you typed are what the guest
+  ends up with; cloud-init only adds the per-instance SSH key on top. Nothing about
+  the password changes from clone to clone.
+- **`manage`.** Cloud-init's own `CreateUserPlugin` owns the account, which is the
+  only way upstream will materialise the Windows *profile* the per-instance SSH key
+  plugin needs before first logon. **The cost:** that plugin resets the password to a
+  random, per-instance value on every path it takes, including the one for an account
+  that already exists — so the password you typed does not survive into the clone.
+  Use `manage` only if you do not need that password to still work, and are relying on
+  keys or a fresh one you will read back some other way.
+
+A password is mandatory either way — the serial console is the one way into a guest
+whose network never came up, and SAC authenticates with a password and knows nothing
+about SSH keys.
+
+**`--extra=<path>`** (repeatable) copies a local file onto the media at
+`\extras\<name>`, which lands in the guest at `C:\oxide\extras`. It is not itself a
+mechanism for running anything: cloud-init's `user_data` is what runs per instance,
+and `extras` exists so a supplied answer file, or a `user_data` script, has something
+under `E:\` to reference.
+
+**Logs to read, in order of usefulness:**
+
+- `C:\oxide\log\cloudbase-init.log` (specialize pass) and
+  `C:\oxide\log\cloudbase-init-unattend.log` (the clone-side run started by the
+  `OxideCloudInit` task) — both name the config drive they found, or say they found
+  none.
+- `C:\oxide-bootstrap.log` — the signature check on the MSI, the `msiexec` exit code,
+  and whether the `sshd_config` rewrite happened.
+
+**The rack checklist.** A finished install proves nothing on its own — check the
+artifact on a clone, not that it came up:
+
+- `C:\oxide\log\cloudbase-init.log` and `…-unattend.log` exist and name the config
+  drive they found.
+- The computer name equals the instance name. An `OXIDEOX-…` name means the drive was
+  never read.
+- `C:\Users\<user>\.ssh\authorized_keys` holds the **instance's** key, and
+  `%ProgramData%\ssh\administrators_authorized_keys` still holds the **baked** one.
+  Both must authenticate.
+- `C:` is the full disk size, not the image's.
+- `C:\oxide-bootstrap.log` shows the signature check passing, the MSI exit code, and
+  the `sshd_config` edit.
+
+See `TESTED-MEDIA.md` for which releases this has actually been checked against —
+Server 2025 and Windows 11 cannot be hardware-verified while the Propolis NVMe problem
+stands, so a clean QEMU run is the only evidence available for those two.
+
 ---
 
 ## What happens on the rack
