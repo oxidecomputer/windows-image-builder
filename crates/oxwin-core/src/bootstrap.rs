@@ -209,12 +209,31 @@ if (Get-Service -Name sshd -ErrorAction SilentlyContinue) {
         push(
             &mut lines,
             r#"  Start-Service sshd
-  Log "sshd started"
-} else {
+  Log "sshd started""#,
+        );
+        // Inside the `if (Get-Service sshd)` block: without OpenSSH there is no
+        // sshd_config, and an unguarded rewrite under 'Stop' would abort the
+        // whole bootstrap. Only with cloud-init on, because only cloud-init
+        // writes the per-user keys the rewrite exists for.
+        if config.cloud_init.is_some() {
+            push(&mut lines, &crate::cloudinit::sshd_fix_block());
+        }
+        push(
+            &mut lines,
+            r#"} else {
   Log "WARNING: sshd service not registered; SSH is not configured"
 }
 "#,
         );
+    }
+
+    // Before the ESP fallback, so the script still ends with the completion
+    // line and, on a golden image, the generalize registration after it.
+    if config.cloud_init.is_some() {
+        push(&mut lines, &crate::cloudinit::install_block(config));
+    }
+    if config.has_extras {
+        push(&mut lines, &crate::cloudinit::extras_block());
     }
 
     // Make the installed OS bootable via the removable-media fallback path.
@@ -621,7 +640,147 @@ mod tests {
                     ..base()
                 },
             ),
+            (
+                "cloud-init",
+                "cloud-init, keep my account",
+                Config {
+                    cloud_init: Some(crate::settings::CloudInit {
+                        manage_account: false,
+                    }),
+                    ..base()
+                },
+            ),
+            (
+                "cloud-init-manage",
+                "cloud-init managing the account",
+                Config {
+                    cloud_init: Some(crate::settings::CloudInit {
+                        manage_account: true,
+                    }),
+                    ..base()
+                },
+            ),
+            (
+                "cloud-init-golden",
+                "cloud-init on a golden image",
+                Config {
+                    generalize: true,
+                    computer_name: "*".into(),
+                    cloud_init: Some(crate::settings::CloudInit {
+                        manage_account: false,
+                    }),
+                    ..base()
+                },
+            ),
+            (
+                "cloud-init-no-ssh",
+                "cloud-init with OpenSSH off",
+                Config {
+                    enable_ssh: false,
+                    cloud_init: Some(crate::settings::CloudInit {
+                        manage_account: false,
+                    }),
+                    ..base()
+                },
+            ),
+            ("extras", "extra files", Config { has_extras: true, ..base() }),
         ]
+    }
+
+    /// Review Focus 1. `sshd_config` does not exist when OpenSSH was never
+    /// installed, and this script runs under $ErrorActionPreference = 'Stop':
+    /// an unguarded rewrite aborts the bootstrap, taking the drivers, the ESP
+    /// fallback and cloud-init itself with it.
+    #[test]
+    fn the_sshd_rewrite_only_appears_when_ssh_is_installed() {
+        let with_ssh = build(&Config {
+            cloud_init: Some(crate::settings::CloudInit {
+                manage_account: false,
+            }),
+            ..base()
+        })
+        .unwrap();
+        assert!(with_ssh.contains("administrators_authorized_keys"));
+
+        let no_ssh = build(&Config {
+            enable_ssh: false,
+            cloud_init: Some(crate::settings::CloudInit {
+                manage_account: false,
+            }),
+            ..base()
+        })
+        .unwrap();
+        assert!(
+            !no_ssh.contains("AuthorizedKeysFile"),
+            "there is no sshd_config to rewrite, and Stop would abort the \
+             whole bootstrap"
+        );
+        // The rest of cloud-init is still there: it does not depend on sshd.
+        assert!(no_ssh.contains("msiexec"));
+    }
+
+    /// And inside the branch, it is inside the `if (Get-Service sshd)` block:
+    /// after sshd has started, before the warning for a missing service.
+    #[test]
+    fn the_sshd_rewrite_follows_sshd_starting() {
+        let script = build(&Config {
+            cloud_init: Some(crate::settings::CloudInit {
+                manage_account: false,
+            }),
+            ..base()
+        })
+        .unwrap();
+        let started = script.find("Log \"sshd started\"").unwrap();
+        let rewrite = script.find("AuthorizedKeysFile now names").unwrap();
+        let missing = script.find("sshd service not registered").unwrap();
+        assert!(started < rewrite && rewrite < missing);
+    }
+
+    /// Review Focus 5. A named machine still installs and starts cloud-init --
+    /// there is no sysprep answer file to carry the one-shot run, so the task
+    /// is the only thing that brings the service up.
+    #[test]
+    fn a_named_build_still_registers_the_cloud_init_task() {
+        let named = build(&Config {
+            generalize: false,
+            computer_name: "win-server-01".into(),
+            cloud_init: Some(crate::settings::CloudInit {
+                manage_account: false,
+            }),
+            ..base()
+        })
+        .unwrap();
+        assert!(named.contains("OxideCloudInit"));
+        assert!(!named.contains("sysprep"));
+    }
+
+    #[test]
+    fn extras_are_copied_only_when_there_are_any() {
+        assert!(!build(&base()).unwrap().contains("oxide\\extras"));
+        assert!(
+            build(&Config { has_extras: true, ..base() })
+                .unwrap()
+                .contains("oxide\\extras")
+        );
+    }
+
+    /// The new blocks go before the ESP fallback, so the script still ends
+    /// with the completion line -- or, on a golden image, the generalize
+    /// registration after it.
+    #[test]
+    fn the_new_blocks_precede_the_esp_fallback() {
+        let script = build(&Config {
+            has_extras: true,
+            cloud_init: Some(crate::settings::CloudInit {
+                manage_account: false,
+            }),
+            ..base()
+        })
+        .unwrap();
+        let esp = script.find("c12a7328-f81f-11d2-ba4b-00a0c93ec93b").unwrap();
+        assert!(script.find("msiexec").unwrap() < esp);
+        assert!(script.find("oxide\\extras").unwrap() < esp);
+        assert!(script.ends_with("Log \"Oxide guest bootstrap complete\"\r\n"));
     }
 
     /// Rewrite the goldens from the current generator. See the note on the equivalent
