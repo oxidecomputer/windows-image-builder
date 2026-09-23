@@ -38,6 +38,24 @@ pub const UNATTEND_CONF_VOLUME_PATH: &str =
 /// that cloudbase-init creates a missing `log_dir` itself.
 pub const LOG_DIR: &str = r"C:\oxide\log";
 
+/// The unattend run's log, under [`LOG_DIR`]. Named once: the conf sets it and
+/// the clone runner reads it back to tell a run that found no config drive
+/// from one that worked -- cloudbase-init exits 0 either way.
+const UNATTEND_LOG_FILE: &str = "cloudbase-init-unattend.log";
+
+/// Where the MSI puts mtools (`mlabel.exe`, `mcopy.exe`, `mdir.exe`), which
+/// cloudbase-init needs to read a vFAT config drive at all:
+/// `cloudbaseinit/utils/windows/vfat.py` (1.1.8) raises `"mtools_path" needs
+/// to be provided in order to access VFAT drives` when it is unset, the
+/// config-drive search swallows that as a warning, and the run ends `No
+/// metadata service found` -- no hostname, no keys, no user_data, exit 0. The
+/// installer writes this option into its *own* `cloudbase-init.conf`, which
+/// ours replaces, so ours has to carry it. Confirmed on a guest: all three
+/// tools are in this directory after a 64-bit install. The bootstrap warns if
+/// the install landed anywhere else.
+const MTOOLS_PATH: &str =
+    r"C:\Program Files\Cloudbase Solutions\Cloudbase-Init\bin\";
+
 /// Where the clone-side runner is written in the guest. Short on purpose: it is
 /// named by a `RunSynchronousCommand`, and `<Path>` is capped at 259
 /// characters -- the prototype's inline cmd.exe incantation was ~230 and one
@@ -114,8 +132,22 @@ fn crlf(lines: Vec<String>) -> String {
 /// `iso`/`cdrom` straight back in. An Oxide config drive is a vFAT volume on a
 /// whole disk, so this pins `types=vfat`, `locations=hdd`, and turns the two
 /// widening flags off; `vfat=true` (its default) only adds `vfat`/`hdd`, which
-/// is already the configured set, so it is left unset. This matches the
-/// spec's names and values exactly -- no departure to record.
+/// is already the configured set, so it is left unset.
+///
+/// The two flags make cloudbase-init log `Deprecated: Option "raw_hdd" from
+/// group "config_drive" is deprecated for removal` (and the same for `cdrom`)
+/// on every run -- seen on the first QEMU clone. That warning is accepted, not
+/// fixed: it is the only way to narrow the search in 1.1.8. Dropping either
+/// flag lets it default to `true`, which adds `iso` to the types, and the
+/// search is the product of types and locations, so `hdd` x `iso` comes back
+/// with it. That probe (`_get_config_drive_from_raw_hdd` ->
+/// `_extract_iso_from_devices` in `osconfigdrive/windows.py`) checks no label:
+/// it copies the first fixed disk carrying an ISO9660 signature to a temp file
+/// and, if `bsdtar` extracts it, takes it as the config drive -- a Windows ISO
+/// imported as a disk and left attached would do. (`bsdtar_path` is unset
+/// here, so today that copy would end in a warning; nothing should rest on an
+/// option nobody chose to leave out.) The product iterates two Python sets, so whether
+/// that probe runs before `hdd` x `vfat` is down to hash seeding.
 fn config_drive_block() -> Vec<String> {
     vec![
         "[config_drive]".into(),
@@ -162,6 +194,8 @@ pub fn unattend_conf(config: &Config) -> String {
         "netbios_host_name_compatibility=false".into(),
         "ntp_enable_service=true".into(),
         "real_time_clock_utc=true".into(),
+        // The installer's own conf carries this; ours replaces that file.
+        format!("mtools_path={MTOOLS_PATH}"),
     ];
     if config.enable_rdp {
         lines.push("rdp_set_keepalive=true".into());
@@ -170,7 +204,7 @@ pub fn unattend_conf(config: &Config) -> String {
         "verbose=true".into(),
         "debug=true".into(),
         format!("log_dir={LOG_DIR}"),
-        "log_file=cloudbase-init-unattend.log".into(),
+        format!("log_file={UNATTEND_LOG_FILE}"),
         format!("metadata_services={METADATA_SERVICE}"),
         format!("plugins={}", plugins.join(",")),
     ]);
@@ -211,6 +245,8 @@ pub fn service_conf(config: &Config) -> String {
         "check_latest_version=false".into(),
         "netbios_host_name_compatibility=false".into(),
         "real_time_clock_utc=true".into(),
+        // The installer's own conf carries this; ours replaces that file.
+        format!("mtools_path={MTOOLS_PATH}"),
     ];
     if config.enable_rdp {
         lines.push("rdp_set_keepalive=true".into());
@@ -283,6 +319,17 @@ try {
       if (-not (Test-Path "$cbDir\conf")) {
         Log "WARNING: cloud-init did not install: there is no $cbDir\conf"
       } else {
+        # The confs name mtools_path as a fixed directory, because the file they
+        # replace is where the installer would have written it. Without mtools
+        # a vFAT config drive cannot be read and every clone ends "No metadata
+        # service found" -- so say so here, where it is still a build problem.
+"#,
+    );
+    s.push_str(&format!("        $mtools = {}\n", ps_quote(MTOOLS_PATH)));
+    s.push_str(
+        r#"        if (-not (Test-Path "$cbDir\bin\mlabel.exe") -or "$cbDir\bin\" -ne $mtools) {
+          Log "WARNING: cloud-init: the confs set mtools_path=$mtools but cloudbase-init is at $cbDir (mlabel.exe present: $(Test-Path "$cbDir\bin\mlabel.exe")); the config drive will not be read"
+        }
 "#,
     );
     s.push_str(&format!(
@@ -372,14 +419,29 @@ $exe = "$cb\Python\Scripts\cloudbase-init.exe"
 "#,
     );
     s.push_str(&format!("$conf = \"$cb\\conf\\{conf}\"\n"));
+    s.push_str(&format!("$ulog = '{LOG_DIR}\\{UNATTEND_LOG_FILE}'\n"));
     s.push_str(
         r#"if (-not (Test-Path $exe)) { CLog "no cloudbase-init at $exe; nothing to run"; exit 0 }
+# Only this run's lines are searched below, so count what is there already.
+$ulogSkip = 0
+if (Test-Path -LiteralPath $ulog) { $ulogSkip = @(Get-Content -LiteralPath $ulog -ErrorAction SilentlyContinue).Count }
 $code = $null
 try {
   $proc = Start-Process -FilePath $exe -ArgumentList "--config-file","`"$conf`"" -Wait -PassThru -ErrorAction Stop
   $code = $proc.ExitCode
 } catch { CLog "could not start cloudbase-init: $_" }
 CLog "cloudbase-init exited $code"
+# cloudbase-init exits 0 when it finds no metadata at all, so "exited 0" alone
+# reads as success for a run that did nothing. Its own log says which it was.
+# A warning only: the exit code below is unchanged.
+try {
+  if (Test-Path -LiteralPath $ulog) {
+    $missed = Get-Content -LiteralPath $ulog -ErrorAction Stop | Select-Object -Skip $ulogSkip | Select-String -SimpleMatch 'No metadata service found' -Quiet
+    if ($missed) { CLog "WARNING: cloudbase-init found no config drive; hostname, keys and user-data were not applied" }
+  } else {
+    CLog "WARNING: no $ulog to check whether cloudbase-init found a config drive"
+  }
+} catch { CLog "WARNING: could not read ${ulog}: $_" }
 # Exit 1 on SUCCESS, deliberately. This command runs from the sysprep answer
 # file's specialize pass with WillReboot=OnRequest, which reads an exit code of
 # 1 as "reboot requested" -- and a run that has just changed the computer name
@@ -419,6 +481,12 @@ $log = "$env:SystemDrive\oxide-bootstrap.log"
 function TLog($m) {
   "$(Get-Date -Format o)  cloud-init task: $m" | Tee-Object -FilePath $log -Append
 }
+# First, before anything that can fail. On the first QEMU clone this task's
+# Last Result was 0xC0000005 (-1073741819, an access violation) at the first
+# startup after specialize, with nothing logged; run by hand later it was fine.
+# powershell.exe died at early boot. This line tells "crashed after starting"
+# from "never got this far".
+TLog "starting"
 # This task never unregisters itself and re-arms nothing: every step below is
 # idempotent, so it simply runs at every startup. Generalizing gives each clone
 # a new SID, so the profile it makes has to be made again on every clone -- an
@@ -474,12 +542,21 @@ exit 0
   # not abort the bootstrap without saying why.
   $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ciTask`""
   $trigger = New-ScheduledTaskTrigger -AtStartup
+  # A minute's delay, and three retries a minute apart. At the first startup
+  # after a clone's specialize pass powershell.exe crashed with 0xC0000005
+  # before this script logged a line, and a manual run later worked: early
+  # boot, not the script. The delay is the fix; the retries are a second line,
+  # since nothing here establishes that Task Scheduler counts a crashed
+  # process's exit code as a failure to restart on.
+  $trigger.Delay = 'PT1M'
+  $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
   $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 "#,
     );
     s.push_str(&format!(
         "  Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $action \
-         -Trigger $trigger -Principal $principal -Force | Out-Null\n"
+         -Trigger $trigger -Settings $settings -Principal $principal -Force \
+         | Out-Null\n"
     ));
     if golden {
         s.push_str(&format!(
@@ -533,6 +610,16 @@ try {
 if ($sid) {
   $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
   $profilePath = (Get-ItemProperty -Path $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
+  # C:\Users\TEMP (or TEMP.<something>) is the temporary profile Windows hands
+  # out when it cannot load the real one, and it is thrown away at logoff:
+  # keys written there vanish. Seen on the first QEMU clone, probably from a
+  # console logon on the golden before it was generalized. Not a profile,
+  # then -- and the service is not started this boot, so the next one can
+  # try again.
+  if ($profilePath -match '\\Users\\TEMP(\.[^\\]*)?\\?$') {
+    TLog "WARNING: the profile for $user is a temporary one at $profilePath; not starting cloudbase-init this boot, because keys written there are lost"
+    exit 0
+  }
   if ($profilePath) {
     TLog "profile for $user already exists at $profilePath"
   } else {
@@ -857,6 +944,169 @@ mod tests {
         // but the sysprep lesson is not worth relearning per program.
         assert!(script.contains("-Wait -PassThru"));
         assert!(!script.contains("$code = $LASTEXITCODE"));
+    }
+
+    /// The body of the single-quoted here-string written to `target` (the
+    /// PowerShell variable the bootstrap writes it through).
+    fn here_string<'a>(script: &'a str, target: &str) -> &'a str {
+        let opener = format!(
+            "Set-Content -LiteralPath {target} -Encoding ASCII -Value @'\n"
+        );
+        let start = script.find(&opener).expect("the here-string opener")
+            + opener.len();
+        let len = script[start..].find("\n'@").expect("its closer");
+        &script[start..start + len]
+    }
+
+    /// Finding 1 of the first QEMU run: with no `mtools_path`, 1.1.8's
+    /// `vfat.py` refuses to read a vFAT drive, the search swallows that, and
+    /// the clone gets no hostname, keys or user_data. The installer's conf
+    /// sets it; ours replaces that conf, so both of ours must.
+    #[test]
+    fn both_confs_name_mtools() {
+        let want = r"mtools_path=C:\Program Files\Cloudbase Solutions\Cloudbase-Init\bin\";
+        for config in [base(), Config { enable_rdp: false, ..base() }] {
+            for conf in [service_conf(&config), unattend_conf(&config)] {
+                let lines: Vec<&str> = conf
+                    .lines()
+                    .filter(|l| l.starts_with("mtools_path="))
+                    .collect();
+                assert_eq!(lines, [want], "{conf}");
+                // In [DEFAULT], not [config_drive]: oslo reads it from there.
+                let at = conf.find(want).unwrap();
+                assert!(at < conf.find("[config_drive]").unwrap(), "{conf}");
+            }
+        }
+        // And the bootstrap says so if the install is not where that names.
+        let script = install_block(&base());
+        assert!(script.contains(r#"Test-Path "$cbDir\bin\mlabel.exe""#));
+        assert!(script.contains(r#""$cbDir\bin\" -ne $mtools"#));
+        assert!(script.contains(&format!("$mtools = '{MTOOLS_PATH}'")));
+    }
+
+    /// Finding 2 asked for `raw_hdd`/`cdrom` to go, for their deprecation
+    /// warnings. They stay: either one left to its default `true` puts `iso`
+    /// back in the types, and `hdd` x `iso` is a probe that checks no label.
+    /// See `config_drive_block`.
+    #[test]
+    fn the_config_drive_search_is_narrowed_to_vfat_on_a_disk() {
+        for conf in [service_conf(&base()), unattend_conf(&base())] {
+            let block = &conf[conf.find("[config_drive]\r\n").unwrap()..];
+            assert_eq!(
+                block,
+                "[config_drive]\r\ntypes=vfat\r\nlocations=hdd\r\n\
+                 raw_hdd=false\r\ncdrom=false\r\n"
+            );
+        }
+    }
+
+    /// Finding 3: `OxideCloudInit` died with 0xC0000005 at the first startup
+    /// after specialize, before logging anything. A delay and retries, and a
+    /// log line before anything that can fail.
+    #[test]
+    fn the_task_waits_retries_and_logs_first() {
+        for config in [
+            base(),
+            Config {
+                cloud_init: Some(CloudInit { manage_account: true }),
+                ..base()
+            },
+            Config {
+                generalize: false,
+                computer_name: "win-server-01".into(),
+                ..base()
+            },
+        ] {
+            let script = install_block(&config);
+            assert!(script.contains("  $trigger.Delay = 'PT1M'\n"), "{script}");
+            assert!(script.contains(
+                "  $settings = New-ScheduledTaskSettingsSet -RestartCount 3 \
+                 -RestartInterval (New-TimeSpan -Minutes 1)\n"
+            ));
+            let register = script.find("Register-ScheduledTask").unwrap();
+            assert!(script.find("$trigger.Delay").unwrap() < register);
+            assert!(
+                script[register..].starts_with(
+                    "Register-ScheduledTask -TaskName 'OxideCloudInit' \
+                     -Action $action -Trigger $trigger -Settings $settings "
+                ),
+                "{script}"
+            );
+
+            // The first statement after the logger is the log line: nothing
+            // that can fail -- Add-Type, a registry read, a Test-Path -- runs
+            // before it.
+            let task = here_string(&script, "$ciTask");
+            let first = task.find("\nTLog \"starting\"\n").expect("starting");
+            let logger_end = task.find("\n}\n").unwrap() + 3;
+            assert!(logger_end <= first + 1, "{task}");
+            let between: Vec<&str> = task[logger_end..first]
+                .lines()
+                .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                .collect();
+            assert!(between.is_empty(), "before the first log: {between:?}");
+            for later in ["Add-Type", "Get-ItemProperty", "Test-Path"] {
+                if let Some(at) = task.find(later) {
+                    assert!(first < at, "{later} precedes the first log");
+                }
+            }
+        }
+    }
+
+    /// Finding 4: `C:\Users\TEMP` is a temporary profile, discarded at
+    /// logoff. Keys written there are lost, so it counts as no profile, and
+    /// the service is left for the next boot.
+    #[test]
+    fn a_temporary_profile_is_not_a_profile() {
+        let task = install_block(&base());
+        let check =
+            r"if ($profilePath -match '\\Users\\TEMP(\.[^\\]*)?\\?$') {";
+        let at = task.find(check).expect("the TEMP check");
+        let warn =
+            task.find("WARNING: the profile for $user is a temporary").unwrap();
+        let exists = task.find("already exists at $profilePath").unwrap();
+        let start = task.find("Start-Service -Name cloudbase-init").unwrap();
+        assert!(at < warn && warn < exists && exists < start);
+        // The branch leaves before the service is touched.
+        assert!(task[warn..exists].contains("exit 0"));
+        // Mode B has no profile step at all.
+        let managed = install_block(&Config {
+            cloud_init: Some(CloudInit { manage_account: true }),
+            ..base()
+        });
+        assert!(!managed.contains("TEMP"));
+    }
+
+    /// Finding 5: cloudbase-init exits 0 having found no metadata, so the
+    /// runner reads its log and says so. The exit codes do not move.
+    #[test]
+    fn the_runner_says_when_no_config_drive_was_found() {
+        let script = install_block(&base());
+        let runner = here_string(&script, "$runner");
+        assert!(
+            runner.contains(
+                r"$ulog = 'C:\oxide\log\cloudbase-init-unattend.log'"
+            )
+        );
+        assert!(runner.contains(
+            "Select-String -SimpleMatch 'No metadata service found' -Quiet"
+        ));
+        assert!(runner.contains(
+            "CLog \"WARNING: cloudbase-init found no config drive; \
+             hostname, keys and user-data were not applied\""
+        ));
+        // Searched after the run, and only this run's lines.
+        let run = runner.find("Start-Process -FilePath $exe").unwrap();
+        let search = runner.find("No metadata service found").unwrap();
+        assert!(run < search);
+        assert!(runner.contains("Select-Object -Skip $ulogSkip"));
+        // The log the runner reads is the log the conf writes.
+        assert!(
+            unattend_conf(&base())
+                .contains(&format!("log_file={UNATTEND_LOG_FILE}\r\n"))
+        );
+        // The convention is untouched: success 1, failure 2.
+        assert!(runner.ends_with("if ($code -eq 0) { exit 1 }\nexit 2"));
     }
 
     /// Off means off: no MSI, no conf, no task, nothing.

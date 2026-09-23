@@ -142,6 +142,14 @@ try {
       if (-not (Test-Path "$cbDir\conf")) {
         Log "WARNING: cloud-init did not install: there is no $cbDir\conf"
       } else {
+        # The confs name mtools_path as a fixed directory, because the file they
+        # replace is where the installer would have written it. Without mtools
+        # a vFAT config drive cannot be read and every clone ends "No metadata
+        # service found" -- so say so here, where it is still a build problem.
+        $mtools = 'C:\Program Files\Cloudbase Solutions\Cloudbase-Init\bin\'
+        if (-not (Test-Path "$cbDir\bin\mlabel.exe") -or "$cbDir\bin\" -ne $mtools) {
+          Log "WARNING: cloud-init: the confs set mtools_path=$mtools but cloudbase-init is at $cbDir (mlabel.exe present: $(Test-Path "$cbDir\bin\mlabel.exe")); the config drive will not be read"
+        }
         foreach ($conf in "$root\cloudbase\cloudbase-init.conf", "$root\cloudbase\cloudbase-init-unattend.conf") {
           if (Test-Path $conf) {
             Copy-Item -LiteralPath $conf -Destination (Join-Path "$cbDir\conf" (Split-Path -Leaf $conf)) -Force
@@ -191,13 +199,28 @@ $cb = "$env:ProgramFiles\Cloudbase Solutions\Cloudbase-Init"
 if (-not (Test-Path $cb)) { $cb = "${env:ProgramFiles(x86)}\Cloudbase Solutions\Cloudbase-Init" }
 $exe = "$cb\Python\Scripts\cloudbase-init.exe"
 $conf = "$cb\conf\cloudbase-init-unattend.conf"
+$ulog = 'C:\oxide\log\cloudbase-init-unattend.log'
 if (-not (Test-Path $exe)) { CLog "no cloudbase-init at $exe; nothing to run"; exit 0 }
+# Only this run's lines are searched below, so count what is there already.
+$ulogSkip = 0
+if (Test-Path -LiteralPath $ulog) { $ulogSkip = @(Get-Content -LiteralPath $ulog -ErrorAction SilentlyContinue).Count }
 $code = $null
 try {
   $proc = Start-Process -FilePath $exe -ArgumentList "--config-file","`"$conf`"" -Wait -PassThru -ErrorAction Stop
   $code = $proc.ExitCode
 } catch { CLog "could not start cloudbase-init: $_" }
 CLog "cloudbase-init exited $code"
+# cloudbase-init exits 0 when it finds no metadata at all, so "exited 0" alone
+# reads as success for a run that did nothing. Its own log says which it was.
+# A warning only: the exit code below is unchanged.
+try {
+  if (Test-Path -LiteralPath $ulog) {
+    $missed = Get-Content -LiteralPath $ulog -ErrorAction Stop | Select-Object -Skip $ulogSkip | Select-String -SimpleMatch 'No metadata service found' -Quiet
+    if ($missed) { CLog "WARNING: cloudbase-init found no config drive; hostname, keys and user-data were not applied" }
+  } else {
+    CLog "WARNING: no $ulog to check whether cloudbase-init found a config drive"
+  }
+} catch { CLog "WARNING: could not read ${ulog}: $_" }
 # Exit 1 on SUCCESS, deliberately. This command runs from the sysprep answer
 # file's specialize pass with WillReboot=OnRequest, which reads an exit code of
 # 1 as "reboot requested" -- and a run that has just changed the computer name
@@ -225,6 +248,12 @@ $log = "$env:SystemDrive\oxide-bootstrap.log"
 function TLog($m) {
   "$(Get-Date -Format o)  cloud-init task: $m" | Tee-Object -FilePath $log -Append
 }
+# First, before anything that can fail. On the first QEMU clone this task's
+# Last Result was 0xC0000005 (-1073741819, an access violation) at the first
+# startup after specialize, with nothing logged; run by hand later it was fine.
+# powershell.exe died at early boot. This line tells "crashed after starting"
+# from "never got this far".
+TLog "starting"
 # This task never unregisters itself and re-arms nothing: every step below is
 # idempotent, so it simply runs at every startup. Generalizing gives each clone
 # a new SID, so the profile it makes has to be made again on every clone -- an
@@ -257,6 +286,16 @@ try {
 if ($sid) {
   $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
   $profilePath = (Get-ItemProperty -Path $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
+  # C:\Users\TEMP (or TEMP.<something>) is the temporary profile Windows hands
+  # out when it cannot load the real one, and it is thrown away at logoff:
+  # keys written there vanish. Seen on the first QEMU clone, probably from a
+  # console logon on the golden before it was generalized. Not a profile,
+  # then -- and the service is not started this boot, so the next one can
+  # try again.
+  if ($profilePath -match '\\Users\\TEMP(\.[^\\]*)?\\?$') {
+    TLog "WARNING: the profile for $user is a temporary one at $profilePath; not starting cloudbase-init this boot, because keys written there are lost"
+    exit 0
+  }
   if ($profilePath) {
     TLog "profile for $user already exists at $profilePath"
   } else {
@@ -301,8 +340,16 @@ exit 0
   # not abort the bootstrap without saying why.
   $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ciTask`""
   $trigger = New-ScheduledTaskTrigger -AtStartup
+  # A minute's delay, and three retries a minute apart. At the first startup
+  # after a clone's specialize pass powershell.exe crashed with 0xC0000005
+  # before this script logged a line, and a manual run later worked: early
+  # boot, not the script. The delay is the fix; the retries are a second line,
+  # since nothing here establishes that Task Scheduler counts a crashed
+  # process's exit code as a failure to restart on.
+  $trigger.Delay = 'PT1M'
+  $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
   $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-  Register-ScheduledTask -TaskName 'OxideCloudInit' -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+  Register-ScheduledTask -TaskName 'OxideCloudInit' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
   # Disabled on a golden image. OxideGeneralize is a startup task too and
   # starts alongside this one; it writes oxide-generalized.txt and then runs
   # sysprep, so the marker check alone would let this task make a profile
