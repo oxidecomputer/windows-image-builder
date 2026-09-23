@@ -215,6 +215,10 @@ pub struct Request {
     /// and `assemble` overwrites `config.release` with the release read off the
     /// media, which a supplied file never passes through.
     pub unattend: Option<String>,
+    /// Files that ride the volume under `/extras` and land in
+    /// `C:\oxide\extras`. Read here rather than by the caller because they may
+    /// be large; validated by `settings::extra_problems` before we get here.
+    pub extras: Vec<crate::settings::Extra>,
 }
 
 /// Whether the media's BCD stores were given a serial port, and if not why.
@@ -366,7 +370,69 @@ struct ManifestEntry {
 struct Manifest {
     #[serde(rename = "openSsh")]
     open_ssh: String,
+    /// The cloudbase-init MSI. `Option` because a payload fetched before
+    /// cloud-init existed has no such key, and that has to produce the
+    /// refusal below rather than a manifest parse error.
+    #[serde(rename = "cloudbaseInit", default)]
+    cloudbase_init: Option<String>,
     drivers: std::collections::BTreeMap<String, Vec<ManifestEntry>>,
+}
+
+/// Which cloud-init files this config puts on the volume, in the order they
+/// must be added. Pure, so the determinism rule is a unit test rather than a
+/// property of a 6 GiB image nobody runs in CI.
+///
+/// Takes `bare` explicitly rather than leaving the guard to each call site:
+/// `--bare`'s whole value is that it changes nothing else, and a guard
+/// spread over several places is one that will be forgotten at one of them.
+fn cloud_init_volume_paths(config: &Config, bare: bool) -> Vec<&'static str> {
+    if bare || config.cloud_init.is_none() {
+        return Vec::new();
+    }
+    // Sorted by the path the file will have on the volume. That order
+    // decides which clusters each file gets, so it decides the bytes of the
+    // volume.
+    let mut paths = vec![
+        crate::cloudinit::MSI_VOLUME_PATH,
+        crate::cloudinit::SERVICE_CONF_VOLUME_PATH,
+        crate::cloudinit::UNATTEND_CONF_VOLUME_PATH,
+    ];
+    paths.sort();
+    paths
+}
+
+/// The MSI's path inside the payload, or why this build cannot carry it.
+fn cloudbase_msi_path(manifest: &Manifest) -> Result<&str> {
+    manifest.cloudbase_init.as_deref().context(
+        "this payload has no cloudbase-init MSI, so the cloud-init option \
+         cannot work -- run ./tools/fetch-payload.sh and rebuild, turn \
+         cloud-init off, or set OXWIN_ASSETS to a directory holding one",
+    )
+}
+
+/// Reads and sorts the extras by the volume path they will land on. Sorting
+/// here, rather than trusting the order they arrived in, is the same
+/// determinism rule as the media file list: cluster allocation follows this
+/// order, so it decides the bytes of the volume.
+///
+/// A small pure-ish helper, factored out of `assemble` so the sort is a unit
+/// test rather than a property of a build that needs real media.
+fn read_extras(
+    extras: &[crate::settings::Extra],
+    bare: bool,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    if bare {
+        return Ok(Vec::new());
+    }
+    let mut result: Vec<(String, Vec<u8>)> = Vec::new();
+    for extra in extras {
+        let data = std::fs::read(&extra.source).with_context(|| {
+            format!("reading the extra file {}", extra.source.display())
+        })?;
+        result.push((extra.volume_path.clone(), data));
+    }
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(result)
 }
 
 pub fn build(
@@ -450,6 +516,17 @@ fn assemble(
     ) {
         reporter.log(format!("  ({})", problem.message));
     }
+
+    // Sized and read up front: discovering an unreadable extra four minutes
+    // into a 4 GiB copy is the failure mode the payload check above exists
+    // to avoid.
+    for problem in crate::settings::extra_problems(&request.extras) {
+        if problem.blocking {
+            bail!("{}", problem.message);
+        }
+        reporter.log(format!("  ({})", problem.message));
+    }
+    let extras = read_extras(&request.extras, request.bare)?;
 
     let mut source = Source::open(&request.media)?;
 
@@ -537,10 +614,37 @@ fn assemble(
         config.product_key = None;
     }
 
+    // Read here, before `plan`, rather than where it used to live next to the
+    // driver lookup below: `plan` has to size the volume for the MSI too, and
+    // that means the manifest has to exist before `plan` is called, not
+    // after.
+    let manifest: Manifest =
+        serde_json::from_slice(&request.assets.manifest()?)
+            .context("parsing the payload manifest")?;
+    // The MSI is read once, here, and reused for both sizing and writing —
+    // reading the whole ~62 MiB file twice would be wasteful for no benefit.
+    let cloud_init_msi: Option<Vec<u8>> = if config.cloud_init.is_some()
+        && !request.bare
+    {
+        Some(request.assets.read(cloudbase_msi_path(&manifest)?)?.into_owned())
+    } else {
+        None
+    };
+    let cloud_init_bytes: u64 = match &cloud_init_msi {
+        Some(msi) => {
+            msi.len() as u64
+                + crate::cloudinit::service_conf(&config).len() as u64
+                + crate::cloudinit::unattend_conf(&config).len() as u64
+        }
+        None => 0,
+    };
+
     // --- lay out the disk --------------------------------------------------
     let media_files = source.list()?;
     let media_bytes: u64 = media_files.iter().map(|f| f.size).sum();
-    let layout = plan(media_bytes + wim_size)?;
+    let extras_bytes: u64 = extras.iter().map(|(_, d)| d.len() as u64).sum();
+    let layout =
+        plan(media_bytes + wim_size + extras_bytes + cloud_init_bytes)?;
 
     reporter.phase(
         "layout",
@@ -625,6 +729,30 @@ fn assemble(
             "/setup/bootstrap.ps1",
             bootstrap::build(&config)?.into_bytes(),
         )?;
+        if let Some(msi) = &cloud_init_msi {
+            for path in cloud_init_volume_paths(&config, request.bare) {
+                let data: Vec<u8> = match path {
+                    crate::cloudinit::MSI_VOLUME_PATH => msi.clone(),
+                    crate::cloudinit::SERVICE_CONF_VOLUME_PATH => {
+                        crate::cloudinit::service_conf(&config).into_bytes()
+                    }
+                    _ => crate::cloudinit::unattend_conf(&config).into_bytes(),
+                };
+                p1.add_file(path, data)?;
+            }
+            reporter.log(format!(
+                "cloud-init: cloudbase-init MSI + 2 conf files ({} account)",
+                if config.cloud_init.is_some_and(|c| c.manage_account) {
+                    "managed"
+                } else {
+                    "kept"
+                }
+            ));
+        }
+        for (path, data) in extras {
+            reporter.log(format!("extra: {path} ({} bytes)", data.len()));
+            p1.add_file(&path, data)?;
+        }
     }
 
     let channel = request
@@ -643,9 +771,6 @@ fn assemble(
         ));
     }
 
-    let manifest: Manifest =
-        serde_json::from_slice(&request.assets.manifest()?)
-            .context("parsing the payload manifest")?;
     // Asked of the release rather than matched here. The `_ => "2k22"` this replaces
     // handed Server 2022 drivers to every release that was not Windows 11, which for
     // Server 2019, 2025 and Windows 10 is the silent kind of wrong: the drivers install,
@@ -1214,6 +1339,7 @@ mod tests {
             )),
             enable_ems: true,
             unattend,
+            extras: Vec::new(),
         }
     }
 
@@ -1293,6 +1419,136 @@ mod tests {
             answer_file(&request, &detected).unwrap(),
             crate::unattend::build(&detected).unwrap()
         );
+    }
+
+    /// Review Focus 2. A source that cannot be read must be refused before the
+    /// 4 GiB copy, with the path in the message -- not four minutes in, and
+    /// never as a file silently missing from the guest.
+    #[test]
+    fn an_unreadable_extra_is_refused_before_the_media_is_opened() {
+        let mut request = test_request(None);
+        request.extras = vec![crate::settings::Extra {
+            source: PathBuf::from("/nonexistent/secret.zip"),
+            volume_path: "/extras/secret.zip".into(),
+        }];
+        let err = build(&request, &Reporter::silent(), &Default::default())
+            .err()
+            .expect("an unreadable extra must be refused")
+            .to_string();
+        assert!(err.contains("secret.zip"), "{err}");
+    }
+
+    /// Review Focus 3. `--bare` is media and nothing else. It already writes no
+    /// answer file; it must write no MSI, no confs and no extras either. This is
+    /// the cloud-init half of that guarantee -- `cloud_init_volume_paths` is the
+    /// one place the `bare` guard lives, rather than spread over every call
+    /// site, so it cannot be forgotten at one of them.
+    #[test]
+    fn a_bare_build_carries_no_cloud_init_and_no_extras() {
+        let cloud_init_config = Config {
+            cloud_init: Some(crate::settings::CloudInit {
+                manage_account: false,
+            }),
+            ..test_config()
+        };
+        assert!(
+            !cloud_init_volume_paths(&cloud_init_config, false).is_empty(),
+            "the non-bare case must carry something"
+        );
+        assert!(
+            cloud_init_volume_paths(&cloud_init_config, true).is_empty(),
+            "a bare build must carry no cloud-init files"
+        );
+        assert!(
+            cloud_init_volume_paths(
+                &Config { cloud_init: None, ..test_config() },
+                false
+            )
+            .is_empty()
+        );
+    }
+
+    /// The order the files are added in decides cluster allocation and
+    /// therefore the bytes of the volume, so it may never depend on readdir.
+    #[test]
+    fn the_cloud_init_files_are_added_in_volume_path_order() {
+        let paths = cloud_init_volume_paths(
+            &Config {
+                cloud_init: Some(crate::settings::CloudInit {
+                    manage_account: false,
+                }),
+                ..test_config()
+            },
+            false,
+        );
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(paths, sorted, "{paths:?}");
+    }
+
+    /// No MSI in the payload means cloud-init silently does nothing in the
+    /// guest, so the build refuses and names the script that fixes it.
+    #[test]
+    fn a_payload_without_the_msi_refuses_and_names_the_fetch_script() {
+        let err = cloudbase_msi_path(&Manifest {
+            open_ssh: "assets/openssh/OpenSSH-Win64.zip".into(),
+            cloudbase_init: None,
+            drivers: Default::default(),
+        })
+        .err()
+        .expect("a payload with no MSI must be refused")
+        .to_string();
+        assert!(err.contains("fetch-payload.sh"), "{err}");
+    }
+
+    /// Step 6's mutation test: two extras supplied out of order come out
+    /// sorted by their volume path. Deleting `read_extras`'s sort makes this
+    /// fail while `the_cloud_init_files_are_added_in_volume_path_order`
+    /// keeps passing -- that test only covers the cloud-init list, not
+    /// extras, which is why this one exists separately.
+    #[test]
+    fn extras_supplied_out_of_order_come_out_sorted() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxwin-extras-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let b_path = dir.join("b.zip");
+        let a_path = dir.join("a.zip");
+        std::fs::write(&b_path, b"b").unwrap();
+        std::fs::write(&a_path, b"a").unwrap();
+
+        let extras = vec![
+            crate::settings::Extra {
+                source: b_path.clone(),
+                volume_path: "/extras/b.zip".into(),
+            },
+            crate::settings::Extra {
+                source: a_path.clone(),
+                volume_path: "/extras/a.zip".into(),
+            },
+        ];
+        let read = read_extras(&extras, false).unwrap();
+        let paths: Vec<&str> = read.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths, vec!["/extras/a.zip", "/extras/b.zip"], "{paths:?}");
+
+        let _ = std::fs::remove_file(&a_path);
+        let _ = std::fs::remove_file(&b_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// `bare` wins outright: no extra is even read.
+    #[test]
+    fn a_bare_build_reads_no_extras() {
+        let extras = vec![crate::settings::Extra {
+            source: PathBuf::from("/nonexistent/whatever.zip"),
+            volume_path: "/extras/whatever.zip".into(),
+        }];
+        assert_eq!(read_extras(&extras, true).unwrap(), Vec::new());
     }
 }
 
@@ -1393,6 +1649,7 @@ mod whole_image {
             ),
             enable_ems: true,
             unattend: None,
+            extras: Vec::new(),
         };
         let mount_media = || Media::Directory(PathBuf::from(&mount));
 
@@ -1482,6 +1739,13 @@ mod whole_image {
                             .to_string(),
                     ],
                 },
+                // `Settings::default()` turns cloud-init on, but this test's
+                // fixture assets (a local `assets/` directory, not the
+                // fetched payload) carry no MSI, and every other build in
+                // this test builds with `cloud_init: None`. Matching that
+                // keeps this an apples-to-apples determinism comparison
+                // rather than a payload refusal.
+                cloud_init: None,
                 ..Settings::default()
             };
             // A directory rather than the embedded payload, so this test compares like

@@ -140,6 +140,7 @@ impl Engine {
             assets: self.assets.clone(),
             enable_ems: settings.enable_ems,
             unattend: settings.unattend.clone(),
+            extras: settings.extras.clone(),
         };
         builder::build(&request, reporter, cancel)
             .context("building the install image")

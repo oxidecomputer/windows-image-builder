@@ -533,6 +533,7 @@ fn build(args: &[String]) -> Result<()> {
         assets,
         enable_ems: ems_enabled(args),
         unattend,
+        extras: Vec::new(),
     };
 
     let quiet = flag("quiet");
@@ -1044,6 +1045,7 @@ fn build_for_golden(
         assets: assets_from_args(args)?,
         enable_ems: ems_enabled(args),
         unattend: None,
+        extras: Vec::new(),
     };
 
     let (reporter, printer) = printer(quiet, "copying");
