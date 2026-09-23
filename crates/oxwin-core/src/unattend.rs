@@ -1301,6 +1301,7 @@ mod tests {
             let cx = LintContext {
                 target_disk: config.target_disk,
                 generalize: config.generalize,
+                cloud_init: false,
             };
             // `show_ui_on_error` is true in every committed case, so this fires
             // everywhere. It is a real hazard and the rule stays, but changing the
@@ -1328,6 +1329,7 @@ mod tests {
         let cx = LintContext {
             target_disk: config.target_disk,
             generalize: config.generalize,
+            cloud_init: false,
         };
         // Same filter and reason as `generated_output_is_clean`: `show_ui_on_error`
         // defaults to true, which is a real hazard but a separate decision from
@@ -1345,8 +1347,11 @@ mod tests {
     fn generated_sysprep_output_is_clean() {
         let config = Config { generalize: true, ..base() };
         let xml = build_sysprep(&config).expect("build_sysprep");
-        let cx =
-            LintContext { target_disk: config.target_disk, generalize: true };
+        let cx = LintContext {
+            target_disk: config.target_disk,
+            generalize: true,
+            cloud_init: false,
+        };
         let found = lint(&xml, &cx);
         assert!(found.is_empty(), "{found:#?}");
     }
