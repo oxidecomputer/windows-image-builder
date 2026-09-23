@@ -486,10 +486,7 @@ fn extras_from_args(args: &[String]) -> Result<Vec<Extra>> {
         if meta.is_dir() {
             walk_extra_dir(&path, &format!("/extras/{name}"), &mut extras)?;
         } else {
-            extras.push(Extra {
-                source: path.clone(),
-                volume_path: format!("/extras/{name}"),
-            });
+            extras.push(Extra::from_file(path.clone())?);
         }
     }
     Ok(extras)

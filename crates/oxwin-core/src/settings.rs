@@ -6,6 +6,7 @@
 
 //! User selection and image options.
 
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -109,6 +110,26 @@ pub struct Extra {
     /// Where it lands on the installer volume. Always under `/extras/`, and
     /// built by the caller from the file's name -- never typed by a user.
     pub volume_path: String,
+}
+
+impl Extra {
+    /// One file, named by its own file name under `/extras/`.
+    ///
+    /// The one path-construction rule (`/extras/<file name>`) shared by the CLI's
+    /// `--extra=` and the GUI's file picker, so it exists in one place rather
+    /// than twice with the chance of drifting. Does not walk directories --
+    /// the CLI's directory case has its own recursive walk with a volume
+    /// prefix threaded through, which does not fit this single-file shape.
+    pub fn from_file(path: PathBuf) -> Result<Extra> {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                anyhow!("{}: not a valid UTF-8 file name", path.display())
+            })?
+            .to_string();
+        Ok(Extra { source: path, volume_path: format!("/extras/{name}") })
+    }
 }
 
 /// A random password strong enough for a Windows administrator account, satisfying

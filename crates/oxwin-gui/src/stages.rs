@@ -537,6 +537,86 @@ impl App {
                     &mut self.draft.inject_drivers,
                     "Inject virtio drivers (required for networking)",
                 );
+                ui.checkbox(
+                    &mut self.draft.cloud_init,
+                    "Install cloud-init (per-instance hostname, keys and \
+                     user-data)",
+                );
+                if self.draft.cloud_init {
+                    // Nested, and shown only while it is on: a mode control
+                    // for a feature that is off is a control with no meaning.
+                    ui.indent("cloud_init_mode", |ui| {
+                        ui.radio_value(
+                            &mut self.draft.cloud_init_manage,
+                            false,
+                            "Keep my account, just add each instance's keys",
+                        );
+                        ui.radio_value(
+                            &mut self.draft.cloud_init_manage,
+                            true,
+                            "Let cloud-init manage the account",
+                        );
+                        if self.draft.cloud_init_manage {
+                            hint(
+                                ui,
+                                "Cloud-init will replace the password you set \
+                                 above with a per-instance random one the \
+                                 first time it runs on a clone. The password \
+                                 works from install until then, over the \
+                                 serial console and RDP.",
+                            );
+                        }
+                    });
+                }
+
+                ui.add_space(6.0);
+                section(ui, "Extra files");
+                if ui.button("Add files...").clicked() {
+                    if let Some(paths) = rfd::FileDialog::new().pick_files() {
+                        for path in paths {
+                            match oxwin_core::settings::Extra::from_file(path) {
+                                Ok(extra) => self.draft.extras.push(extra),
+                                Err(e) => {
+                                    self.notice = Some(e.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                // A list that grows with its contents moves the primary
+                // button, which the layout rules forbid: the enabled button is
+                // taller than the disabled one and hand-computing the
+                // reservation was wrong three times running. So the scroll
+                // area is a constant height whatever the list holds.
+                egui::ScrollArea::vertical()
+                    .id_salt("extras")
+                    .max_height(96.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let mut remove: Option<usize> = None;
+                        for (i, extra) in self.draft.extras.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(&extra.volume_path);
+                                if ui.button("Remove").clicked() {
+                                    remove = Some(i);
+                                }
+                            });
+                        }
+                        if let Some(i) = remove {
+                            self.draft.extras.remove(i);
+                        }
+                    });
+                for p in oxwin_core::settings::extra_problems(&self.draft.extras)
+                {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("!").color(theme::WARNING));
+                        ui.label(
+                            RichText::new(&p.message)
+                                .color(theme::WARNING)
+                                .size(12.5),
+                        );
+                    });
+                }
 
                 ui.add_space(6.0);
                 section(ui, "Language and region");

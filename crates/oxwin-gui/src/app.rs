@@ -15,6 +15,7 @@ use crate::stepper::{self, State};
 use crate::theme;
 use oxwin_core::builder::Ems;
 use oxwin_core::media::MediaInfo;
+use oxwin_core::settings::{CloudInit, Extra};
 use oxwin_core::{
     Cancel, Credentials, Deployment, Engine, Event, Reporter, Settings,
     WindowsRelease,
@@ -97,6 +98,15 @@ pub struct Draft {
     /// changes nothing until it is chosen again. `None` means the generated
     /// answer file.
     pub supplied_unattend: Option<(PathBuf, String)>,
+    /// Cloud-init in the guest. On by default, like the core setting.
+    pub cloud_init: bool,
+    /// Mode B: cloud-init owns the account, and replaces the password with a
+    /// per-instance random one. Only meaningful while `cloud_init` is set --
+    /// `to_settings` ignores it otherwise, so clearing the tickbox cannot leave
+    /// a stale mode behind.
+    pub cloud_init_manage: bool,
+    /// Files copied onto the media and into `C:\oxide\extras`.
+    pub extras: Vec<Extra>,
 }
 
 impl Default for Draft {
@@ -132,6 +142,9 @@ impl Default for Draft {
                 .map(|p| p.size_mb.map(|mb| mb.to_string()).unwrap_or_default())
                 .collect(),
             supplied_unattend: None,
+            cloud_init: d.cloud_init.is_some(),
+            cloud_init_manage: false,
+            extras: Vec::new(),
         }
     }
 }
@@ -185,11 +198,10 @@ impl Draft {
                 .supplied_unattend
                 .as_ref()
                 .map(|(_, xml)| xml.clone()),
-            // The Draft has no widgets for either yet -- that's a later task --
-            // so this carries `Settings::default`'s values rather than asserting
-            // something the UI cannot actually offer.
-            cloud_init: Settings::default().cloud_init,
-            extras: Vec::new(),
+            cloud_init: self.cloud_init.then_some(CloudInit {
+                manage_account: self.cloud_init_manage,
+            }),
+            extras: self.extras.clone(),
         }
     }
 }
@@ -969,5 +981,64 @@ mod tests {
     #[test]
     fn a_fresh_draft_has_ems_enabled() {
         assert!(Draft::default().enable_ems);
+    }
+
+    /// The draft holds raw bools, and `to_settings` is the one conversion.
+    /// Binding a widget straight to the core enum is what throws away a
+    /// half-typed hostname.
+    #[test]
+    fn the_draft_defaults_match_the_core_defaults() {
+        let d = Draft::default();
+        assert!(d.cloud_init);
+        assert!(!d.cloud_init_manage);
+        assert!(d.extras.is_empty());
+        assert_eq!(d.to_settings().cloud_init, Settings::default().cloud_init);
+    }
+
+    #[test]
+    fn turning_the_tickbox_off_turns_cloud_init_off() {
+        let d = Draft { cloud_init: false, ..Draft::default() };
+        assert_eq!(d.to_settings().cloud_init, None);
+    }
+
+    /// The mode is only meaningful while cloud-init is on, and a stale `manage`
+    /// left over from a tickbox the user then cleared must not reach the
+    /// settings.
+    #[test]
+    fn the_account_mode_is_ignored_while_cloud_init_is_off() {
+        let d = Draft {
+            cloud_init: false,
+            cloud_init_manage: true,
+            ..Draft::default()
+        };
+        assert_eq!(d.to_settings().cloud_init, None);
+    }
+
+    #[test]
+    fn the_account_mode_reaches_the_settings() {
+        let d = Draft { cloud_init_manage: true, ..Draft::default() };
+        assert_eq!(
+            d.to_settings().cloud_init,
+            Some(CloudInit { manage_account: true })
+        );
+    }
+
+    #[test]
+    fn extras_reach_the_settings_in_order() {
+        let d = Draft {
+            extras: vec![
+                Extra {
+                    source: "/tmp/a.zip".into(),
+                    volume_path: "/extras/a.zip".into(),
+                },
+                Extra {
+                    source: "/tmp/b.zip".into(),
+                    volume_path: "/extras/b.zip".into(),
+                },
+            ],
+            ..Draft::default()
+        };
+        assert_eq!(d.to_settings().extras.len(), 2);
+        assert_eq!(d.to_settings().extras[0].volume_path, "/extras/a.zip");
     }
 }
