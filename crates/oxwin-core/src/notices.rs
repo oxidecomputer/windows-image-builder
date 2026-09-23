@@ -56,6 +56,15 @@ pub enum License {
     Apache2,
     /// The CPython runtime bundled inside the cloudbase-init MSI.
     Python,
+    /// libarchive's own summary file, as shipped with the bundled `bsdtar.exe`.
+    /// Its top matter is a 2-clause BSD grant; see `bsdtar.COPYING`'s own
+    /// caveat that per-file statements, not this summary, are controlling.
+    Bsd2Clause,
+    /// `Elevate.exe`, bundled inside the cloudbase-init MSI with no adjacent
+    /// license file of its own. See the `Component` entry for how this was
+    /// identified and why LGPL-2.1-or-later, not the upstream repo's MIT
+    /// `LICENSE.md`, is the operative text here.
+    Lgpl21OrLater,
 }
 
 impl License {
@@ -69,12 +78,17 @@ impl License {
             Self::OpenSsh => "OpenSSH (BSD-style, see text)",
             Self::Apache2 => "Apache-2.0",
             Self::Python => "Python-2.0.1",
+            Self::Bsd2Clause => "BSD-2-Clause",
+            Self::Lgpl21OrLater => "LGPL-2.1-or-later",
         }
     }
 
     /// Whether conveying this component obliges us to offer its source.
     pub fn is_copyleft(self) -> bool {
-        matches!(self, Self::Gpl2OrLater | Self::Gpl3OrLater)
+        matches!(
+            self,
+            Self::Gpl2OrLater | Self::Gpl3OrLater | Self::Lgpl21OrLater
+        )
     }
 
     /// The full text, as committed under `licenses/`.
@@ -95,6 +109,12 @@ impl License {
             Self::OpenSsh => include_str!("../../../licenses/OpenSSH.txt"),
             Self::Apache2 => include_str!("../../../licenses/Apache-2.0.txt"),
             Self::Python => include_str!("../../../licenses/Python.txt"),
+            Self::Bsd2Clause => {
+                include_str!("../../../licenses/BSD-2-Clause-libarchive.txt")
+            }
+            Self::Lgpl21OrLater => {
+                include_str!("../../../licenses/LGPL-2.1.txt")
+            }
         }
     }
 }
@@ -218,6 +238,68 @@ pub static PAYLOAD: &[Component] = &[
         upstream: "https://www.gnu.org/software/mtools/",
         source: "https://ftp.gnu.org/gnu/mtools/mtools-4.0.18.tar.gz",
     },
+    Component {
+        name: "bsdtar (bundled inside the cloudbase-init MSI)",
+        // Read off bsdtar.exe's own strings table: "libarchive 3.1.2".
+        version: "3.1.2",
+        carried_as: "inside /cloudbase/CloudbaseInitSetup_x64.msi; installed \
+                     alongside cloudbase-init's own executables, used to \
+                     extract the config drive's ISO",
+        license: License::Bsd2Clause,
+        copyright: "Copyright (c) 2003-2009 Tim Kientzle and libarchive \
+                    contributors",
+        upstream: "https://www.libarchive.org/",
+        source: "https://github.com/libarchive/libarchive/archive/refs/tags/v3.1.2.tar.gz",
+    },
+    Component {
+        // Ships with no adjacent license file, unlike everything else in
+        // this table -- identified rather than assumed. `Elevate.exe`'s own
+        // metadata carries no CompanyName/ProductName/LegalCopyright (its
+        // VERSIONINFO resource is entirely blank), so identification rests
+        // on three matches against github.com/jpassing/elevate: the PDB
+        // path baked into the binary (`C:\Temp\elevate\bin\x64\Release\
+        // Elevate.pdb`), the import table (only KERNEL32.dll and
+        // SHELL32.dll, consistent with a single-purpose ShellExecuteEx
+        // wrapper and nothing else), and the exact `ShellExecuteEx` call
+        // shape (`SEE_MASK_FLAG_NO_UI | SEE_MASK_NOCLOSEPROCESS`), which
+        // matches jpassing/elevate's `Elevate/main.c` line for line.
+        //
+        // That upstream repository disagrees with itself about its own
+        // license: `Elevate/main.c`'s own header states "GNU Lesser General
+        // Public License ... version 2.1 of the License, or (at your
+        // option) any later version", copyright Johannes Passing, 2007.
+        // The repository's separate top-level `LICENSE.md` says MIT, but
+        // with the template placeholder "Copyright (c) <year> <copyright
+        // holders>" never filled in -- consistent with a LICENSE.md GitHub
+        // auto-added later rather than an actual relicense the author
+        // signed off on. Per this same table's own rule for `bsdtar`
+        // ("the actual statements in the files are controlling"), the file
+        // header is treated as authoritative here: LGPL-2.1-or-later.
+        // Over-complying by conveying notice and source we might not
+        // strictly owe costs nothing; under-complying if LGPL actually
+        // governs would not. A future reader who disagrees with that
+        // reading has both statements above to redo the judgement.
+        //
+        // No commit or tag of jpassing/elevate could be tied to the exact
+        // object code cloudbase-init built -- the binary carries no
+        // version resource at all -- so `source` pins the latest commit
+        // on the repository's default branch as of this review
+        // (2026-09-23) rather than HEAD at some future, different commit.
+        name: "Elevate.exe (bundled inside the cloudbase-init MSI, likely \
+               jpassing/elevate)",
+        // No version resource at all -- see the comment above this
+        // Component for how it was identified instead.
+        version: "unversioned",
+        carried_as: "inside /cloudbase/CloudbaseInitSetup_x64.msi; installed \
+                     alongside cloudbase-init's own executables, used \
+                     internally for privilege elevation",
+        license: License::Lgpl21OrLater,
+        copyright: "Copyright (c) 2007 Johannes Passing \
+                    <johannes.passing@googlemail.com>",
+        upstream: "https://github.com/jpassing/elevate",
+        source: "https://github.com/jpassing/elevate/archive/\
+                 d5cfc93d1ce06844a39d1a334a7a8081d26b6204.tar.gz",
+    },
 ];
 
 /// The notices, without the license texts. What `oxwin licenses` prints.
@@ -245,13 +327,13 @@ pub fn summary() -> String {
             c.source,
         );
     }
-    out += "\nThe GPL'd components are conveyed unmodified: uefi-ntfs and efifs \
-            as separate UEFI\nexecutables run by firmware, mtools as a separate \
-            Windows executable installed by\ncloudbase-init's MSI. None is linked \
-            into this program. Their complete\ncorresponding source is at the \
-            URLs above, pinned to the versions shipped; ask\noxide.computer for \
-            a copy on physical media if those are unreachable.\n\nRun `oxwin \
-            licenses --full` for the license texts, or see THIRD-PARTY.md.\n";
+    out += "\nThe GPL- and LGPL'd components are conveyed unmodified: uefi-ntfs \
+            and efifs as\nseparate UEFI executables run by firmware, mtools and \
+            Elevate.exe as separate\nWindows executables installed by \
+            cloudbase-init's MSI. None is linked into\nthis program. Their \
+            complete corresponding source is at the URLs above, pinned\nto the \
+            versions shipped.\n\nRun `oxwin licenses --full` for the license \
+            texts, or see THIRD-PARTY.md.\n";
     out
 }
 
@@ -331,6 +413,9 @@ mod tests {
         let bundled = [
             "CPython (bundled inside the cloudbase-init MSI)",
             "mtools (mcopy.exe, mdir.exe, bundled inside the cloudbase-init MSI)",
+            "bsdtar (bundled inside the cloudbase-init MSI)",
+            "Elevate.exe (bundled inside the cloudbase-init MSI, likely \
+             jpassing/elevate)",
         ];
 
         // And nothing here is unpinned: a component in the notices that the script does
@@ -359,6 +444,8 @@ mod tests {
             (License::OpenSsh, "part of the OpenSSH software"),
             (License::Apache2, "TERMS AND CONDITIONS FOR USE, REPRODUCTION"),
             (License::Python, "PYTHON SOFTWARE FOUNDATION LICENSE"),
+            (License::Bsd2Clause, "libarchive distribution as a whole"),
+            (License::Lgpl21OrLater, "GNU LESSER GENERAL PUBLIC LICENSE"),
         ] {
             let text = license.text();
             assert!(
