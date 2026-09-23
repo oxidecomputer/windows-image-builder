@@ -603,9 +603,49 @@ pub fn extra_problems(extras: &[Extra]) -> Vec<Problem> {
             ));
             continue;
         }
+        // A directory extra and a file extra can collide without their
+        // `volume_path`s ever being equal: `--extra=fileA` named `foo` and
+        // `--extra=dirB` also named `foo` produce `/extras/foo` and
+        // `/extras/foo/bar.txt`, and the second cannot be created on a
+        // filesystem where the first is a plain file. Compared by whole
+        // path components, not by string prefix, so `/extras/foo` next to
+        // `/extras/foobar` is not flagged.
+        if let Some(other) = seen.iter().find(|s| {
+            is_component_prefix(s, &e.volume_path)
+                || is_component_prefix(&e.volume_path, s)
+        }) {
+            v.push(Problem::block(
+                "extras",
+                format!(
+                    "{} and {} collide: one is a file at the other's \
+                     directory. Rename one, or move it out from under the \
+                     other.",
+                    other, e.volume_path
+                ),
+            ));
+            continue;
+        }
         seen.push(&e.volume_path);
     }
     v
+}
+
+/// Whether `a`'s path components are a strict prefix of `b`'s.
+///
+/// `/extras/foo` is a prefix of `/extras/foo/bar.txt` but not of
+/// `/extras/foobar` -- the comparison is component by component, never a
+/// plain string prefix, or the second pair would be flagged for sharing
+/// six characters.
+fn is_component_prefix(a: &str, b: &str) -> bool {
+    let mut a_parts = a.split('/');
+    let mut b_parts = b.split('/');
+    loop {
+        match (a_parts.next(), b_parts.next()) {
+            (Some(x), Some(y)) if x == y => continue,
+            (None, Some(_)) => return true,
+            _ => return false,
+        }
+    }
 }
 
 fn key_problem(key: &str) -> Option<Problem> {
@@ -995,6 +1035,42 @@ mod tests {
         assert!(s.problems().iter().any(|p| {
             p.field == "extras" && p.blocking && p.message.contains("a.zip")
         }));
+    }
+
+    /// A file and a directory can be given different names and still collide
+    /// on the volume: `--extra=fileA` named `foo` and `--extra=dirB` also
+    /// named `foo` produce `/extras/foo` and `/extras/foo/bar.txt`, which
+    /// cannot both exist -- one is a plain file where the other needs a
+    /// directory. `two_extras_landing_on_the_same_path_block` above only
+    /// catches an exact match, so this is a separate case.
+    #[test]
+    fn a_directory_and_a_file_colliding_on_one_name_blocks() {
+        let s = Settings {
+            extras: vec![
+                extra("/tmp/fileA", "/extras/foo"),
+                extra("/tmp/dirB/bar.txt", "/extras/foo/bar.txt"),
+            ],
+            ..base()
+        };
+        assert!(!s.is_buildable(), "{:?}", s.problems());
+        assert!(s.problems().iter().any(|p| {
+            p.field == "extras" && p.blocking && p.message.contains("foo")
+        }));
+    }
+
+    /// The collision check is by path component, not by string prefix:
+    /// `/extras/foo` and `/extras/foobar` share six characters but name two
+    /// unrelated files, so this must build cleanly.
+    #[test]
+    fn extras_sharing_a_string_prefix_but_not_a_path_prefix_are_fine() {
+        let s = Settings {
+            extras: vec![
+                extra("/tmp/foo", "/extras/foo"),
+                extra("/tmp/foobar", "/extras/foobar"),
+            ],
+            ..base()
+        };
+        assert!(s.is_buildable(), "{:?}", s.problems());
     }
 
     #[test]

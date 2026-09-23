@@ -335,7 +335,13 @@ fn password_from_args(args: &[String]) -> Result<String> {
 /// Shared by `build` and `golden` so the two cannot drift: `golden` differs only in
 /// forcing the golden-image options, and duplicating forty lines to express that
 /// would be an invitation for one copy to gain an option the other lacks.
-fn config_from_args(args: &[String]) -> Result<Config> {
+/// `extras` is the caller's own `extras_from_args(args)?`, taken as a
+/// parameter rather than computed here so that a command that also needs the
+/// `Vec<Extra>` itself -- `build`, `build_for_golden` -- walks the
+/// filesystem once. Computing it twice was redundant I/O and a TOCTOU: a
+/// directory `--extra` could change between the two walks, leaving
+/// `has_extras` and the extras actually copied in disagreement.
+fn config_from_args(args: &[String], extras: &[Extra]) -> Result<Config> {
     let opt = |name: &str| -> Option<String> {
         let prefix = format!("--{name}=");
         args.iter().find_map(|a| a.strip_prefix(&prefix).map(str::to_string))
@@ -406,7 +412,7 @@ fn config_from_args(args: &[String]) -> Result<Config> {
             .collect(),
         enable_ssh: opt("ssh").as_deref() != Some("0"),
         cloud_init: cloud_init_from_args(args)?,
-        has_extras: !extras_from_args(args)?.is_empty(),
+        has_extras: !extras.is_empty(),
     };
     Ok(config)
 }
@@ -635,8 +641,6 @@ fn build(args: &[String]) -> Result<()> {
         Media::Iso(source)
     };
 
-    let config = config_from_args(args)?;
-    let assets = assets_from_args(args)?;
     let extras = extras_from_args(args)?;
     // Refused here rather than left to the engine, so a collision between two
     // `--extra=` files is reported before an ISO gets opened and copied.
@@ -645,6 +649,8 @@ fn build(args: &[String]) -> Result<()> {
     {
         bail!("{}", problem.message);
     }
+    let config = config_from_args(args, &extras)?;
+    let assets = assets_from_args(args)?;
 
     let unattend = match args.iter().find_map(|a| a.strip_prefix("--unattend="))
     {
@@ -723,7 +729,8 @@ fn unattend_cmd(args: &[String]) -> Result<()> {
 /// What `unattend_cmd` prints, separated from the printing so a test can compare
 /// it with `unattend::build` rather than with a captured stdout.
 fn unattend_xml(args: &[String]) -> Result<String> {
-    let config = config_from_args(args)?;
+    let extras = extras_from_args(args)?;
+    let config = config_from_args(args, &extras)?;
     if flag_in(args, "sysprep") {
         oxwin_core::unattend::build_sysprep(&config)
     } else {
@@ -1174,7 +1181,13 @@ fn build_for_golden(
     args: &[String],
     quiet: bool,
 ) -> Result<BuiltMedia> {
-    let mut config = config_from_args(args)?;
+    let extras = extras_from_args(args)?;
+    if let Some(problem) =
+        extra_problems(&extras).into_iter().find(|p| p.blocking)
+    {
+        bail!("{}", problem.message);
+    }
+    let mut config = config_from_args(args, &extras)?;
     config.generalize = true;
     config.computer_name = "*".into();
 
@@ -1183,12 +1196,6 @@ fn build_for_golden(
     } else {
         Media::Iso(source.to_path_buf())
     };
-    let extras = extras_from_args(args)?;
-    if let Some(problem) =
-        extra_problems(&extras).into_iter().find(|p| p.blocking)
-    {
-        bail!("{}", problem.message);
-    }
     let request = Request {
         media,
         out: out.to_path_buf(),
@@ -1794,6 +1801,36 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// `has_extras` is derived from the same list a caller walked, not from a
+    /// second walk of the filesystem -- passing an empty slice must turn it
+    /// off even with `--extra=` on the command line, and passing the list
+    /// `extras_from_args` actually returned must turn it on. Two walks that
+    /// could disagree (a directory changing between them) is the bug this
+    /// guards against.
+    #[test]
+    fn has_extras_comes_from_the_extras_passed_in_not_a_second_walk() {
+        let dir = std::env::temp_dir()
+            .join(format!("oxwin-extras-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.zip"), b"a").unwrap();
+        let flags =
+            args(&[&format!("--extra={}", dir.join("a.zip").display())]);
+        let password = "--password=0xide!230xide!23".to_string();
+        let mut with_password = flags.clone();
+        with_password.push(password);
+
+        let extras = extras_from_args(&flags).unwrap();
+        assert_eq!(extras.len(), 1);
+
+        let config = config_from_args(&with_password, &extras).unwrap();
+        assert!(config.has_extras);
+
+        let config_without = config_from_args(&with_password, &[]).unwrap();
+        assert!(!config_without.has_extras);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn a_missing_extra_is_refused_by_the_flag() {
         let err = extras_from_args(&args(&["--extra=/nonexistent/x.zip"]))
@@ -1820,7 +1857,7 @@ mod tests {
             "--password=0xide!230xide!23".to_string(),
             "--product-key=".to_string(),
         ];
-        let config = config_from_args(&args).unwrap();
+        let config = config_from_args(&args, &[]).unwrap();
         assert_eq!(config.product_key, None);
     }
 
@@ -1831,7 +1868,7 @@ mod tests {
             "--password=0xide!230xide!23".to_string(),
             "--product-key=   ".to_string(),
         ];
-        let config = config_from_args(&args).unwrap();
+        let config = config_from_args(&args, &[]).unwrap();
         assert_eq!(config.product_key, None);
     }
 
@@ -1843,7 +1880,7 @@ mod tests {
             "--password=0xide!230xide!23".to_string(),
             "--product-key= WX4NM-KYWYW-QJJR4-XV3QB-6VM33 ".to_string(),
         ];
-        let config = config_from_args(&args).unwrap();
+        let config = config_from_args(&args, &[]).unwrap();
         assert_eq!(
             config.product_key,
             Some("WX4NM-KYWYW-QJJR4-XV3QB-6VM33".to_string())
@@ -2087,7 +2124,7 @@ mod tests {
             "--partition=msr:16",
             "--partition=primary:extend:C:NTFS:Windows",
         ]);
-        let config = config_from_args(&flags).unwrap();
+        let config = config_from_args(&flags, &[]).unwrap();
         assert_eq!(
             unattend_xml(&flags).unwrap(),
             oxwin_core::unattend::build(&config).unwrap()
@@ -2096,7 +2133,7 @@ mod tests {
         // And `--sysprep` prints the other document, not the same one.
         let mut sysprep = flags.clone();
         sysprep.push("--sysprep".into());
-        let config = config_from_args(&sysprep).unwrap();
+        let config = config_from_args(&sysprep, &[]).unwrap();
         assert_eq!(
             unattend_xml(&sysprep).unwrap(),
             oxwin_core::unattend::build_sysprep(&config).unwrap()
