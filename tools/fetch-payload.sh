@@ -26,6 +26,14 @@ OPENSSH_VERSION="10.0.0.0p2-Preview"
 OPENSSH_SHA256="23f50f3458c4c5d0b12217c6a5ddfde0137210a30fa870e98b29827f7b43aba5"
 OPENSSH_URL="https://github.com/PowerShell/Win32-OpenSSH/releases/download/${OPENSSH_VERSION}/OpenSSH-Win64.zip"
 
+# cloudbase-init, the cloud-init implementation for Windows. Upstream's stable
+# MSI, not the 2022 Oxide fork the public docs point at: both of that fork's
+# functional patches are in upstream, and this is versioned, pinnable and EV
+# code-signed (the guest checks the signature before installing it).
+CLOUDBASE_VERSION="1.1.8"
+CLOUDBASE_SHA256="0e7fa42e0cbc0ce7657f85730b0c6cc7afc4087a3639df0ff51a721a0be19bd5"
+CLOUDBASE_URL="https://cloudbase.it/downloads/CloudbaseInitSetup_${CLOUDBASE_VERSION//./_}_x64.msi"
+
 # UEFI boot shim. Oxide's firmware has no UDF (or ISO9660) filesystem driver, so it
 # cannot read the main volume of a Windows ISO — see "Firmware constraints" in the
 # README. We ship the missing drivers and a UEFI Shell to load them, which lets the
@@ -125,6 +133,9 @@ fetch "$VIRTIO_URL" "${cache}/virtio-win-${VIRTIO_VERSION}.iso" "$VIRTIO_SHA256"
 echo "Win32-OpenSSH ${OPENSSH_VERSION}"
 fetch "$OPENSSH_URL" "${cache}/OpenSSH-Win64-${OPENSSH_VERSION}.zip" "$OPENSSH_SHA256"
 
+echo "cloudbase-init ${CLOUDBASE_VERSION}"
+fetch "$CLOUDBASE_URL" "${cache}/CloudbaseInitSetup-${CLOUDBASE_VERSION}.msi" "$CLOUDBASE_SHA256"
+
 echo "UEFI boot shim"
 fetch "${EFIFS_URL}/udf_x64.efi" "${cache}/udf_x64-${EFIFS_VERSION}.efi" "$EFIFS_UDF_SHA256"
 fetch "${EFIFS_URL}/iso9660_x64.efi" "${cache}/iso9660_x64-${EFIFS_VERSION}.efi" "$EFIFS_ISO9660_SHA256"
@@ -132,9 +143,10 @@ fetch "${EFIFS_URL}/exfat_x64.efi" "${cache}/exfat_x64-${EFIFS_VERSION}.efi" "$E
 fetch "$UEFI_SHELL_URL" "${cache}/shellx64-${UEFI_SHELL_VERSION}.efi" "$UEFI_SHELL_SHA256"
 fetch "$UEFI_NTFS_URL" "${cache}/uefintfs-${UEFI_NTFS_VERSION}.efi" "$UEFI_NTFS_SHA256"
 
-rm -rf "${assets}/drivers" "${assets}/openssh" "${assets}/efi"
-mkdir -p "${assets}/openssh" "${assets}/efi"
+rm -rf "${assets}/drivers" "${assets}/openssh" "${assets}/efi" "${assets}/cloudbase"
+mkdir -p "${assets}/openssh" "${assets}/efi" "${assets}/cloudbase"
 cp "${cache}/OpenSSH-Win64-${OPENSSH_VERSION}.zip" "${assets}/openssh/OpenSSH-Win64.zip"
+cp "${cache}/CloudbaseInitSetup-${CLOUDBASE_VERSION}.msi" "${assets}/cloudbase/CloudbaseInitSetup_x64.msi"
 cp "${cache}/udf_x64-${EFIFS_VERSION}.efi" "${assets}/efi/udf_x64.efi"
 cp "${cache}/iso9660_x64-${EFIFS_VERSION}.efi" "${assets}/efi/iso9660_x64.efi"
 cp "${cache}/exfat_x64-${EFIFS_VERSION}.efi" "${assets}/efi/exfat_x64.efi"
@@ -205,14 +217,16 @@ done
 # cross-checks what it found against this — so a half-finished download is a build
 # error rather than an image missing a driver.
 echo "writing manifest"
-python3 - "$assets" "$VIRTIO_VERSION" "$OPENSSH_VERSION" <<'PY'
+python3 - "$assets" "$VIRTIO_VERSION" "$OPENSSH_VERSION" "$CLOUDBASE_VERSION" <<'PY'
 import json, os, sys
 
-assets, virtio_version, openssh_version = sys.argv[1:4]
+assets, virtio_version, openssh_version, cloudbase_version = sys.argv[1:5]
 manifest = {
     "virtioWinVersion": virtio_version,
     "openSshVersion": openssh_version,
     "openSsh": "assets/openssh/OpenSSH-Win64.zip",
+    "cloudbaseInitVersion": cloudbase_version,
+    "cloudbaseInit": "assets/cloudbase/CloudbaseInitSetup_x64.msi",
     "efi": {
         "shell": "assets/efi/shellx64.efi",
         "udf": "assets/efi/udf_x64.efi",

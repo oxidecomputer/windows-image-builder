@@ -1665,7 +1665,9 @@ mod whole_image {
                     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 dan@example".to_string(),
                 ],
                 enable_ssh: true,
-                cloud_init: None,
+                cloud_init: Some(crate::settings::CloudInit {
+                    manage_account: false,
+                }),
                 has_extras: true,
             },
             edition_hint: None,
@@ -1766,13 +1768,9 @@ mod whole_image {
                             .to_string(),
                     ],
                 },
-                // `Settings::default()` turns cloud-init on, but this test's
-                // fixture assets (a local `assets/` directory, not the
-                // fetched payload) carry no MSI, and every other build in
-                // this test builds with `cloud_init: None`. Matching that
-                // keeps this an apples-to-apples determinism comparison
-                // rather than a payload refusal.
-                cloud_init: None,
+                cloud_init: Some(crate::settings::CloudInit {
+                    manage_account: false,
+                }),
                 extras: extras.clone(),
                 ..Settings::default()
             };

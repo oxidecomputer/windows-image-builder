@@ -52,6 +52,10 @@ pub enum License {
     /// OpenSSH's own summary file, which is a collection of BSD-and-freer terms rather
     /// than one nameable license.
     OpenSsh,
+    /// cloudbase-init itself.
+    Apache2,
+    /// The CPython runtime bundled inside the cloudbase-init MSI.
+    Python,
 }
 
 impl License {
@@ -63,6 +67,8 @@ impl License {
             Self::Bsd2ClausePatent => "BSD-2-Clause-Patent",
             Self::Bsd3Clause => "BSD-3-Clause",
             Self::OpenSsh => "OpenSSH (BSD-style, see text)",
+            Self::Apache2 => "Apache-2.0",
+            Self::Python => "Python-2.0.1",
         }
     }
 
@@ -87,6 +93,8 @@ impl License {
                 include_str!("../../../licenses/BSD-3-Clause-virtio-win.txt")
             }
             Self::OpenSsh => include_str!("../../../licenses/OpenSSH.txt"),
+            Self::Apache2 => include_str!("../../../licenses/Apache-2.0.txt"),
+            Self::Python => include_str!("../../../licenses/Python.txt"),
         }
     }
 }
@@ -176,6 +184,40 @@ pub static PAYLOAD: &[Component] = &[
         source: "https://github.com/PowerShell/Win32-OpenSSH/archive/refs/tags/\
                  10.0.0.0p2-Preview.tar.gz",
     },
+    Component {
+        name: "cloudbase-init",
+        version: "1.1.8",
+        carried_as: "/cloudbase/CloudbaseInitSetup_x64.msi on the exFAT \
+                     volume, installed by the bootstrap script",
+        license: License::Apache2,
+        copyright: "Copyright 2012-2026 Cloudbase Solutions Srl",
+        upstream: "https://github.com/cloudbase/cloudbase-init",
+        source: "https://github.com/cloudbase/cloudbase-init/archive/refs/tags/1.1.8.tar.gz",
+    },
+    Component {
+        name: "CPython (bundled inside the cloudbase-init MSI)",
+        // Read off the runtime binary itself: `python3.dll` inside the extracted
+        // MSI embeds a `tags/v3.13.13` build tag and a `3.13.13` version string.
+        version: "3.13.13",
+        carried_as: "inside /cloudbase/CloudbaseInitSetup_x64.msi; installed \
+                     to Cloudbase-Init\\Python",
+        license: License::Python,
+        copyright: "Copyright © 2001-2026 Python Software Foundation",
+        upstream: "https://www.python.org/",
+        source: "https://www.python.org/downloads/source/",
+    },
+    Component {
+        name: "mtools (mcopy.exe, mdir.exe, bundled inside the cloudbase-init MSI)",
+        // Read off mcopy.exe's own strings table: "C:\Temp\mtools-4.0.18".
+        version: "4.0.18",
+        carried_as: "inside /cloudbase/CloudbaseInitSetup_x64.msi; installed \
+                     alongside cloudbase-init's own executables",
+        license: License::Gpl3OrLater,
+        copyright: "Copyright © 1986-2025 Alain Knaff <alain@knaff.lu> and \
+                    contributors",
+        upstream: "https://www.gnu.org/software/mtools/",
+        source: "https://ftp.gnu.org/gnu/mtools/mtools-4.0.18.tar.gz",
+    },
 ];
 
 /// The notices, without the license texts. What `oxwin licenses` prints.
@@ -203,12 +245,13 @@ pub fn summary() -> String {
             c.source,
         );
     }
-    out += "\nThe GPL'd components are separate UEFI executables, conveyed \
-            unmodified and\nrun by firmware rather than linked into this \
-            program. Their complete\ncorresponding source is at the URLs above, \
-            pinned to the versions shipped; ask\noxide.computer for a copy on \
-            physical media if those are unreachable.\n\nRun `oxwin licenses \
-            --full` for the license texts, or see THIRD-PARTY.md.\n";
+    out += "\nThe GPL'd components are conveyed unmodified: uefi-ntfs and efifs \
+            as separate UEFI\nexecutables run by firmware, mtools as a separate \
+            Windows executable installed by\ncloudbase-init's MSI. None is linked \
+            into this program. Their complete\ncorresponding source is at the \
+            URLs above, pinned to the versions shipped; ask\noxide.computer for \
+            a copy on physical media if those are unreachable.\n\nRun `oxwin \
+            licenses --full` for the license texts, or see THIRD-PARTY.md.\n";
     out
 }
 
@@ -258,6 +301,7 @@ mod tests {
             ("EFIFS_VERSION", "efifs"),
             ("UEFI_SHELL_VERSION", "UEFI-Shell"),
             ("UEFI_NTFS_VERSION", "uefi-ntfs"),
+            ("CLOUDBASE_VERSION", "cloudbase-init"),
         ];
         for (var, name) in pins {
             let prefix = format!("{var}=");
@@ -280,14 +324,26 @@ mod tests {
             );
         }
 
+        // Components carried inside another payload rather than fetched and pinned
+        // independently by fetch-payload.sh: their version is a fact read off the
+        // binary itself (see the comments on their `Component` entries), not a
+        // script variable to cross-check.
+        let bundled = [
+            "CPython (bundled inside the cloudbase-init MSI)",
+            "mtools (mcopy.exe, mdir.exe, bundled inside the cloudbase-init MSI)",
+        ];
+
         // And nothing here is unpinned: a component in the notices that the script does
-        // not fetch is a notice for something we do not ship.
+        // not fetch, and that no bundled entry accounts for, is a notice for something
+        // we do not ship.
         assert_eq!(
             PAYLOAD.len(),
-            pins.len(),
-            "the notices list {} components and fetch-payload.sh pins {}",
+            pins.len() + bundled.len(),
+            "the notices list {} components, fetch-payload.sh pins {}, and {} \
+             are bundled rather than independently pinned",
             PAYLOAD.len(),
-            pins.len()
+            pins.len(),
+            bundled.len()
         );
     }
 
@@ -301,12 +357,40 @@ mod tests {
             (License::Bsd2ClausePatent, "BSD-2-Clause-Patent"),
             (License::Bsd3Clause, "Red Hat"),
             (License::OpenSsh, "part of the OpenSSH software"),
+            (License::Apache2, "TERMS AND CONDITIONS FOR USE, REPRODUCTION"),
+            (License::Python, "PYTHON SOFTWARE FOUNDATION LICENSE"),
         ] {
             let text = license.text();
             assert!(
                 text.contains(marker),
                 "the text for {} does not contain {marker:?}",
                 license.spdx()
+            );
+        }
+    }
+
+    /// Apache-2.0 obliges us to convey the license and the NOTICE; the MSI also
+    /// bundles a CPython runtime, which has its own terms. Conveying a
+    /// component without its notice is the kind of thing that is only ever
+    /// found by somebody auditing an artifact.
+    #[test]
+    fn cloudbase_init_and_its_python_are_both_named() {
+        let text = summary();
+        assert!(text.contains("cloudbase-init"), "{text}");
+        assert!(text.contains("1.1.8"), "{text}");
+        assert!(text.contains("Apache-2.0"), "{text}");
+        assert!(text.to_lowercase().contains("python"), "{text}");
+    }
+
+    /// Every license named has to have a text committed under `licenses/`, or
+    /// `--full` prints a heading with nothing under it.
+    #[test]
+    fn every_license_text_is_non_empty() {
+        for c in PAYLOAD {
+            assert!(
+                c.license.text().len() > 100,
+                "{} has no license text",
+                c.name
             );
         }
     }

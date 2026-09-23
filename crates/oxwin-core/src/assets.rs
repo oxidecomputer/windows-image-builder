@@ -218,6 +218,15 @@ mod tests {
             assert!(!data.is_empty(), "{name} is empty");
         }
 
+        // The cloudbase-init MSI, named rather than listed, like openSsh.
+        // Absent is allowed only when the manifest itself omits it: a manifest
+        // that names it and a payload that lacks it is the silent case.
+        if let Some(msi) = manifest["cloudbaseInit"].as_str() {
+            assert!(
+                !assets.read(msi).expect("the cloudbase-init MSI").is_empty()
+            );
+        }
+
         // Every release this workspace can build must have drivers in the payload it
         // shipped with. Without this, a release whose `driver_dir` names a directory
         // `fetch-payload.sh` does not fetch fails at build time on a user's machine,
