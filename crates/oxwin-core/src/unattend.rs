@@ -351,7 +351,7 @@ pub fn build(config: &Config) -> Result<String> {
     let settings = [
         windows_pe_pass(config, &target, edition)?,
         offline_servicing_pass(config),
-        specialize_pass(config)?,
+        specialize_pass(config, false)?,
         oobe_pass(config, false),
     ];
 
@@ -500,7 +500,7 @@ fn run_synchronous_commands(commands: &[Command]) -> String {
 /// for `setup\bootstrap.ps1` across the filesystem drives and simply matches nothing on
 /// a clone, exiting zero rather than failing the pass.
 pub fn build_sysprep(config: &Config) -> Result<String> {
-    let settings = [specialize_pass(config)?, oobe_pass(config, true)];
+    let settings = [specialize_pass(config, true)?, oobe_pass(config, true)];
     Ok(format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<unattend {NS}>\n{}\n</unattend>\n",
         settings.join("\n")
@@ -682,7 +682,7 @@ fn offline_servicing_pass(config: &Config) -> String {
     )
 }
 
-fn specialize_pass(config: &Config) -> Result<String> {
+fn specialize_pass(config: &Config, for_sysprep: bool) -> Result<String> {
     let mut components: Vec<String> = Vec::new();
 
     components.push(format!(
@@ -772,9 +772,18 @@ fn specialize_pass(config: &Config) -> Result<String> {
     commands
         .push(Command { path, description: "Oxide guest bootstrap".into() });
 
-    // The clone-side cloud-init run. Only in the sysprep answer file: the
-    // install-time file must not start the service, which `bootstrap` has
-    // deliberately disabled so it cannot contend with Setup's own passes.
+    // The clone-side cloud-init run. Only in the sysprep answer file
+    // (`for_sysprep`), never the install-time one, and gated on `for_sysprep`
+    // alone rather than `config.generalize` -- which is also true for the
+    // install-time file of a golden build. The golden image is built on a
+    // rack instance, which has its own config drive: if this command were in
+    // the install-time file too, it would run right after the bootstrap
+    // command above (which has just written this very script) *during the
+    // golden's own install*, renaming the golden from the builder instance's
+    // metadata and arming `OxideCloudInit` before sysprep has even run --
+    // exactly the mid-sysprep race that registering the task disabled was
+    // supposed to close. `build_sysprep` is only ever called for a golden
+    // build, so `for_sysprep` already implies `config.generalize`.
     //
     // No `Set-Service cloudbase-init -StartupType Automatic` command here.
     // `OxideCloudInit` is the only thing that sets the service to Automatic
@@ -787,7 +796,7 @@ fn specialize_pass(config: &Config) -> Result<String> {
     // still attached to this clone, that command re-runs the golden
     // `bootstrap.ps1`, which re-registers `OxideCloudInit` *disabled*. This
     // command is what re-enables it, so it has to come last.
-    if config.cloud_init.is_some() && config.generalize {
+    if for_sysprep && config.cloud_init.is_some() {
         // A short call to a generated script rather than the prototype's inline
         // cmd.exe incantation, which at ~230 characters was one edit away from
         // the 259-character <Path> cap -- over which Setup rejects the whole
@@ -1467,18 +1476,34 @@ mod tests {
         );
     }
 
-    /// The install-time answer file must not run it: the service is disabled
-    /// for the install on purpose, so it cannot contend with Setup's own
-    /// passes, and there is no config drive attached to the builder's media.
+    /// The install-time answer file must not run it, even for the exact
+    /// default golden-plus-cloud-init configuration: the golden is built on
+    /// a rack instance with its own config drive, so running the clone-side
+    /// runner during the golden's own install would rename the golden from
+    /// the builder instance's metadata and arm `OxideCloudInit` before
+    /// sysprep -- the mid-sysprep race registering the task disabled exists
+    /// to prevent. The sysprep file, built from the same config, still must
+    /// run it.
     #[test]
     fn the_install_answer_file_does_not_run_cloud_init() {
         let config = Config {
+            generalize: true,
+            computer_name: "*".into(),
             cloud_init: Some(crate::settings::CloudInit {
                 manage_account: false,
             }),
             ..base()
         };
-        assert!(!build(&config).unwrap().contains("cloud-init.ps1"));
+        assert!(
+            !build(&config)
+                .unwrap()
+                .contains(crate::cloudinit::CLONE_SCRIPT_PATH)
+        );
+        assert!(
+            build_sysprep(&config)
+                .unwrap()
+                .contains(crate::cloudinit::CLONE_SCRIPT_PATH)
+        );
     }
 
     #[test]
