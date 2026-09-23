@@ -772,6 +772,48 @@ fn specialize_pass(config: &Config) -> Result<String> {
     commands
         .push(Command { path, description: "Oxide guest bootstrap".into() });
 
+    // The clone-side cloud-init run. Only in the sysprep answer file: the
+    // install-time file must not start the service, which `bootstrap` has
+    // deliberately disabled so it cannot contend with Setup's own passes.
+    //
+    // No `Set-Service cloudbase-init -StartupType Automatic` command here.
+    // `OxideCloudInit` is the only thing that sets the service to Automatic
+    // now: setting it here in `specialize` would start the service on this
+    // clone's next boot *before* `OxideCloudInit` has created the account's
+    // profile, so cloud-init's SSH-key plugin would miss it and the
+    // per-instance keys would not land until the clone's second boot.
+    //
+    // Must run after the bootstrap command above: if the installer disk is
+    // still attached to this clone, that command re-runs the golden
+    // `bootstrap.ps1`, which re-registers `OxideCloudInit` *disabled*. This
+    // command is what re-enables it, so it has to come last.
+    if config.cloud_init.is_some() && config.generalize {
+        // A short call to a generated script rather than the prototype's inline
+        // cmd.exe incantation, which at ~230 characters was one edit away from
+        // the 259-character <Path> cap -- over which Setup rejects the whole
+        // answer file with an error naming only the pass. It also lets the exit
+        // code be logged, which the sysprep work taught us to do.
+        //
+        // The script exits 1 on SUCCESS: `WillReboot` is not emitted below (see
+        // `run_synchronous_commands`), so it defaults to `OnRequest`, and that
+        // reads an exit code of 1 as "reboot requested" -- which a run that has
+        // just set the computer name needs. See `cloudinit::clone_runner`.
+        let path = format!(
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File {}",
+            crate::cloudinit::CLONE_SCRIPT_PATH
+        );
+        if path.length_over_limit() {
+            bail!(
+                "cloud-init RunSynchronousCommand path is {} chars, limit is {PATH_LIMIT}",
+                path.len()
+            );
+        }
+        commands.push(Command {
+            path,
+            description: "Run cloud-init once for this clone".into(),
+        });
+    }
+
     components.push(format!(
         "    <component name=\"Microsoft-Windows-Deployment\" {ARCH}>\n\
          \x20     <RunSynchronous>\n{}\n\
@@ -1105,6 +1147,18 @@ mod tests {
                     ..base()
                 },
             ),
+            (
+                "cloud-init-golden",
+                "golden image with cloud-init",
+                Config {
+                    generalize: true,
+                    computer_name: "*".into(),
+                    cloud_init: Some(crate::settings::CloudInit {
+                        manage_account: false,
+                    }),
+                    ..base()
+                },
+            ),
         ]
     }
 
@@ -1372,6 +1426,101 @@ mod tests {
             build_sysprep(&Config { computer_name: "*".into(), ..base() })
                 .unwrap();
         assert!(xml.contains("<ComputerName>*</ComputerName>"));
+    }
+
+    /// The clone-side run: the cloud-init runner fires once, after the bootstrap
+    /// command that could re-register `OxideCloudInit` disabled. There is no
+    /// second command re-enabling the service here: `OxideCloudInit` is now the
+    /// only thing that sets it to Automatic, deliberately (see `specialize_pass`).
+    #[test]
+    fn the_sysprep_file_runs_cloud_init_once() {
+        let config = Config {
+            generalize: true,
+            computer_name: "*".into(),
+            cloud_init: Some(crate::settings::CloudInit {
+                manage_account: false,
+            }),
+            ..base()
+        };
+        let xml = build_sysprep(&config).unwrap();
+        assert!(xml.contains(crate::cloudinit::CLONE_SCRIPT_PATH));
+        assert!(!xml.contains("StartupType Automatic"));
+        // Ordering: the bootstrap command (which can re-disable the task) runs
+        // before the cloud-init runner (which enables it), never the reverse.
+        let bootstrap_order = xml
+            .find("Oxide guest bootstrap")
+            .and_then(|i| xml[..i].rfind("<Order>"))
+            .and_then(|i| xml[i + "<Order>".len()..].split('<').next())
+            .and_then(|s| s.parse::<u32>().ok())
+            .expect("bootstrap command order");
+        let cloud_init_order = xml
+            .find(crate::cloudinit::CLONE_SCRIPT_PATH)
+            .and_then(|i| xml[..i].rfind("<Order>"))
+            .and_then(|i| xml[i + "<Order>".len()..].split('<').next())
+            .and_then(|s| s.parse::<u32>().ok())
+            .expect("cloud-init command order");
+        assert!(
+            cloud_init_order > bootstrap_order,
+            "cloud-init (order {cloud_init_order}) must run after bootstrap \
+             (order {bootstrap_order}), or a re-attached installer disk can \
+             re-disable OxideCloudInit after it has been enabled"
+        );
+    }
+
+    /// The install-time answer file must not run it: the service is disabled
+    /// for the install on purpose, so it cannot contend with Setup's own
+    /// passes, and there is no config drive attached to the builder's media.
+    #[test]
+    fn the_install_answer_file_does_not_run_cloud_init() {
+        let config = Config {
+            cloud_init: Some(crate::settings::CloudInit {
+                manage_account: false,
+            }),
+            ..base()
+        };
+        assert!(!build(&config).unwrap().contains("cloud-init.ps1"));
+    }
+
+    #[test]
+    fn cloud_init_off_leaves_the_sysprep_file_alone() {
+        let with_it = build_sysprep(&Config {
+            generalize: true,
+            computer_name: "*".into(),
+            cloud_init: Some(crate::settings::CloudInit {
+                manage_account: false,
+            }),
+            ..base()
+        })
+        .unwrap();
+        let without = build_sysprep(&Config {
+            generalize: true,
+            computer_name: "*".into(),
+            cloud_init: None,
+            ..base()
+        })
+        .unwrap();
+        assert_ne!(with_it, without);
+        assert!(!without.contains("cloudbase"));
+    }
+
+    /// `*` and `SetHostNamePlugin` both fire, deliberately and in both
+    /// directions: `*` guarantees a valid unique name if the config drive is
+    /// ever missing, and cloud-init overwrites it with the instance's name when
+    /// it is there. The prototype emitted no ComputerName at all, which is the
+    /// more fragile choice.
+    #[test]
+    fn a_golden_image_keeps_the_random_name_token_as_well_as_cloud_init() {
+        let xml = build_sysprep(&Config {
+            generalize: true,
+            computer_name: "*".into(),
+            cloud_init: Some(crate::settings::CloudInit {
+                manage_account: false,
+            }),
+            ..base()
+        })
+        .unwrap();
+        assert!(xml.contains("<ComputerName>*</ComputerName>"));
+        assert!(xml.contains(crate::cloudinit::CLONE_SCRIPT_PATH));
     }
 
     /// Adding a release to `WindowsRelease::ALL` without adding a golden for it leaves

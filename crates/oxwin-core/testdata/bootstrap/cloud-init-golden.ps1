@@ -392,6 +392,11 @@ Set-Content -LiteralPath $unattend -Encoding UTF8 -Value @'
           <Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command &quot;gdr -PSProvider FileSystem|%{$_.Root+&apos;setup\bootstrap.ps1&apos;}|?{Test-Path $_}|select -First 1|%{&amp; $_}&quot;</Path>
           <Description>Oxide guest bootstrap</Description>
         </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\oxide\cloud-init.ps1</Path>
+          <Description>Run cloud-init once for this clone</Description>
+        </RunSynchronousCommand>
       </RunSynchronous>
     </component>
   </settings>
