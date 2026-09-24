@@ -33,6 +33,26 @@ if (Test-Path "$root\drivers") {
   Log "virtio NIC present: $([bool]$nic)"
 }
 
+# The directory the cloud-init runner, its logs and the extras live in.
+# C:\ grants Authenticated Users modify on what is created beneath it, and the
+# clone-side runner in here is run as SYSTEM, so the inherited ACL has to go.
+try {
+  $oxDir = 'C:\oxide'
+  New-Item -ItemType Directory -Force -Path $oxDir | Out-Null
+  $oxAcl = Get-Acl -LiteralPath $oxDir
+  $oxAcl.SetAccessRuleProtection($true, $false)
+  $oxAcl.Access | ForEach-Object { $oxAcl.RemoveAccessRule($_) | Out-Null }
+  foreach ($grant in @(
+      @('NT AUTHORITY\SYSTEM', 'FullControl'),
+      @('BUILTIN\Administrators', 'FullControl'),
+      @('BUILTIN\Users', 'ReadAndExecute'))) {
+    $oxAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $grant[0], $grant[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) | Out-Null
+  }
+  Set-Acl -LiteralPath $oxDir -AclObject $oxAcl
+  Log "${oxDir}: access limited to SYSTEM and Administrators; Users may read"
+} catch { Log "WARNING: could not restrict access to ${oxDir}: $_" }
+
 # Cloud-init (cloudbase-init). Verified on the machine itself before install:
 # the pinned SHA-256 in fetch-payload.sh proves we got the bytes we asked for
 # and says nothing about who signed them. Same fail-closed check as OpenSSH.
@@ -104,10 +124,14 @@ try {
 
 # OxideCloudInit: at every startup, once Setup has finished, bring the
 # cloudbase-init service up -- in keep-my-account mode making the account's
-# profile first. Registered in both account modes: a clone's specialize pass
-# can set the service to Automatic, but the SCM has already started automatic
-# services by then, so without this task the service would first run on the
-# clone's second boot.
+# profile first. This task is the only thing that enables and starts the
+# service, in both account modes. The install leaves it Disabled, so it can
+# neither contend with Setup's own passes nor run on a golden image before
+# it is generalized, and nothing else puts it back: the clone-side runner
+# calls cloudbase-init.exe directly and leaves the service alone. Setting it
+# to Automatic in the specialize pass would be too late anyway -- the SCM has
+# started automatic services by then -- and would start it on the next boot
+# before this task has made the profile the SSH-key plugin needs.
 try {
   $ciDir = "$env:SystemRoot\Setup\Scripts"
   $ciTask = "$ciDir\oxide-cloud-init.ps1"

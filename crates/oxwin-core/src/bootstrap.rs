@@ -31,6 +31,14 @@
 use crate::unattend::Config;
 use anyhow::Result;
 
+/// The generalize marker, under `$env:SystemDrive`. The golden image's
+/// `OxideGeneralize` writes it just before sysprep, so it is captured into the
+/// image and present only on a clone; `OxideCloudInit` tests it to tell a clone
+/// from the golden. Named once because it is read in two modules: renaming it
+/// in one would leave every clone logging "not generalized yet" forever with
+/// the build and the install both looking fine -- the `VOLUME_LABEL` shape.
+pub const GENERALIZED_MARKER: &str = "oxide-generalized.txt";
+
 /// Append a block of literal lines. Split on LF so a multi-line literal in the source
 /// reads the way it will in the guest; the CRLF join happens once, at the end.
 fn push(lines: &mut Vec<String>, block: &str) {
@@ -339,9 +347,14 @@ function GLog($m) {
 }
 # Written before sysprep runs, so it is captured into the image. A clone therefore
 # finds it and does nothing. Without this every clone would generalize itself and
-# shut down on first boot, which is a fleet that turns itself off.
-$marker = "$env:SystemDrive\oxide-generalized.txt"
-if (Test-Path $marker) {
+# shut down on first boot, which is a fleet that turns itself off."#,
+        );
+        lines.push(format!(
+            "$marker = \"$env:SystemDrive\\{GENERALIZED_MARKER}\""
+        ));
+        push(
+            &mut lines,
+            r#"if (Test-Path $marker) {
   GLog "already generalized; this is a clone, nothing to do"
   Unregister-ScheduledTask -TaskName 'OxideGeneralize' -Confirm:$false -ErrorAction SilentlyContinue
   exit 0

@@ -21,6 +21,7 @@
 //!
 //! Both are pinned byte for byte by goldens in `testdata/cloudbase/`.
 
+use crate::bootstrap::GENERALIZED_MARKER;
 use crate::unattend::Config;
 
 /// Where the MSI lands on the installer volume.
@@ -33,6 +34,11 @@ pub const MSI_MEDIA_SUBPATH: &str = r"cloudbase\CloudbaseInitSetup_x64.msi";
 pub const SERVICE_CONF_VOLUME_PATH: &str = "/cloudbase/cloudbase-init.conf";
 pub const UNATTEND_CONF_VOLUME_PATH: &str =
     "/cloudbase/cloudbase-init-unattend.conf";
+
+/// Everything this tool leaves in a guest: the logs, the clone-side runner and
+/// the extras. Its ACL is set by [`install_block`], because it holds a script
+/// SYSTEM runs.
+pub const OXIDE_DIR: &str = r"C:\oxide";
 
 /// Where both runs log. Created by the bootstrap, because nothing establishes
 /// that cloudbase-init creates a missing `log_dir` itself.
@@ -293,6 +299,8 @@ pub fn install_block(config: &Config) -> String {
     let unattend_conf = media_subpath(UNATTEND_CONF_VOLUME_PATH);
 
     let mut s = String::new();
+    s.push_str(&oxide_dir_acl());
+    s.push('\n');
     s.push_str(
         r#"# Cloud-init (cloudbase-init). Verified on the machine itself before install:
 # the pinned SHA-256 in fetch-payload.sh proves we got the bytes we asked for
@@ -392,6 +400,45 @@ try {
     s
 }
 
+/// Create [`OXIDE_DIR`] and replace its ACL. Left alone it inherits `C:\`'s,
+/// which lets Authenticated Users modify anything created beneath it -- and a
+/// golden image's clone-side runner lives there and is run as SYSTEM by every
+/// clone's specialize pass: a user-writable script SYSTEM executes. So:
+/// protected (nothing inherited from `C:\`), SYSTEM and Administrators full
+/// control, Users read and execute, all three inherited by what is created
+/// inside. The same shape the bootstrap gives `administrators_authorized_keys`.
+/// First, so everything below is created under the new ACL; its own `try`, so
+/// a failure is logged and the install goes on.
+fn oxide_dir_acl() -> String {
+    let mut s = String::new();
+    s.push_str(
+        r#"# The directory the cloud-init runner, its logs and the extras live in.
+# C:\ grants Authenticated Users modify on what is created beneath it, and the
+# clone-side runner in here is run as SYSTEM, so the inherited ACL has to go.
+try {
+"#,
+    );
+    s.push_str(&format!("  $oxDir = '{OXIDE_DIR}'\n"));
+    s.push_str(
+        r#"  New-Item -ItemType Directory -Force -Path $oxDir | Out-Null
+  $oxAcl = Get-Acl -LiteralPath $oxDir
+  $oxAcl.SetAccessRuleProtection($true, $false)
+  $oxAcl.Access | ForEach-Object { $oxAcl.RemoveAccessRule($_) | Out-Null }
+  foreach ($grant in @(
+      @('NT AUTHORITY\SYSTEM', 'FullControl'),
+      @('BUILTIN\Administrators', 'FullControl'),
+      @('BUILTIN\Users', 'ReadAndExecute'))) {
+    $oxAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $grant[0], $grant[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) | Out-Null
+  }
+  Set-Acl -LiteralPath $oxDir -AclObject $oxAcl
+  Log "${oxDir}: access limited to SYSTEM and Administrators; Users may read"
+} catch { Log "WARNING: could not restrict access to ${oxDir}: $_" }
+"#,
+    );
+    s
+}
+
 /// The clone-side runner at [`CLONE_SCRIPT_PATH`], and the bootstrap lines that
 /// write it. Only a golden image has one: its only caller is the sysprep
 /// answer file's `specialize` pass, and a named machine has no such file.
@@ -481,10 +528,14 @@ fn task_registration(config: &Config) -> String {
     s.push_str(&format!(
         "# {TASK_NAME}: at every startup, once Setup has finished, bring the\n\
          # cloudbase-init service up -- in keep-my-account mode making the account's\n\
-         # profile first. Registered in both account modes: a clone's specialize pass\n\
-         # can set the service to Automatic, but the SCM has already started automatic\n\
-         # services by then, so without this task the service would first run on the\n\
-         # clone's second boot.\n"
+         # profile first. This task is the only thing that enables and starts the\n\
+         # service, in both account modes. The install leaves it Disabled, so it can\n\
+         # neither contend with Setup's own passes nor run on a golden image before\n\
+         # it is generalized, and nothing else puts it back: the clone-side runner\n\
+         # calls cloudbase-init.exe directly and leaves the service alone. Setting it\n\
+         # to Automatic in the specialize pass would be too late anyway -- the SCM has\n\
+         # started automatic services by then -- and would start it on the next boot\n\
+         # before this task has made the profile the SSH-key plugin needs.\n"
     ));
     s.push_str(
         r#"try {
@@ -511,16 +562,15 @@ TLog "starting"
 "#,
     );
     if golden {
-        s.push_str(
-            r#"# A golden image: before it is generalized there is nothing to do, and it
-# shuts down straight after. oxide-generalized.txt is written just before the
-# generalize and captured into the image, so it is there only on a clone.
-if (-not (Test-Path "$env:SystemDrive\oxide-generalized.txt")) {
-  TLog "not generalized yet; nothing to do until this image is cloned"
-  exit 0
-}
-"#,
-        );
+        s.push_str(&format!(
+            "# A golden image: before it is generalized there is nothing to do, and it\n\
+             # shuts down straight after. {GENERALIZED_MARKER} is written just before the\n\
+             # generalize and captured into the image, so it is there only on a clone.\n\
+             if (-not (Test-Path \"$env:SystemDrive\\{GENERALIZED_MARKER}\")) {{\n\
+             \x20 TLog \"not generalized yet; nothing to do until this image is cloned\"\n\
+             \x20 exit 0\n\
+             }}\n"
+        ));
     }
     s.push_str(
         r#"# The task fires at every startup, including boots where Setup is still
@@ -577,7 +627,7 @@ exit 0
     if golden {
         s.push_str(&format!(
             "  # Disabled on a golden image. OxideGeneralize is a startup task too and\n\
-             \x20 # starts alongside this one; it writes oxide-generalized.txt and then runs\n\
+             \x20 # starts alongside this one; it writes {GENERALIZED_MARKER} and then runs\n\
              \x20 # sysprep, so the marker check alone would let this task make a profile\n\
              \x20 # and start the service on the golden image mid-sysprep. The clone-side\n\
              \x20 # runner, which only a clone's specialize pass runs, enables it.\n\
@@ -699,6 +749,10 @@ const SSHD_FIX_BLOCK: &str = r#"  # Stock sshd_config ends with `Match Group adm
         Set-Content -LiteralPath $sshdConf -Value $new -Encoding ascii
         Log "sshd_config: AuthorizedKeysFile now names both key files"
         if (Get-Service -Name sshd -ErrorAction SilentlyContinue) { Restart-Service sshd -ErrorAction SilentlyContinue }
+      } elseif ($text -and [regex]::IsMatch($text, '(?m)^[ \t]*' + [regex]::Escape($want) + '[ \t]*(?=\r?$)')) {
+        # A second run: a clone's specialize pass re-runs this script when the
+        # installer is left attached, and the first run already rewrote it.
+        Log "sshd_config: AuthorizedKeysFile already names both key files"
       } else {
         Log "WARNING: sshd_config has no administrators_authorized_keys directive to rewrite; per-instance keys may be ignored"
       }
@@ -1182,14 +1236,52 @@ mod tests {
         assert!(block.contains(
             ".ssh/authorized_keys __PROGRAMDATA__/ssh/administrators_authorized_keys"
         ));
-        // The block itself stays: it is where the baked keys live.
-        assert!(!block.contains("Match Group administrators\n#"));
+        // Rewritten in place, never commented out or deleted: the Match block
+        // is where the baked keys live. The prototype commented it out, which
+        // broke them. The only write is the regex replace, whose replacement
+        // is the directive naming both files -- no `#` goes into the file.
+        assert_eq!(block.matches("Set-Content").count(), 1, "{block}");
+        assert!(block.contains(
+            "Set-Content -LiteralPath $sshdConf -Value $new -Encoding ascii"
+        ));
+        assert!(block.contains(&format!(
+            "$new = [regex]::Replace($text, '{SSHD_KEYS_PATTERN}', $want)"
+        )));
+        let want = "$want = 'AuthorizedKeysFile .ssh/authorized_keys \
+                    __PROGRAMDATA__/ssh/administrators_authorized_keys'";
+        assert!(block.contains(want), "{block}");
+        for gone in ["-replace", "Remove-Item", "'#", "\"#"] {
+            assert!(!block.contains(gone), "{gone} in {block}");
+        }
         // And a missing file is a logged warning, never a throw: the script
         // runs under $ErrorActionPreference = 'Stop'.
         assert!(block.contains("Test-Path"));
         // The pattern is what is emitted, whole.
         assert!(block.contains(&format!("'{SSHD_KEYS_PATTERN}'")), "{block}");
         assert!(!block.contains("@PATTERN@"));
+    }
+
+    /// With the installer left attached, a clone's specialize pass re-runs
+    /// the bootstrap, and the first run has already rewritten the directive,
+    /// so the pattern no longer matches. That is success, not the "no
+    /// directive" warning -- which is the tell of the CRLF bug and must not
+    /// be logged on a guest that is fine.
+    #[test]
+    fn a_second_run_of_the_sshd_rewrite_is_not_a_warning() {
+        let block = sshd_fix_block();
+        let changed = block.find("if ($new -ne $text) {").unwrap();
+        let already = block
+            .find("} elseif ($text -and [regex]::IsMatch($text, '(?m)^[ \\t]*' + [regex]::Escape($want) + '[ \\t]*(?=\\r?$)')) {")
+            .expect("the already-rewritten branch");
+        let logged = block
+            .find("Log \"sshd_config: AuthorizedKeysFile already names both key files\"")
+            .unwrap();
+        let warning = block
+            .find("WARNING: sshd_config has no administrators_authorized_keys")
+            .unwrap();
+        assert!(changed < already && already < logged && logged < warning);
+        // The warning is the else of that branch, not a separate check.
+        assert!(block[logged..warning].contains("} else {"));
     }
 
     /// In .NET, `(?m)$` matches before `\n` only, never before `\r`, and the
@@ -1398,6 +1490,89 @@ mod tests {
         assert!(!named.contains(CLONE_SCRIPT_PATH));
         assert!(!named.contains("oxide-generalized.txt"));
         assert!(!named.contains("sysprep"));
+    }
+
+    /// The marker `OxideGeneralize` writes is the marker `OxideCloudInit`
+    /// tests. Each script is pulled out of the whole bootstrap and checked for
+    /// the one path, so a rename in either module -- or a hand-typed spelling
+    /// creeping back into one -- fails here rather than leaving every clone
+    /// "not generalized yet" forever.
+    #[test]
+    fn both_tasks_name_the_same_generalize_marker() {
+        let script = crate::bootstrap::build(&base())
+            .expect("golden bootstrap")
+            .replace("\r\n", "\n");
+        let path = format!("\"$env:SystemDrive\\{GENERALIZED_MARKER}\"");
+        let generalize = here_string(&script, "$gen");
+        assert!(
+            generalize.contains(&format!("$marker = {path}\n")),
+            "{generalize}"
+        );
+        assert!(generalize.contains("Set-Content -LiteralPath $marker"));
+        let task = here_string(&script, "$ciTask");
+        assert!(
+            task.contains(&format!("if (-not (Test-Path {path})) {{\n")),
+            "{task}"
+        );
+        // Nothing spells it any other way.
+        let spelled = script.matches("oxide-generalized").count();
+        let named = script.matches(GENERALIZED_MARKER).count();
+        assert_eq!(spelled, named, "{script}");
+    }
+
+    /// `C:\oxide` would inherit `C:\`'s ACL, which lets Authenticated Users
+    /// modify what is created beneath it, and the clone-side runner in it is
+    /// run as SYSTEM. So the block cuts inheritance, grants exactly three
+    /// principals, and does it before anything is written inside -- guarded,
+    /// because 'Stop' is in force.
+    #[test]
+    fn the_oxide_directory_is_not_user_writable() {
+        for path in [LOG_DIR, CLONE_SCRIPT_PATH] {
+            assert!(path.starts_with(&format!("{OXIDE_DIR}\\")), "{path}");
+        }
+        for config in [
+            base(),
+            Config {
+                generalize: false,
+                computer_name: "win-server-01".into(),
+                ..base()
+            },
+        ] {
+            let script = install_block(&config);
+            let acl = oxide_dir_acl();
+            assert!(script.starts_with(&acl), "{script}");
+            assert!(acl.contains(&format!("$oxDir = '{OXIDE_DIR}'")));
+            assert!(
+                acl.contains("$oxAcl.SetAccessRuleProtection($true, $false)")
+            );
+            assert!(acl.contains(
+                "$oxAcl.Access | ForEach-Object { $oxAcl.RemoveAccessRule($_)"
+            ));
+            for grant in [
+                r"@('NT AUTHORITY\SYSTEM', 'FullControl')",
+                r"@('BUILTIN\Administrators', 'FullControl')",
+                r"@('BUILTIN\Users', 'ReadAndExecute')",
+            ] {
+                assert!(acl.contains(grant), "{grant}");
+            }
+            assert_eq!(acl.matches("AddAccessRule").count(), 1);
+            assert_eq!(acl.matches("@('").count(), 3, "exactly three grants");
+            assert!(acl.contains("'ContainerInherit,ObjectInherit', 'None'"));
+            assert!(
+                acl.contains("Set-Acl -LiteralPath $oxDir -AclObject $oxAcl")
+            );
+            assert!(acl.starts_with("# ") && acl.contains("\ntry {\n"));
+            assert!(acl.ends_with(
+                "} catch { Log \"WARNING: could not restrict access to \
+                 ${oxDir}: $_\" }\n"
+            ));
+            // Before the runner or the log directory is created inside it.
+            let set = script.find("Set-Acl -LiteralPath $oxDir").unwrap();
+            assert!(set < script.find(LOG_DIR).unwrap());
+            if config.generalize {
+                assert!(set < script.find(CLONE_SCRIPT_PATH).unwrap());
+            }
+        }
     }
 
     /// Decision 3: the task never removes itself. Generalize gives every clone
