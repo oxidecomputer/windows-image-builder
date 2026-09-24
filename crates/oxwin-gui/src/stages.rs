@@ -557,14 +557,22 @@ impl App {
                             "Let cloud-init manage the account",
                         );
                         if self.draft.cloud_init_manage {
-                            hint(
-                                ui,
-                                "Cloud-init will replace the password you set \
-                                 above with a per-instance random one the \
-                                 first time it runs on a clone. The password \
-                                 works from install until then, over the \
-                                 serial console and RDP.",
-                            );
+                            // A warning, in the warning color, not a dim
+                            // hint: this mode leaves the serial console with
+                            // no usable login. The same text as the settings
+                            // warning, which is why the list below skips it.
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new("!").color(theme::WARNING),
+                                );
+                                ui.label(
+                                    RichText::new(
+                                        oxwin_core::settings::MANAGE_ACCOUNT_WARNING,
+                                    )
+                                    .color(theme::WARNING)
+                                    .size(12.5),
+                                );
+                            });
                         }
                     });
                 }
@@ -780,7 +788,15 @@ impl App {
                 // choices around them. Blockers do not: they belong beside the button
                 // they are blocking, where they cannot be scrolled out of sight.
                 let settings = self.draft.to_settings();
-                for p in settings.problems().iter().filter(|p| !p.blocking) {
+                // Less the Mode B warning, shown already beside the control it
+                // is about; the same paragraph twice on one screen reads as two.
+                // Matched on the text, so no other cloud-init warning is lost.
+                let shown = oxwin_core::settings::MANAGE_ACCOUNT_WARNING;
+                for p in settings
+                    .problems()
+                    .iter()
+                    .filter(|p| !p.blocking && p.message != shown)
+                {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("!").color(theme::WARNING));
                         ui.label(RichText::new(&p.message).color(theme::WARNING).size(12.5));

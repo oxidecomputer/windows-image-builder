@@ -29,7 +29,7 @@ use oxwin_core::partition::{Format, Kind, Partition};
 use oxwin_core::progress::{Event, Reporter};
 use oxwin_core::settings::{
     CloudInit, Extra, WindowsRelease, cloud_init_username_problem,
-    extra_problems,
+    extra_problems, manage_account_problem,
 };
 use oxwin_core::unattend::Config;
 use std::path::PathBuf;
@@ -149,7 +149,9 @@ usage: oxwin doctor
                          they are, and cloud-init only adds the instance's
                          keys (default). manage: cloud-init owns the account,
                          which replaces the password with a per-instance
-                         random one the first time it runs on a clone
+                         random one nobody knows the first time it runs on
+                         a clone: from then on the serial console (SAC) and
+                         RDP have no usable login. The build warns
   --extra=<path>         repeatable; a file or directory copied onto the media
                          and into C:\\oxide\\extras in the guest. Nothing runs
                          it -- use cloud-init user-data for that
@@ -622,13 +624,25 @@ fn assets_from_args(args: &[String]) -> Result<oxwin_core::Assets> {
     Ok(assets)
 }
 
-/// `Settings::problems`' username warning, for the build paths that make a
-/// `Config` from flags and never construct a `Settings`.
-fn warn_about_the_username(config: &Config) {
-    if let Some(problem) =
-        cloud_init_username_problem(&config.username, config.cloud_init)
-    {
-        eprintln!("warn  {}", problem.message);
+/// `Settings::problems`' cloud-init warnings -- the username one, and what
+/// `--cloud-init-account=manage` costs -- for the build paths that make a
+/// `Config` from flags and never construct a `Settings`. The manage warning
+/// was once only in `--help`, which nobody reads at build time, and the mode
+/// leaves the serial console with no usable login.
+fn cloud_init_warnings(
+    username: &str,
+    cloud_init: Option<CloudInit>,
+) -> Vec<String> {
+    cloud_init_username_problem(username, cloud_init)
+        .into_iter()
+        .chain(manage_account_problem(cloud_init))
+        .map(|p| p.message)
+        .collect()
+}
+
+fn warn_about_cloud_init(config: &Config) {
+    for message in cloud_init_warnings(&config.username, config.cloud_init) {
+        eprintln!("warn  {message}");
     }
 }
 
@@ -660,7 +674,7 @@ fn build(args: &[String]) -> Result<()> {
         bail!("{}", problem.message);
     }
     let config = config_from_args(args, &extras)?;
-    warn_about_the_username(&config);
+    warn_about_cloud_init(&config);
     let assets = assets_from_args(args)?;
 
     let unattend = match args.iter().find_map(|a| a.strip_prefix("--unattend="))
@@ -1201,7 +1215,7 @@ fn build_for_golden(
     let mut config = config_from_args(args, &extras)?;
     config.generalize = true;
     config.computer_name = "*".into();
-    warn_about_the_username(&config);
+    warn_about_cloud_init(&config);
 
     let media = if source.is_dir() {
         Media::Directory(source.to_path_buf())
@@ -1761,6 +1775,23 @@ mod tests {
                 .unwrap(),
             Some(CloudInit { manage_account: false })
         );
+    }
+
+    /// `--cloud-init-account=manage` leaves the serial console with no usable
+    /// login, so a build says so, in the settings' own words; `keep` and no
+    /// cloud-init say nothing.
+    #[test]
+    fn managing_the_account_warns_at_build_time() {
+        let manage = Some(CloudInit { manage_account: true });
+        assert_eq!(
+            cloud_init_warnings("oxide", manage),
+            [oxwin_core::settings::MANAGE_ACCOUNT_WARNING]
+        );
+        for quiet in [None, Some(CloudInit { manage_account: false })] {
+            assert!(cloud_init_warnings("oxide", quiet).is_empty());
+        }
+        // The username warning still comes through beside it.
+        assert_eq!(cloud_init_warnings("jos\u{e9}", manage).len(), 2);
     }
 
     /// A typo must not silently pick a mode. Choosing `keep` for

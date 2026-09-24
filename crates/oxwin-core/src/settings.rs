@@ -514,18 +514,7 @@ impl Settings {
             self.cloud_init,
         ));
 
-        if let Some(cloud_init) = &self.cloud_init {
-            if cloud_init.manage_account {
-                v.push(Problem::warn(
-                    "cloud_init",
-                    "Cloud-init will manage this account, which replaces the \
-                     password you typed with a per-instance random one the \
-                     first time it runs on a clone. The typed password works \
-                     from install until then. Choose \"just add keys\" to keep \
-                     it.",
-                ));
-            }
-        }
+        v.extend(manage_account_problem(self.cloud_init));
 
         v
     }
@@ -586,6 +575,33 @@ fn is_reserved_username(name: &str) -> bool {
         "public",
     ];
     RESERVED.contains(&name.trim().to_ascii_lowercase().as_str())
+}
+
+/// What letting cloud-init manage the account costs, in the one spelling the
+/// settings warning, the GUI and the CLI all show.
+///
+/// `CreateUserPlugin` sets a random password on its first run, and nothing
+/// records it. SAC and RDP authenticate with a password and know nothing
+/// about SSH keys, so from then on the serial console -- the one way into a
+/// guest whose network did not come up -- has no usable login. Leads with
+/// that consequence, because the mechanism is not what the user needs to
+/// hear first.
+pub const MANAGE_ACCOUNT_WARNING: &str = "Cloud-init will manage this \
+    account. After the first boot of each clone (or of this machine, if it \
+    is not a golden image), the password you set no longer works and nobody \
+    knows the new one: the serial console (SAC) and RDP have no usable \
+    login, and SSH keys are the only way in. To keep the password, keep your \
+    account and let cloud-init only add keys.";
+
+/// The Mode B warning, or nothing. A warning, never a block: the mode works,
+/// and the user may want exactly this. Shared by `Settings::problems` and
+/// the CLI's build paths, which never construct a `Settings`.
+pub fn manage_account_problem(
+    cloud_init: Option<CloudInit>,
+) -> Option<Problem> {
+    cloud_init
+        .filter(|c| c.manage_account)
+        .map(|_| Problem::warn("cloud_init", MANAGE_ACCOUNT_WARNING))
 }
 
 /// A username cloud-init cannot be relied on to handle. Shared by
@@ -1063,13 +1079,30 @@ mod tests {
             ..base()
         };
         assert!(s.is_buildable(), "{:?}", s.problems());
-        assert!(
-            s.problems().iter().any(|p| p.field == "cloud_init"
-                && !p.blocking
-                && p.message.contains("password")),
-            "{:?}",
-            s.problems()
-        );
+        let found: Vec<_> = s
+            .problems()
+            .into_iter()
+            .filter(|p| p.field == "cloud_init")
+            .collect();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(!found[0].blocking);
+        // It says what it costs, not only what it does: the password stops
+        // working and the serial console is left with no login.
+        let m = &found[0].message;
+        assert!(m.contains("the password you set no longer works"), "{m}");
+        assert!(m.contains("serial console (SAC)"), "{m}");
+        assert!(m.contains("SSH keys are the only way in"), "{m}");
+        assert_eq!(m, MANAGE_ACCOUNT_WARNING);
+
+        // And keep-my-account mode, or no cloud-init, says nothing of it.
+        for quiet in [None, Some(CloudInit { manage_account: false })] {
+            let s = Settings { cloud_init: quiet, ..base() };
+            assert!(
+                !s.problems().iter().any(|p| p.field == "cloud_init"),
+                "{:?}",
+                s.problems()
+            );
+        }
     }
 
     /// Keep-my-account mode finds the account by name from a script written
