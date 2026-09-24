@@ -267,7 +267,18 @@ pub fn service_conf(config: &Config) -> String {
         "groups=Administrators".into(),
         "inject_user_password=false".into(),
         // true, unlike the one-shot: SetHostNamePlugin (golden images) needs
-        // to be able to reboot after the rename. See `is_golden`.
+        // to be able to reboot after the rename. See `is_golden`. This now
+        // governs the whole plugin list below, so it is worth recording that
+        // none of the others can trigger it (1.1.8 checked line by line):
+        // CreateUserPlugin returns reboot_required=False unconditionally
+        // (createuser.py:92); so do SetUserSSHPublicKeysPlugin
+        // (sshpublickeys.py:35,58), UserDataPlugin (userdata.py:45,48,58) and
+        // RDPSettingsPlugin (rdp.py:30,47). ExtendVolumesPlugin returns
+        // PLUGIN_EXECUTE_ON_NEXT_BOOT with reboot_required=False
+        // (extendvolumes.py:32): by design it re-runs every boot rather than
+        // rebooting, and if it raises instead (seen in QEMU, a COMError),
+        // `_exec_plugin` swallows the exception and records no status
+        // (init.py:71-75), so it simply retries on the next boot too.
         "allow_reboot=true".into(),
         "stop_service_on_exit=false".into(),
         "check_latest_version=false".into(),
