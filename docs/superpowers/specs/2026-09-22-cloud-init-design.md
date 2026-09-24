@@ -235,18 +235,32 @@ and a successful cloud-init run that changed the hostname needs exactly that.
 Success therefore maps to 1 and failure to 2, which is the opposite of every
 other exit code in this codebase and will look like a bug to the next reader.
 
-### Hostname: `*` and `SetHostNamePlugin` both fire
+### Hostname: the service renames, not the one-shot
 
-Our sysprep answer file keeps `<ComputerName>*</ComputerName>` in `specialize`,
-and cloud-init sets the name from metadata in the same pass. This is
-belt-and-braces and is load-bearing in both directions: `*` guarantees a valid
-unique name if the config drive is ever missing, and cloud-init overwrites it
-with the instance's name when it is there. The prototype emitted no
-`ComputerName` at all, which is the more fragile choice. A comment and a test
-say so, rather than leaving it to be rediscovered.
+Our sysprep answer file keeps `<ComputerName>*</ComputerName>` in
+`specialize`, and cloud-init sets the name from metadata: `*` guarantees a
+valid unique name if the config drive is ever missing, and cloud-init
+overwrites it with the instance's name when it is there. The prototype
+emitted no `ComputerName` at all, which is the more fragile choice.
 
-For a **named** deployment `SetHostNamePlugin` is omitted entirely: the user
-typed a name and it is not cloud-init's to overwrite.
+The rename runs from the cloudbase-init **service**, not the `specialize`
+one-shot. It was tried the other way first, on the theory that both firing in
+the same pass is belt-and-braces; a fully hands-off QEMU run showed otherwise.
+The one-shot's `cloudbase-init-unattend.log` logged `Executing plugin
+'SetHostNamePlugin'` then `Setting hostname: clone-01`, and the clone still
+came up as `OXIDEOX-5CKK0OE` -- Setup applies the answer file's
+`<ComputerName>*</ComputerName>` *after* the specialize pass's
+`RunSynchronousCommand`s, so it silently overwrote cloud-init's rename every
+time. `unattend_conf` therefore never includes `SetHostNamePlugin`; only
+`service_conf` does, for a golden image, with `allow_reboot=true` so the
+plugin's `reboot_required` (`cloudbaseinit/plugins/common/sethostname.py`)
+reboots the guest once after the rename. That cannot loop:
+`InitManager._exec_plugin` records each plugin's status per instance-id in the
+registry before returning (`cloudbaseinit/init.py`), and a plugin already
+marked done is skipped on the next boot rather than re-run.
+
+For a **named** deployment `SetHostNamePlugin` is omitted entirely, from both
+files: the user typed a name and it is not cloud-init's to overwrite.
 
 ## The conf files
 
@@ -269,7 +283,7 @@ debug=true
 log_dir=C:\oxide\log
 log_file=cloudbase-init-unattend.log
 metadata_services=cloudbaseinit.metadata.services.nocloudservice.NoCloudConfigDriveService
-plugins=…NTPClientPlugin, …SetHostNamePlugin, …ExtendVolumesPlugin, …RDPSettingsPlugin
+plugins=…NTPClientPlugin, …ExtendVolumesPlugin, …RDPSettingsPlugin
 [config_drive]
 types=vfat
 location=hdd
@@ -278,16 +292,17 @@ cdrom=false
 vfat=false
 ```
 
-`SetHostNamePlugin` only for a golden image; `RDPSettingsPlugin` only when RDP
-is enabled.
+Never `SetHostNamePlugin` -- see "Hostname: the service renames, not the
+one-shot" above. `RDPSettingsPlugin` only when RDP is enabled.
 
 `cloudbase-init.conf` — the service, every boot: `username` and
-`groups=Administrators` from the credentials, the same single metadata service
-and config-drive block, `log_file=cloudbase-init.log`, and plugins
-`CreateUser` (Mode B only), `SetHostName` (golden only),
-`SetUserSSHPublicKeys`, `ExtendVolumes`, `UserData`, with `user_data_plugins`
-set to the cloud-config and shell-script plugins so both `#cloud-config` YAML
-and `<powershell>`/`<script>` blobs work.
+`groups=Administrators` from the credentials, `allow_reboot=true` (unlike the
+one-shot, so a rename can reboot), the same single metadata service and
+config-drive block, `log_file=cloudbase-init.log`, and plugins `CreateUser`
+(Mode B only), `SetHostName` (golden only, and only here), `SetUserSSHPublicKeys`,
+`ExtendVolumes`, `UserData`, with `user_data_plugins` set to the cloud-config
+and shell-script plugins so both `#cloud-config` YAML and
+`<powershell>`/`<script>` blobs work.
 
 ### Four deliberate departures from the prototype
 

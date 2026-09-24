@@ -106,10 +106,26 @@ const METADATA_SERVICE: &str =
     "cloudbaseinit.metadata.services.nocloudservice.NoCloudConfigDriveService";
 
 /// A golden image keeps `<ComputerName>*</ComputerName>` *and* runs
-/// `SetHostNamePlugin`, deliberately: `*` guarantees a valid unique name if the
-/// config drive is ever missing, and the plugin overwrites it with the
-/// instance's name when it is there. A named machine gets neither -- the user
-/// typed that name.
+/// `SetHostNamePlugin` from the cloudbase-init **service**, deliberately: `*`
+/// guarantees a valid unique name if the config drive is ever missing, and the
+/// plugin overwrites it with the instance's name when it is there. A named
+/// machine gets neither -- the user typed that name.
+///
+/// Task 13: the plugin used to run from the `specialize` one-shot instead, but
+/// Setup applies `<ComputerName>*</ComputerName>` *after* that pass's
+/// `RunSynchronousCommand`s, so it silently overwrote cloud-init's rename
+/// (`cloudbase-init-unattend.log` showed the rename; the clone still came up
+/// as `OXIDEOX-...`). See
+/// `docs/superpowers/specs/2026-09-22-cloud-init-design.md`, "Hostname: the
+/// service renames, not the one-shot". The plugin now runs only from
+/// `service_conf`, with `allow_reboot=true` so its `reboot_required`
+/// (`cloudbaseinit/plugins/common/sethostname.py:33-36`) reboots the guest
+/// once. That cannot loop: each plugin's status is recorded per instance-id in
+/// the registry before `execute` returns (`cloudbaseinit/init.py:44-50,58-70`,
+/// via `WindowsUtils.set_config_value`, `osutils/windows.py:1078-1087`), and a
+/// plugin already marked `PLUGIN_EXECUTION_DONE` is skipped on the next boot
+/// (`init.py:60-62`) -- `SetHostNamePlugin` always returns that status
+/// regardless of the reboot (`sethostname.py:36`).
 fn is_golden(config: &Config) -> bool {
     config.computer_name == "*"
 }
@@ -173,12 +189,11 @@ pub fn unattend_conf(config: &Config) -> String {
     // and `cloudbaseinit/plugins/common/ntpclient.py`'s `NTPClientPlugin` is
     // the base class the Windows one subclasses, not something the plugin
     // factory is ever pointed at directly.
+    // Never SetHostNamePlugin here -- see `is_golden`. Setup applies the
+    // sysprep answer file's `<ComputerName>*</ComputerName>` after this pass's
+    // RunSynchronousCommands, so a rename made here is silently overwritten.
     let mut plugins: Vec<&str> =
         vec!["cloudbaseinit.plugins.windows.ntpclient.NTPClientPlugin"];
-    if is_golden(config) {
-        plugins
-            .push("cloudbaseinit.plugins.common.sethostname.SetHostNamePlugin");
-    }
     plugins.push(
         "cloudbaseinit.plugins.windows.extendvolumes.ExtendVolumesPlugin",
     );
@@ -220,6 +235,11 @@ pub fn unattend_conf(config: &Config) -> String {
 
 /// The service, every boot.
 pub fn service_conf(config: &Config) -> String {
+    // Order: CreateUser first when present -- SetHostNamePlugin does not need
+    // the account, and there is no reason to delay account creation behind a
+    // reboot. SetHostName next, ahead of the key/user-data plugins that a
+    // rename should not block: see `is_golden` for why the rename lives here
+    // and why the reboot it triggers cannot loop.
     let mut plugins: Vec<&str> = Vec::new();
     if manages_account(config) {
         // Mode B. Creates the Windows profile the key plugin needs -- and
@@ -246,7 +266,9 @@ pub fn service_conf(config: &Config) -> String {
         format!("username={}", config.username),
         "groups=Administrators".into(),
         "inject_user_password=false".into(),
-        "allow_reboot=false".into(),
+        // true, unlike the one-shot: SetHostNamePlugin (golden images) needs
+        // to be able to reboot after the rename. See `is_golden`.
+        "allow_reboot=true".into(),
         "stop_service_on_exit=false".into(),
         "check_latest_version=false".into(),
         "netbios_host_name_compatibility=false".into(),
@@ -852,6 +874,10 @@ mod tests {
 
     /// A named deployment is a machine whose name the user typed. Cloud-init has
     /// no business overwriting it, so the plugin is absent from both files.
+    /// A golden image gets it too, but only in the service conf: Task 13 found
+    /// Setup applies the sysprep answer file's `<ComputerName>*</ComputerName>`
+    /// after the specialize one-shot runs, so a rename made there is
+    /// overwritten. See `is_golden`.
     #[test]
     fn a_named_deployment_gets_no_hostname_plugin() {
         let named = Config {
@@ -862,11 +888,63 @@ mod tests {
         for conf in [service_conf(&named), unattend_conf(&named)] {
             assert!(!conf.contains("SetHostNamePlugin"), "{conf}");
         }
-        // And a golden image does get it: `*` covers a missing config drive,
-        // the plugin overwrites it with the instance's name when there is one.
-        for conf in [service_conf(&base()), unattend_conf(&base())] {
-            assert!(conf.contains("SetHostNamePlugin"), "{conf}");
+        // The one-shot never gets it, golden or named.
+        assert!(!unattend_conf(&base()).contains("SetHostNamePlugin"));
+        // Only the golden image's service conf does.
+        assert!(service_conf(&base()).contains("SetHostNamePlugin"));
+    }
+
+    /// Task 13: the one-shot never renames the guest, in any configuration --
+    /// Setup's own `<ComputerName>*</ComputerName>` application, which runs
+    /// after the specialize pass's RunSynchronousCommands, would silently
+    /// undo it.
+    #[test]
+    fn the_unattend_conf_never_has_the_hostname_plugin() {
+        for (slug, label, config) in cases() {
+            assert!(
+                !unattend_conf(&config).contains("SetHostNamePlugin"),
+                "{slug} ({label})"
+            );
         }
+    }
+
+    /// The service renames a golden image's clone, never a named one, and can
+    /// reboot to do it -- the one-shot cannot, because it owns its own reboot
+    /// through the WillReboot=OnRequest exit-code convention.
+    #[test]
+    fn the_service_conf_reboot_and_hostname_rules() {
+        for (slug, label, config) in cases() {
+            let conf = service_conf(&config);
+            assert!(conf.contains("allow_reboot=true"), "{slug} ({label})");
+            assert_eq!(
+                conf.contains("SetHostNamePlugin"),
+                is_golden(&config),
+                "{slug} ({label})"
+            );
+        }
+        for (slug, label, config) in cases() {
+            assert!(
+                unattend_conf(&config).contains("allow_reboot=false"),
+                "{slug} ({label})"
+            );
+        }
+    }
+
+    /// CreateUserPlugin (Mode B) does not need the new hostname, so it runs
+    /// first rather than being held up behind SetHostNamePlugin's reboot; the
+    /// key and user-data plugins run last, after the name is settled.
+    #[test]
+    fn the_service_plugin_order_is_create_user_then_hostname_then_the_rest() {
+        let managed_golden = Config {
+            cloud_init: Some(CloudInit { manage_account: true }),
+            ..base()
+        };
+        let conf = service_conf(&managed_golden);
+        let create = conf.find("CreateUserPlugin").expect("CreateUserPlugin");
+        let hostname =
+            conf.find("SetHostNamePlugin").expect("SetHostNamePlugin");
+        let keys = conf.find("SetUserSSHPublicKeysPlugin").expect("keys");
+        assert!(create < hostname && hostname < keys, "{conf}");
     }
 
     /// Mode A must not carry `CreateUserPlugin`: it resets the password to a

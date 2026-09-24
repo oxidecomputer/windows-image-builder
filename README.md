@@ -253,6 +253,12 @@ extended to the real disk size rather than the image's, and whatever the instanc
 `user_data` says to run. Turn it off with `--no-cloud-init` if you want an image
 byte-identical to one built before this existed.
 
+The rename happens on the cloudbase-init *service*'s first run, after Setup has
+finished, not in the specialize-pass one-shot — Setup applies the answer file's
+own placeholder computer name after that one-shot runs, which would otherwise
+overwrite the rename. Renaming the guest needs a reboot, so **a golden image's
+clone takes one extra reboot the first time cloud-init finds a config drive.**
+
 **Two account modes**, `--cloud-init-account=keep|manage`:
 
 - **`keep` (the default).** The account and password you typed are what the guest
@@ -284,8 +290,8 @@ under `E:\` to reference.
   `OxideCloudInit` startup task starts once Setup has finished. Every build with
   cloud-init has this one: SSH keys, `user_data`, and in `manage` mode the account.
 - `C:\oxide\log\cloudbase-init-unattend.log` — golden images only: the one-shot run
-  in each clone's first-boot specialize pass (hostname, volume extension, NTP, RDP). A
-  named build never produces it.
+  in each clone's first-boot specialize pass (volume extension, NTP, RDP — not the
+  hostname, which the service sets). A named build never produces it.
 - `C:\oxide-bootstrap.log` — the signature check on the MSI, the `msiexec` exit code,
   and whether the `sshd_config` rewrite happened.
 
