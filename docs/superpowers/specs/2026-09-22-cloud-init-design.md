@@ -56,8 +56,13 @@ evidence that upstream *should* read an Oxide config drive; it is not evidence
 that it does. A rack test is a gate on this work, not a follow-up. If a rack
 shows the drive is not read, the fallback is documented rather than designed
 away: `OXWIN_ASSETS=<dir>` already substitutes a payload directory, so dropping
-the Oxide MSI in under the same filename is the escape hatch, and it needs no
-code.
+the Oxide MSI in under the same filename gets it onto the media. **That alone is
+not enough, and it is not "no code":** the bootstrap refuses to install any MSI
+whose Authenticode signature is not valid and from `O=Cloudbase Solutions`, and
+the Oxide fork's MSI is unsigned, so the guest logs `REFUSING to install
+cloud-init` and installs nothing. Using the fork would need a deliberate change
+to that check (or a fork build signed by someone the check is taught to trust),
+which is a decision about what the guest will run, not a payload swap.
 
 ## Settings
 

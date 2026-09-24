@@ -9,7 +9,7 @@ bundled *inside* one of those six (the cloudbase-init MSI) rather than being fet
 pinned separately; their versions and, for Elevate.exe, its very identity, are read off
 the binaries themselves rather than guessed.
 
-Four of the ten are copyleft (two GPL, one LGPL), so **every release of this tool
+Four of the ten are copyleft (three GPL, one LGPL), so **every release of this tool
 conveys GPL'd and LGPL'd object code** and owes notices and corresponding source. That
 is a distribution obligation, not a code one — nothing here is a derivative work of them.
 
@@ -29,7 +29,7 @@ changes. `oxwin licenses --full` prints all of it from the binary, with no netwo
 | [Win32-OpenSSH](https://github.com/PowerShell/Win32-OpenSSH) | 10.0.0.0p2-Preview | OpenSSH (BSD-style) | `\OpenSSH-Win64.zip` on the exFAT volume |
 | [cloudbase-init](https://github.com/cloudbase/cloudbase-init) | 1.1.8 | Apache-2.0 | `\cloudbase\CloudbaseInitSetup_x64.msi` on the exFAT volume, installed by the bootstrap script |
 | [CPython](https://www.python.org/) | 3.13.13 | PSF (Python-2.0.1) | bundled inside the cloudbase-init MSI; installed to `Cloudbase-Init\Python` |
-| [mtools](https://www.gnu.org/software/mtools/) (`mcopy.exe`, `mdir.exe`) | 4.0.18 | **GPL-3.0-or-later** | bundled inside the cloudbase-init MSI, installed alongside cloudbase-init's own executables |
+| [mtools](https://www.gnu.org/software/mtools/) (`mlabel.exe`, `mcopy.exe`, `mdir.exe`) | 4.0.18 | **GPL-3.0-or-later** | bundled inside the cloudbase-init MSI, installed alongside cloudbase-init's own executables |
 | [libarchive](https://www.libarchive.org/) (`bsdtar.exe`) | 3.1.2 | BSD-2-Clause | bundled inside the cloudbase-init MSI, used to extract the config drive's ISO |
 | [jpassing/elevate](https://github.com/jpassing/elevate) (`Elevate.exe`, identity inferred — see below) | unversioned | **LGPL-2.1-or-later** (disputed — see below) | bundled inside the cloudbase-init MSI, used internally for privilege elevation |
 

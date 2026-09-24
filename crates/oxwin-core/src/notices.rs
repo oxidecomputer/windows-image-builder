@@ -227,7 +227,7 @@ pub static PAYLOAD: &[Component] = &[
         source: "https://www.python.org/downloads/source/",
     },
     Component {
-        name: "mtools (mcopy.exe, mdir.exe, bundled inside the cloudbase-init MSI)",
+        name: "mtools (mlabel.exe, mcopy.exe, mdir.exe, bundled inside the cloudbase-init MSI)",
         // Read off mcopy.exe's own strings table: "C:\Temp\mtools-4.0.18".
         version: "4.0.18",
         carried_as: "inside /cloudbase/CloudbaseInitSetup_x64.msi; installed \
@@ -412,7 +412,7 @@ mod tests {
         // script variable to cross-check.
         let bundled = [
             "CPython (bundled inside the cloudbase-init MSI)",
-            "mtools (mcopy.exe, mdir.exe, bundled inside the cloudbase-init MSI)",
+            "mtools (mlabel.exe, mcopy.exe, mdir.exe, bundled inside the cloudbase-init MSI)",
             "bsdtar (bundled inside the cloudbase-init MSI)",
             "Elevate.exe (bundled inside the cloudbase-init MSI, likely \
              jpassing/elevate)",

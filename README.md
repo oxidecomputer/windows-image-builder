@@ -263,8 +263,10 @@ byte-identical to one built before this existed.
   plugin needs before first logon. **The cost:** that plugin resets the password to a
   random, per-instance value on every path it takes, including the one for an account
   that already exists — so the password you typed does not survive into the clone.
-  Use `manage` only if you do not need that password to still work, and are relying on
-  keys or a fresh one you will read back some other way.
+  It becomes a random value that nobody knows: nothing records it and there is no way
+  to read it back. After the service's first run the serial console (SAC) therefore
+  has no usable login, and SSH keys are the only way in. Use `manage` only if you can
+  live with that.
 
 A password is mandatory either way — the serial console is the one way into a guest
 whose network never came up, and SAC authenticates with a password and knows nothing
@@ -278,18 +280,23 @@ under `E:\` to reference.
 
 **Logs to read, in order of usefulness:**
 
-- `C:\oxide\log\cloudbase-init.log` (specialize pass) and
-  `C:\oxide\log\cloudbase-init-unattend.log` (the clone-side run started by the
-  `OxideCloudInit` task) — both name the config drive they found, or say they found
-  none.
+- `C:\oxide\log\cloudbase-init.log` — the cloudbase-init service, which the
+  `OxideCloudInit` startup task starts once Setup has finished. Every build with
+  cloud-init has this one: SSH keys, `user_data`, and in `manage` mode the account.
+- `C:\oxide\log\cloudbase-init-unattend.log` — golden images only: the one-shot run
+  in each clone's first-boot specialize pass (hostname, volume extension, NTP, RDP). A
+  named build never produces it.
 - `C:\oxide-bootstrap.log` — the signature check on the MSI, the `msiexec` exit code,
   and whether the `sshd_config` rewrite happened.
+
+Both cloudbase-init logs name the config drive they found, or say they found none.
 
 **The rack checklist.** A finished install proves nothing on its own — check the
 artifact on a clone, not that it came up:
 
-- `C:\oxide\log\cloudbase-init.log` and `…-unattend.log` exist and name the config
-  drive they found.
+- `C:\oxide\log\cloudbase-init.log` exists and names the config drive it found —
+  and on a clone of a golden image, so does `…-unattend.log`. (A named build has no
+  `-unattend.log`; its absence there is expected.)
 - The computer name equals the instance name. An `OXIDEOX-…` name means the drive was
   never read.
 - `C:\Users\<user>\.ssh\authorized_keys` holds the **instance's** key, and

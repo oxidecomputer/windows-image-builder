@@ -112,10 +112,14 @@ if (( VNC )); then
 fi
 echo "--- serial console follows; ctrl-a x quits ---"
 
+# The config drive goes AFTER the target, and read-only. Windows numbers NVMe disks in
+# PCI order, so a drive attached between the installer and the target during an install
+# can become Disk 1 -- the answer file's target -- and Setup would partition the 64 MiB
+# config drive. An Oxide config drive is not the guest's to write, either.
 CIDATA_ARGS=()
 if (( CLOUD_INIT )); then
   CIDATA_ARGS=(
-    -drive file="$CIDATA",if=none,id=cidata,format=raw
+    -drive file="$CIDATA",if=none,id=cidata,format=raw,readonly=on
     -device nvme,drive=cidata,serial=cidata
   )
 fi
@@ -130,9 +134,9 @@ exec qemu-system-x86_64 \
   -drive if=pflash,format=raw,unit=1,file="$vars" \
   -drive file="$IMAGE",if=none,id=installer,format=raw,snapshot=on \
   -device nvme,drive=installer,serial=installer \
-  "${CIDATA_ARGS[@]+"${CIDATA_ARGS[@]}"}" \
   -drive file="$target",if=none,id=target,format=raw \
   -device nvme,drive=target,serial=target,logical_block_size="$TARGET_BS",physical_block_size="$TARGET_BS" \
+  "${CIDATA_ARGS[@]+"${CIDATA_ARGS[@]}"}" \
   -netdev user,id=net0 \
   -device virtio-net-pci,netdev=net0 \
   "${DISPLAY_ARGS[@]}" \
