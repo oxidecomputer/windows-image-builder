@@ -1298,10 +1298,12 @@ mod tests {
         let mut failures = Vec::new();
         for (slug, label, config) in cases() {
             let xml = build(&config).expect("build");
+            // As production builds the context (`Settings::problems`, the
+            // CLI's build path): cloud-init from the config, not a constant.
             let cx = LintContext {
                 target_disk: config.target_disk,
                 generalize: config.generalize,
-                cloud_init: false,
+                cloud_init: config.cloud_init.is_some(),
             };
             // `show_ui_on_error` is true in every committed case, so this fires
             // everywhere. It is a real hazard and the rule stays, but changing the
@@ -1324,12 +1326,18 @@ mod tests {
     /// non-WinPE component that only belongs in the sysprep file.
     #[test]
     fn generated_output_is_clean_for_a_golden_build() {
-        let config = Config { generalize: true, ..base() };
+        let config = Config {
+            generalize: true,
+            cloud_init: Some(crate::settings::CloudInit {
+                manage_account: false,
+            }),
+            ..base()
+        };
         let xml = build(&config).expect("build");
         let cx = LintContext {
             target_disk: config.target_disk,
             generalize: config.generalize,
-            cloud_init: false,
+            cloud_init: config.cloud_init.is_some(),
         };
         // Same filter and reason as `generated_output_is_clean`: `show_ui_on_error`
         // defaults to true, which is a real hazard but a separate decision from
@@ -1345,15 +1353,25 @@ mod tests {
     /// own way of being wrong, which is exactly the Localization hang.
     #[test]
     fn generated_sysprep_output_is_clean() {
-        let config = Config { generalize: true, ..base() };
-        let xml = build_sysprep(&config).expect("build_sysprep");
-        let cx = LintContext {
-            target_disk: config.target_disk,
-            generalize: true,
-            cloud_init: false,
-        };
-        let found = lint(&xml, &cx);
-        assert!(found.is_empty(), "{found:#?}");
+        // With and without cloud-init: with it the file carries the clone
+        // runner as well as the bootstrap, and is linted as production would.
+        for cloud_init in
+            [None, Some(crate::settings::CloudInit { manage_account: false })]
+        {
+            let config = Config { generalize: true, cloud_init, ..base() };
+            let xml = build_sysprep(&config).expect("build_sysprep");
+            assert_eq!(
+                xml.contains(crate::cloudinit::CLONE_SCRIPT_PATH),
+                cloud_init.is_some()
+            );
+            let cx = LintContext {
+                target_disk: config.target_disk,
+                generalize: true,
+                cloud_init: config.cloud_init.is_some(),
+            };
+            let found = lint(&xml, &cx);
+            assert!(found.is_empty(), "{cloud_init:?}: {found:#?}");
+        }
     }
 
     /// The Localization page is what actually stalled a rack guest, and only the sysprep

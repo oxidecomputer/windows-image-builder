@@ -414,29 +414,122 @@ fn cloudbase_msi_path(manifest: &Manifest) -> Result<&str> {
     )
 }
 
-/// Reads and sorts the extras by the volume path they will land on. Sorting
-/// here, rather than trusting the order they arrived in, is the same
-/// determinism rule as the media file list: cluster allocation follows this
-/// order, so it decides the bytes of the volume.
+/// One extra file, checked and sized before the media is opened. Its bytes are
+/// not held: the volume reserves `size` bytes for it and [`write_extras`]
+/// streams them into place afterwards, the way `install.wim` is -- an extra
+/// can be a multi-GB Feature-on-Demand ISO, and the machine building the image
+/// should not need its size in RAM to carry it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SizedExtra {
+    volume_path: String,
+    source: PathBuf,
+    size: u64,
+}
+
+/// Opens, sizes and sorts the extras by the volume path they will land on.
+/// Opened here, before the media is, so an unreadable extra is refused up
+/// front rather than after a 4 GiB copy. Sorting here, rather than trusting
+/// the order they arrived in, is the same determinism rule as the media file
+/// list: cluster allocation follows this order, so it decides the bytes of the
+/// volume.
 ///
-/// A small pure-ish helper, factored out of `assemble` so the sort is a unit
-/// test rather than a property of a build that needs real media.
-fn read_extras(
+/// With [`cloud_init_volume_paths`], the one place `bare` is honoured for
+/// what this branch adds to the volume: `assemble` calls both
+/// unconditionally and writes whatever they return.
+fn size_extras(
     extras: &[crate::settings::Extra],
     bare: bool,
-) -> Result<Vec<(String, Vec<u8>)>> {
+) -> Result<Vec<SizedExtra>> {
     if bare {
         return Ok(Vec::new());
     }
-    let mut result: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut result = Vec::new();
     for extra in extras {
-        let data = std::fs::read(&extra.source).with_context(|| {
-            format!("reading the extra file {}", extra.source.display())
-        })?;
-        result.push((extra.volume_path.clone(), data));
+        let what =
+            || format!("reading the extra file {}", extra.source.display());
+        let file = File::open(&extra.source).with_context(what)?;
+        let meta = file.metadata().with_context(what)?;
+        if !meta.is_file() {
+            bail!(
+                "the extra file {} is not a regular file",
+                extra.source.display()
+            );
+        }
+        result.push(SizedExtra {
+            volume_path: extra.volume_path.clone(),
+            source: extra.source.clone(),
+            size: meta.len(),
+        });
     }
-    result.sort_by(|a, b| a.0.cmp(&b.0));
+    result.sort_by(|a, b| a.volume_path.cmp(&b.volume_path));
     Ok(result)
+}
+
+/// Put each extra on the volume: an empty one as an empty file, the rest as
+/// reservations whose bytes [`write_extras`] streams in once the volume is
+/// laid out. An empty file names cluster 0 and has no clusters to stream into.
+fn add_extras(
+    p1: &mut exfat::ExFatBuilder,
+    extras: &[SizedExtra],
+    reporter: &Reporter,
+) -> Result<()> {
+    for extra in extras {
+        reporter.log(format!(
+            "extra: {} ({} bytes)",
+            extra.volume_path, extra.size
+        ));
+        if extra.size == 0 {
+            p1.add_file(&extra.volume_path, Vec::new())?;
+        } else {
+            p1.reserve_file(&extra.volume_path, extra.size)?;
+        }
+    }
+    Ok(())
+}
+
+/// Stream each non-empty extra into the clusters reserved for it. Exactly the
+/// size measured up front, and a file that has changed size since is an
+/// error: the directory entry already records the old size, so writing
+/// anything else would put a truncated or overflowing file on the media.
+fn write_extras(
+    extras: &[SizedExtra],
+    placements: &[exfat::Placement],
+    out: &mut File,
+    volume_base: u64,
+    cancel: &crate::engine::Cancel,
+) -> Result<()> {
+    use std::io::Read;
+    let reserved: std::collections::HashMap<&str, &exfat::Placement> =
+        placements.iter().map(|p| (p.path.as_str(), p)).collect();
+    for extra in extras.iter().filter(|e| e.size > 0) {
+        cancel.check()?;
+        let what =
+            || format!("reading the extra file {}", extra.source.display());
+        let placement =
+            reserved.get(extra.volume_path.as_str()).with_context(|| {
+                format!("no reserved space for {}", extra.volume_path)
+            })?;
+        let file = File::open(&extra.source).with_context(what)?;
+        let mut body =
+            std::io::BufReader::with_capacity(1 << 20, file.take(extra.size));
+        out.seek(SeekFrom::Start(volume_base + placement.offset))?;
+        let copied = std::io::copy(&mut body, out).with_context(what)?;
+        let grew = body
+            .into_inner()
+            .into_inner()
+            .read(&mut [0u8; 1])
+            .with_context(what)?
+            != 0;
+        if copied != extra.size || grew {
+            bail!(
+                "the extra file {} changed size during the build: it was {} \
+                 bytes when it was checked",
+                extra.source.display(),
+                extra.size
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn build(
@@ -530,7 +623,7 @@ fn assemble(
         }
         reporter.log(format!("  ({})", problem.message));
     }
-    let extras = read_extras(&request.extras, request.bare)?;
+    let extras = size_extras(&request.extras, request.bare)?;
 
     let mut source = Source::open(&request.media)?;
 
@@ -625,28 +718,38 @@ fn assemble(
     let manifest: Manifest =
         serde_json::from_slice(&request.assets.manifest()?)
             .context("parsing the payload manifest")?;
-    // The MSI is read once, here, and reused for both sizing and writing —
-    // reading the whole ~62 MiB file twice would be wasteful for no benefit.
-    let cloud_init_msi: Option<Vec<u8>> = if config.cloud_init.is_some()
-        && !request.bare
-    {
-        Some(request.assets.read(cloudbase_msi_path(&manifest)?)?.into_owned())
-    } else {
-        None
-    };
-    let cloud_init_bytes: u64 = match &cloud_init_msi {
-        Some(msi) => {
-            msi.len() as u64
-                + crate::cloudinit::service_conf(&config).len() as u64
-                + crate::cloudinit::unattend_conf(&config).len() as u64
-        }
-        None => 0,
-    };
+    // Every cloud-init file, read once here and reused for both sizing and
+    // writing -- reading the whole ~62 MiB MSI twice would be wasteful for no
+    // benefit. Whatever `cloud_init_volume_paths` returns is exactly what goes
+    // on the volume: it is the one guard, for `bare` and for cloud-init being
+    // off, and nothing below second-guesses it.
+    let cloud_init_files: Vec<(&str, Vec<u8>)> =
+        cloud_init_volume_paths(&config, request.bare)
+            .into_iter()
+            .map(|path| {
+                let data = match path {
+                    crate::cloudinit::MSI_VOLUME_PATH => request
+                        .assets
+                        .read(cloudbase_msi_path(&manifest)?)?
+                        .into_owned(),
+                    crate::cloudinit::SERVICE_CONF_VOLUME_PATH => {
+                        crate::cloudinit::service_conf(&config).into_bytes()
+                    }
+                    crate::cloudinit::UNATTEND_CONF_VOLUME_PATH => {
+                        crate::cloudinit::unattend_conf(&config).into_bytes()
+                    }
+                    other => bail!("no contents for cloud-init file {other}"),
+                };
+                Ok((path, data))
+            })
+            .collect::<Result<_>>()?;
+    let cloud_init_bytes: u64 =
+        cloud_init_files.iter().map(|(_, d)| d.len() as u64).sum();
 
     // --- lay out the disk --------------------------------------------------
     let media_files = source.list()?;
     let media_bytes: u64 = media_files.iter().map(|f| f.size).sum();
-    let extras_bytes: u64 = extras.iter().map(|(_, d)| d.len() as u64).sum();
+    let extras_bytes: u64 = extras.iter().map(|e| e.size).sum();
     let layout =
         plan(media_bytes + wim_size + extras_bytes + cloud_init_bytes)?;
 
@@ -733,31 +836,23 @@ fn assemble(
             "/setup/bootstrap.ps1",
             bootstrap::build(&config)?.into_bytes(),
         )?;
-        if let Some(msi) = &cloud_init_msi {
-            for path in cloud_init_volume_paths(&config, request.bare) {
-                let data: Vec<u8> = match path {
-                    crate::cloudinit::MSI_VOLUME_PATH => msi.clone(),
-                    crate::cloudinit::SERVICE_CONF_VOLUME_PATH => {
-                        crate::cloudinit::service_conf(&config).into_bytes()
-                    }
-                    _ => crate::cloudinit::unattend_conf(&config).into_bytes(),
-                };
-                p1.add_file(path, data)?;
-            }
-            reporter.log(format!(
-                "cloud-init: cloudbase-init MSI + 2 conf files ({} account)",
-                if config.cloud_init.is_some_and(|c| c.manage_account) {
-                    "managed"
-                } else {
-                    "kept"
-                }
-            ));
-        }
-        for (path, data) in extras {
-            reporter.log(format!("extra: {path} ({} bytes)", data.len()));
-            p1.add_file(&path, data)?;
-        }
     }
+    // Outside the `bare` block above on purpose: both lists are empty for a
+    // bare build, decided by their own helpers, so there is one guard each.
+    if !cloud_init_files.is_empty() {
+        reporter.log(format!(
+            "cloud-init: cloudbase-init MSI + 2 conf files ({} account)",
+            if config.cloud_init.is_some_and(|c| c.manage_account) {
+                "managed"
+            } else {
+                "kept"
+            }
+        ));
+    }
+    for (path, data) in cloud_init_files {
+        p1.add_file(path, data)?;
+    }
+    add_extras(&mut p1, &extras, reporter)?;
 
     let channel = request
         .ei_channel
@@ -887,6 +982,7 @@ fn assemble(
     if copied != wim_size {
         bail!("install.wim is {wim_size} bytes but only {copied} were copied");
     }
+    write_extras(&extras, p1.placements(), &mut out, volume_base, cancel)?;
     out.flush()?;
     drop(out);
 
@@ -1442,11 +1538,26 @@ mod tests {
         assert!(err.contains("secret.zip"), "{err}");
     }
 
+    /// A scratch directory unique to one test.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "oxwin-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     /// Review Focus 3. `--bare` is media and nothing else. It already writes no
-    /// answer file; it must write no MSI, no confs and no extras either. This is
-    /// the cloud-init half of that guarantee -- `cloud_init_volume_paths` is the
-    /// one place the `bare` guard lives, rather than spread over every call
-    /// site, so it cannot be forgotten at one of them.
+    /// answer file; it must write no MSI, no confs and no extras either.
+    /// `cloud_init_volume_paths` and `size_extras` are the one place each
+    /// the `bare` guard lives -- `assemble` calls both unconditionally and
+    /// writes whatever they return -- so each is held here with bare on and
+    /// off, against inputs that would otherwise carry something.
     #[test]
     fn a_bare_build_carries_no_cloud_init_and_no_extras() {
         let cloud_init_config = Config {
@@ -1470,6 +1581,171 @@ mod tests {
             )
             .is_empty()
         );
+
+        // A real, readable file, so an empty result can only be the guard.
+        let dir = scratch_dir("bare-extras");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"extra").unwrap();
+        let extras = vec![crate::settings::Extra {
+            source: file.clone(),
+            volume_path: "/extras/a.txt".into(),
+        }];
+        assert_eq!(
+            size_extras(&extras, false).unwrap(),
+            vec![SizedExtra {
+                volume_path: "/extras/a.txt".into(),
+                source: file.clone(),
+                size: 5,
+            }],
+            "the non-bare case must carry the extra"
+        );
+        assert!(
+            size_extras(&extras, true).unwrap().is_empty(),
+            "a bare build must carry no extras"
+        );
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// A directory opens fine on Unix, so the regular-file check is what
+    /// refuses one up front rather than when its bytes are streamed.
+    #[test]
+    fn an_extra_that_is_a_directory_is_refused() {
+        let dir = scratch_dir("dir-extra");
+        let extras = vec![crate::settings::Extra {
+            source: dir.clone(),
+            volume_path: "/extras/d".into(),
+        }];
+        let err = size_extras(&extras, false).unwrap_err().to_string();
+        assert!(err.contains("not a regular file"), "{err}");
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// Lay out a small volume with `add` and write it to `out` the way
+    /// `assemble` does, calling `stream` once it is on disk.
+    fn small_volume(
+        out: &std::path::Path,
+        add: impl FnOnce(&mut exfat::ExFatBuilder),
+        stream: impl FnOnce(&exfat::ExFatBuilder, &mut File),
+    ) {
+        let mut p1 = exfat::ExFatBuilder::new(exfat::Options {
+            size_bytes: 64 * 1024 * 1024,
+            ..exfat::Options::default()
+        })
+        .unwrap();
+        add(&mut p1);
+        let image = p1.build().unwrap();
+        let mut file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(out)
+            .unwrap();
+        file.set_len(64 * 1024 * 1024).unwrap();
+        for chunk in image.non_zero_blocks() {
+            file.seek(SeekFrom::Start(chunk.offset)).unwrap();
+            file.write_all(chunk.data).unwrap();
+        }
+        stream(&p1, &mut file);
+    }
+
+    /// I8: extras are reserved and streamed rather than held in memory, and
+    /// that must not change a byte. The same files, once added whole the way
+    /// they used to be and once through `add_extras` + `write_extras`,
+    /// produce identical volumes -- including an empty file, which has no
+    /// clusters to stream into, and one spanning several clusters.
+    #[test]
+    fn streamed_extras_make_the_same_volume_as_loaded_ones() {
+        let dir = scratch_dir("stream-extras");
+        let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let files: [(&str, &[u8]); 3] = [
+            ("/extras/a.bin", &big),
+            ("/extras/empty.txt", b""),
+            ("/extras/sub/b.txt", b"extra b"),
+        ];
+        let extras: Vec<crate::settings::Extra> = files
+            .iter()
+            .enumerate()
+            .map(|(i, (path, data))| {
+                let source = dir.join(format!("src-{i}"));
+                std::fs::write(&source, data).unwrap();
+                crate::settings::Extra { source, volume_path: path.to_string() }
+            })
+            .collect();
+
+        let loaded = dir.join("loaded.img");
+        small_volume(
+            &loaded,
+            |p1| {
+                for (path, data) in files {
+                    p1.add_file(path, data.to_vec()).unwrap();
+                }
+            },
+            |_, _| {},
+        );
+        let sized = size_extras(&extras, false).unwrap();
+        let streamed = dir.join("streamed.img");
+        small_volume(
+            &streamed,
+            |p1| add_extras(p1, &sized, &Reporter::silent()).unwrap(),
+            |p1, out| {
+                write_extras(
+                    &sized,
+                    p1.placements(),
+                    out,
+                    0,
+                    &crate::engine::Cancel::new(),
+                )
+                .unwrap()
+            },
+        );
+        let (a, b) = (
+            std::fs::read(&loaded).unwrap(),
+            std::fs::read(&streamed).unwrap(),
+        );
+        assert!(a == b, "streaming the extras changed the volume");
+        // And the reservation really was used: the big file's bytes are in
+        // the streamed image, not merely zero in both.
+        assert!(b.windows(big.len()).any(|w| w == &big[..]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The directory entry records the size measured up front, so a file
+    /// that has grown or shrunk since cannot be written faithfully. Refused,
+    /// with the path.
+    #[test]
+    fn an_extra_that_changes_size_during_the_build_is_refused() {
+        let dir = scratch_dir("resized-extra");
+        let source = dir.join("grows.txt");
+        for after in [&b"longer than before"[..], b"sho"] {
+            std::fs::write(&source, b"before").unwrap();
+            let extras = vec![crate::settings::Extra {
+                source: source.clone(),
+                volume_path: "/extras/grows.txt".into(),
+            }];
+            let sized = size_extras(&extras, false).unwrap();
+            let img = dir.join("img");
+            let mut err = None;
+            small_volume(
+                &img,
+                |p1| add_extras(p1, &sized, &Reporter::silent()).unwrap(),
+                |p1, out| {
+                    std::fs::write(&source, after).unwrap();
+                    err = write_extras(
+                        &sized,
+                        p1.placements(),
+                        out,
+                        0,
+                        &crate::engine::Cancel::new(),
+                    )
+                    .err();
+                },
+            );
+            let err = err.expect("a resized extra must be refused").to_string();
+            assert!(err.contains("grows.txt") && err.contains("changed size"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The order the files are added in decides cluster allocation and
@@ -1506,7 +1782,7 @@ mod tests {
     }
 
     /// Step 6's mutation test: two extras supplied out of order come out
-    /// sorted by their volume path. Deleting `read_extras`'s sort makes this
+    /// sorted by their volume path. Deleting `size_extras`'s sort makes this
     /// fail while `the_cloud_init_files_are_added_in_volume_path_order`
     /// keeps passing -- that test only covers the cloud-init list, not
     /// extras, which is why this one exists separately.
@@ -1536,8 +1812,9 @@ mod tests {
                 volume_path: "/extras/a.zip".into(),
             },
         ];
-        let read = read_extras(&extras, false).unwrap();
-        let paths: Vec<&str> = read.iter().map(|(p, _)| p.as_str()).collect();
+        let read = size_extras(&extras, false).unwrap();
+        let paths: Vec<&str> =
+            read.iter().map(|e| e.volume_path.as_str()).collect();
         assert_eq!(paths, vec!["/extras/a.zip", "/extras/b.zip"], "{paths:?}");
 
         let _ = std::fs::remove_file(&a_path);
@@ -1552,7 +1829,7 @@ mod tests {
             source: PathBuf::from("/nonexistent/whatever.zip"),
             volume_path: "/extras/whatever.zip".into(),
         }];
-        assert_eq!(read_extras(&extras, true).unwrap(), Vec::new());
+        assert_eq!(size_extras(&extras, true).unwrap(), Vec::new());
     }
 }
 
@@ -1615,8 +1892,8 @@ mod whole_image {
         // volume-path order ("/extras/sub/a.txt" sorts after
         // "/extras/b.txt"), and one nested under a subdirectory. This is
         // the only test that proves the extras path through `plan` and
-        // `p1.add_file` is deterministic against real media -- the unit
-        // tests below cover `read_extras`'s sort in isolation, but not
+        // the reserve-and-stream write are deterministic against real media --
+        // the unit tests cover `size_extras`'s sort in isolation, but not
         // through a real build.
         let extras_src = scratch.join("extras-src");
         std::fs::create_dir_all(extras_src.join("sub")).unwrap();

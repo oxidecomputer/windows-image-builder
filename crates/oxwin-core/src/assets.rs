@@ -6,8 +6,8 @@
 
 //! Where the third-party payload comes from.
 //!
-//! The media carries virtio drivers, Win32-OpenSSH and three EFI binaries. None of it is
-//! ours; all of it is fetched by `tools/fetch-payload.sh` against pinned SHA-256
+//! The media carries virtio drivers, Win32-OpenSSH, the cloudbase-init MSI and three
+//! EFI binaries. None of it is ours; all of it is fetched by `tools/fetch-payload.sh` against pinned SHA-256
 //! checksums and never committed.
 //!
 //! Normally it is compiled in, so a release binary is one file with nothing to locate at
@@ -111,6 +111,22 @@ impl Assets {
         Ok(self.read("payload-manifest.json")?.into_owned())
     }
 
+    /// The cloudbase-init MSI the manifest names, and the version it pins.
+    /// `None` for a manifest written before cloud-init existed, which names
+    /// neither. Read from the manifest rather than assumed at a fixed path, so
+    /// `doctor` checks the file a build would actually read.
+    pub fn cloudbase_init(&self) -> Result<Option<CloudbaseInit>> {
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&self.manifest()?)
+                .context("parsing the payload manifest")?;
+        Ok(manifest["cloudbaseInit"].as_str().map(|path| CloudbaseInit {
+            path: path.to_string(),
+            version: manifest["cloudbaseInitVersion"]
+                .as_str()
+                .map(str::to_string),
+        }))
+    }
+
     /// One line for `oxwin doctor` and the log, so which payload is in play is recorded
     /// rather than assumed.
     pub fn describe(&self) -> String {
@@ -125,6 +141,16 @@ impl Assets {
             Self::Directory(dir) => format!("directory {}", dir.display()),
         }
     }
+}
+
+/// What the manifest says about the cloudbase-init MSI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudbaseInit {
+    /// Relative to the assets directory, `assets/` prefix and all, as the
+    /// manifest writes it; [`Assets::read`] tolerates the prefix.
+    pub path: String,
+    /// `cloudbaseInitVersion`, when the manifest records one.
+    pub version: Option<String>,
 }
 
 #[cfg(test)]
@@ -253,6 +279,38 @@ mod tests {
                 release.label()
             );
         }
+    }
+
+    /// `doctor` reads the MSI's path and version from the manifest, so a
+    /// manifest that names them has to yield both, and one that predates
+    /// cloud-init has to yield `None` rather than an error.
+    #[test]
+    fn the_manifest_names_the_cloudbase_init_msi() {
+        let dir = std::env::temp_dir()
+            .join(format!("oxwin-assets-cb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let assets = Assets::Directory(dir.clone());
+        std::fs::write(
+            dir.join("payload-manifest.json"),
+            r#"{"openSsh": "assets/openssh/x.zip",
+                "cloudbaseInitVersion": "1.1.8",
+                "cloudbaseInit": "assets/cloudbase/Setup.msi"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            assets.cloudbase_init().unwrap(),
+            Some(CloudbaseInit {
+                path: "assets/cloudbase/Setup.msi".into(),
+                version: Some("1.1.8".into()),
+            })
+        );
+        std::fs::write(
+            dir.join("payload-manifest.json"),
+            r#"{"openSsh": "assets/openssh/x.zip"}"#,
+        )
+        .unwrap();
+        assert_eq!(assets.cloudbase_init().unwrap(), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Whether this build embedded a payload or not, `describe` says which — the log has

@@ -509,6 +509,10 @@ impl Settings {
         }
 
         v.extend(extra_problems(&self.extras));
+        v.extend(cloud_init_username_problem(
+            &self.credentials.username,
+            self.cloud_init,
+        ));
 
         if let Some(cloud_init) = &self.cloud_init {
             if cloud_init.manage_account {
@@ -584,15 +588,64 @@ fn is_reserved_username(name: &str) -> bool {
     RESERVED.contains(&name.trim().to_ascii_lowercase().as_str())
 }
 
+/// A username cloud-init cannot be relied on to handle. Shared by
+/// `Settings::problems` and the CLI's build paths, which build a `Config`
+/// from flags and never construct a `Settings`.
+///
+/// The guest scripts the bootstrap writes are written `-Encoding ASCII`, so a
+/// non-ASCII character in the name reaches the startup task as `?`. In
+/// keep-my-account mode that task looks the account up by name to make its
+/// profile; the lookup fails, no profile is made, and the instance's SSH keys
+/// are silently not written. A warning rather than a refusal: the account
+/// itself, the password and SAC are unaffected.
+pub fn cloud_init_username_problem(
+    username: &str,
+    cloud_init: Option<CloudInit>,
+) -> Option<Problem> {
+    let cloud_init = cloud_init?;
+    if username.is_ascii() {
+        return None;
+    }
+    Some(Problem::warn(
+        "username",
+        if cloud_init.manage_account {
+            format!(
+                "{username:?} is not plain ASCII. Cloud-init has not been \
+                 checked with such a name; use an ASCII username if the \
+                 instance's SSH keys matter."
+            )
+        } else {
+            format!(
+                "{username:?} is not plain ASCII, and the cloud-init startup \
+                 script is written as ASCII, so it cannot find this account \
+                 to make its profile: the instance's SSH keys will not be \
+                 written. Use an ASCII username, or turn cloud-init off."
+            )
+        },
+    ))
+}
+
 /// Everything wrong with a set of extra files.
 ///
 /// The volume path is constructed by the caller from the file's name, so every
 /// rule here is a caller bug rather than user error -- which is exactly why it
 /// blocks: an extra that escaped `/extras/` would overwrite the media's own
 /// tree, and two extras on one path would lose a file in silence.
+///
+/// "One path" is judged the way the volume judges it. exFAT compares names
+/// case-insensitively and `exfat::insert_file` replaces a same-named entry in
+/// place, last writer wins, so `a/Notes.txt` and `b/notes.txt` flattened to
+/// `/extras/Notes.txt` and `/extras/notes.txt` are one file on the media.
+/// Every comparison below is on [`fold`]ed paths, the same key the volume
+/// builder uses. Sets rather than a scan of everything seen so far, so a
+/// directory of thousands of files is not quadratic.
 pub fn extra_problems(extras: &[Extra]) -> Vec<Problem> {
+    use std::collections::BTreeMap;
     let mut v = Vec::new();
-    let mut seen: Vec<&str> = Vec::new();
+    // Every file accepted so far, folded, to the path as given.
+    let mut files: BTreeMap<String, &str> = BTreeMap::new();
+    // Every directory those files sit under, folded, to one file beneath it.
+    let mut dirs: BTreeMap<String, &str> = BTreeMap::new();
     for e in extras {
         if e.source.as_os_str().is_empty() {
             v.push(Problem::block("extras", "An extra file has no path."));
@@ -613,13 +666,22 @@ pub fn extra_problems(extras: &[Extra]) -> Vec<Problem> {
             ));
             continue;
         }
-        if seen.contains(&e.volume_path.as_str()) {
+        let folded = fold(&e.volume_path);
+        if let Some(other) = files.get(&folded) {
+            let on = if *other == e.volume_path {
+                e.volume_path.clone()
+            } else {
+                format!(
+                    "{} and {} (the media does not tell names apart by \
+                     case)",
+                    other, e.volume_path
+                )
+            };
             v.push(Problem::block(
                 "extras",
                 format!(
-                    "Two files would both land on {}. Rename one, or pick \
-                     their parent directory so the structure is preserved.",
-                    e.volume_path
+                    "Two files would both land on {on}. Rename one, or pick \
+                     their parent directory so the structure is preserved."
                 ),
             ));
             continue;
@@ -630,11 +692,14 @@ pub fn extra_problems(extras: &[Extra]) -> Vec<Problem> {
         // `/extras/foo/bar.txt`, and the second cannot be created on a
         // filesystem where the first is a plain file. Compared by whole
         // path components, not by string prefix, so `/extras/foo` next to
-        // `/extras/foobar` is not flagged.
-        if let Some(other) = seen.iter().find(|s| {
-            is_component_prefix(s, &e.volume_path)
-                || is_component_prefix(&e.volume_path, s)
-        }) {
+        // `/extras/foobar` is not flagged. Either order: this file sits under
+        // one already seen, or one already seen sits under this file.
+        let ancestors = ancestors(&folded);
+        let clash = ancestors
+            .iter()
+            .find_map(|a| files.get(*a).copied())
+            .or_else(|| dirs.get(&folded).copied());
+        if let Some(other) = clash {
             v.push(Problem::block(
                 "extras",
                 format!(
@@ -646,27 +711,29 @@ pub fn extra_problems(extras: &[Extra]) -> Vec<Problem> {
             ));
             continue;
         }
-        seen.push(&e.volume_path);
+        for a in ancestors {
+            dirs.entry(a.to_string()).or_insert(&e.volume_path);
+        }
+        files.insert(folded, &e.volume_path);
     }
     v
 }
 
-/// Whether `a`'s path components are a strict prefix of `b`'s.
-///
-/// `/extras/foo` is a prefix of `/extras/foo/bar.txt` but not of
-/// `/extras/foobar` -- the comparison is component by component, never a
-/// plain string prefix, or the second pair would be flagged for sharing
-/// six characters.
-fn is_component_prefix(a: &str, b: &str) -> bool {
-    let mut a_parts = a.split('/');
-    let mut b_parts = b.split('/');
-    loop {
-        match (a_parts.next(), b_parts.next()) {
-            (Some(x), Some(y)) if x == y => continue,
-            (None, Some(_)) => return true,
-            _ => return false,
-        }
-    }
+/// A volume path as the installer volume compares it: uppercased, which is
+/// the key `exfat::insert_file` and `add_dir` look entries up by.
+fn fold(path: &str) -> String {
+    path.to_uppercase()
+}
+
+/// Every strict component prefix of `path`, shortest first:
+/// `/EXTRAS/A/B.TXT` gives `/EXTRAS` and `/EXTRAS/A`. Split on whole
+/// components, never a string prefix, so `/extras/foo` is not an ancestor of
+/// `/extras/foobar`.
+fn ancestors(path: &str) -> Vec<&str> {
+    path.match_indices('/')
+        .map(|(at, _)| &path[..at])
+        .filter(|a| !a.is_empty())
+        .collect()
 }
 
 fn key_problem(key: &str) -> Option<Problem> {
@@ -1005,6 +1072,45 @@ mod tests {
         );
     }
 
+    /// Keep-my-account mode finds the account by name from a script written
+    /// as ASCII, so a non-ASCII name silently loses the instance's keys. A
+    /// warning, only with cloud-init on, and never for a plain name.
+    #[test]
+    fn a_non_ascii_username_with_cloud_init_warns() {
+        let named = |username: &str, cloud_init| Settings {
+            credentials: Credentials {
+                username: username.into(),
+                ..base().credentials
+            },
+            cloud_init,
+            ..base()
+        };
+        let keep = Some(CloudInit { manage_account: false });
+        let s = named("jos\u{e9}", keep);
+        let found: Vec<_> = s
+            .problems()
+            .into_iter()
+            .filter(|p| p.field == "username")
+            .collect();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(!found[0].blocking);
+        assert!(found[0].message.contains("SSH keys"), "{found:?}");
+        assert!(s.is_buildable());
+        assert!(
+            named("jos\u{e9}", Some(CloudInit { manage_account: true }))
+                .problems()
+                .iter()
+                .any(|p| p.field == "username" && !p.blocking)
+        );
+        for quiet in [named("jos\u{e9}", None), named("jose", keep)] {
+            assert!(
+                !quiet.problems().iter().any(|p| p.field == "username"),
+                "{:?}",
+                quiet.problems()
+            );
+        }
+    }
+
     fn extra(source: &str, volume_path: &str) -> Extra {
         Extra {
             source: PathBuf::from(source),
@@ -1092,6 +1198,65 @@ mod tests {
             ..base()
         };
         assert!(s.is_buildable(), "{:?}", s.problems());
+    }
+
+    /// exFAT does not tell names apart by case, and the volume builder
+    /// replaces a same-named entry in place: `--extra=a/Notes.txt
+    /// --extra=b/notes.txt` land on `/extras/Notes.txt` and
+    /// `/extras/notes.txt`, which are one file on the media. One of them would
+    /// vanish in silence on any host OS.
+    #[test]
+    fn extras_differing_only_by_case_block() {
+        let s = Settings {
+            extras: vec![
+                extra("/tmp/a/Notes.txt", "/extras/Notes.txt"),
+                extra("/tmp/b/notes.txt", "/extras/notes.txt"),
+            ],
+            ..base()
+        };
+        assert!(!s.is_buildable(), "{:?}", s.problems());
+        let problems = extra_problems(&s.extras);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].blocking);
+        assert!(problems[0].message.contains("/extras/Notes.txt"));
+        assert!(problems[0].message.contains("/extras/notes.txt"));
+        // Directory components fold too.
+        let s = Settings {
+            extras: vec![
+                extra("/tmp/x/Docs/a.txt", "/extras/Docs/a.txt"),
+                extra("/tmp/y/docs/a.txt", "/extras/docs/A.TXT"),
+            ],
+            ..base()
+        };
+        assert!(!s.is_buildable(), "{:?}", s.problems());
+    }
+
+    /// The file/directory collision, with the two spelled in different case:
+    /// `/extras/FOO` is a file, so `/extras/foo/bar` cannot be created under
+    /// it on a volume where `FOO` and `foo` are the same name. Both orders.
+    #[test]
+    fn a_case_folded_file_and_directory_collision_blocks() {
+        let file = extra("/tmp/FOO", "/extras/FOO");
+        let under = extra("/tmp/dir/bar", "/extras/foo/bar");
+        for extras in [vec![file.clone(), under.clone()], vec![under, file]] {
+            let problems = extra_problems(&extras);
+            assert_eq!(problems.len(), 1, "{extras:?}: {problems:?}");
+            assert!(problems[0].blocking);
+            assert!(problems[0].message.contains("collide"), "{problems:?}");
+        }
+    }
+
+    /// Different names in different directories, and the same name in two
+    /// different directories, are not collisions.
+    #[test]
+    fn distinct_extras_in_distinct_directories_are_fine() {
+        let extras = vec![
+            extra("/tmp/d/one/a.txt", "/extras/d/one/a.txt"),
+            extra("/tmp/d/two/a.txt", "/extras/d/two/a.txt"),
+            extra("/tmp/d/one/b.txt", "/extras/d/one/b.txt"),
+            extra("/tmp/d/one", "/extras/d/one2"),
+        ];
+        assert!(extra_problems(&extras).is_empty());
     }
 
     #[test]

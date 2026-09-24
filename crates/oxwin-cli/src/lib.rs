@@ -27,7 +27,10 @@ use oxwin_core::engine::Cancel;
 use oxwin_core::media::Media;
 use oxwin_core::partition::{Format, Kind, Partition};
 use oxwin_core::progress::{Event, Reporter};
-use oxwin_core::settings::{CloudInit, Extra, WindowsRelease, extra_problems};
+use oxwin_core::settings::{
+    CloudInit, Extra, WindowsRelease, cloud_init_username_problem,
+    extra_problems,
+};
 use oxwin_core::unattend::Config;
 use std::path::PathBuf;
 
@@ -619,6 +622,16 @@ fn assets_from_args(args: &[String]) -> Result<oxwin_core::Assets> {
     Ok(assets)
 }
 
+/// `Settings::problems`' username warning, for the build paths that make a
+/// `Config` from flags and never construct a `Settings`.
+fn warn_about_the_username(config: &Config) {
+    if let Some(problem) =
+        cloud_init_username_problem(&config.username, config.cloud_init)
+    {
+        eprintln!("warn  {}", problem.message);
+    }
+}
+
 fn build(args: &[String]) -> Result<()> {
     let positional: Vec<&String> =
         args.iter().filter(|a| !a.starts_with("--")).collect();
@@ -647,6 +660,7 @@ fn build(args: &[String]) -> Result<()> {
         bail!("{}", problem.message);
     }
     let config = config_from_args(args, &extras)?;
+    warn_about_the_username(&config);
     let assets = assets_from_args(args)?;
 
     let unattend = match args.iter().find_map(|a| a.strip_prefix("--unattend="))
@@ -1187,6 +1201,7 @@ fn build_for_golden(
     let mut config = config_from_args(args, &extras)?;
     config.generalize = true;
     config.computer_name = "*".into();
+    warn_about_the_username(&config);
 
     let media = if source.is_dir() {
         Media::Directory(source.to_path_buf())
@@ -1488,16 +1503,32 @@ fn doctor() -> Result<()> {
                 }
             }
             // Cloud-init is on by default, so a payload without the MSI means
-            // the default build cannot do what the tickbox says it does.
-            match assets.read("cloudbase/CloudbaseInitSetup_x64.msi") {
-                Ok(data) if !data.is_empty() => println!(
-                    "ok    asset cloudbase-init MSI ({} bytes)",
-                    data.len()
+            // the default build cannot do what the tickbox says it does. The
+            // path is the manifest's, so this checks the file a build reads.
+            match assets.cloudbase_init() {
+                Ok(Some(cb)) => {
+                    let version =
+                        cb.version.as_deref().unwrap_or("unversioned");
+                    match assets.read(&cb.path) {
+                        Ok(data) if !data.is_empty() => println!(
+                            "ok    asset cloudbase-init {version} MSI ({} bytes)",
+                            data.len()
+                        ),
+                        _ => println!(
+                            "warn  the manifest names the cloudbase-init \
+                             {version} MSI at {} but it is missing or empty \
+                             — cloud-init builds will be refused; run \
+                             ./tools/fetch-payload.sh",
+                            cb.path
+                        ),
+                    }
+                }
+                Ok(None) => println!(
+                    "warn  the payload manifest names no cloudbase-init MSI — \
+                     cloud-init builds will be refused; run \
+                     ./tools/fetch-payload.sh"
                 ),
-                _ => println!(
-                    "warn  no cloudbase-init MSI in the payload — cloud-init \
-                     builds will be refused; run ./tools/fetch-payload.sh"
-                ),
+                Err(e) => println!("warn  cloudbase-init: {e}"),
             }
         }
         Some(problem) => {

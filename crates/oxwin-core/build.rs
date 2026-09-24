@@ -6,10 +6,11 @@
 
 //! Embeds the third-party payload into the binary.
 //!
-//! The media carries virtio guest drivers, Win32-OpenSSH and three EFI binaries — about
-//! 11 MB, none of it ours, all of it fetched by `tools/fetch-payload.sh` against pinned
-//! SHA-256 checksums and never committed. Embedding it is what makes a release artifact a
-//! single file: someone who downloads the app has no repository to walk up into.
+//! The media carries virtio guest drivers, Win32-OpenSSH, the cloudbase-init MSI and
+//! three EFI binaries — about 75 MB, none of it ours, all of it fetched by
+//! `tools/fetch-payload.sh` against pinned SHA-256 checksums and never committed.
+//! Embedding it is what makes a release artifact a single file: someone who
+//! downloads the app has no repository to walk up into.
 //!
 //! Three behaviours worth knowing about:
 //!
@@ -21,7 +22,8 @@
 //! - **What is embedded is cross-checked against `payload-manifest.json`.** Provenance is
 //!   enforced at download time by the checksums in `fetch-payload.sh`; this catches the
 //!   different failure of a partial or stale `assets/` — a driver the manifest lists and
-//!   the tree does not have, or one whose size has changed.
+//!   the tree does not have, or one whose size has changed. A manifest too old to
+//!   name the cloudbase-init MSI is a warning, and a hard failure when required.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -64,7 +66,7 @@ fn main() {
 
     let mut files = BTreeMap::new();
     collect(&assets, &assets, &mut files);
-    check_against_manifest(&assets, &files);
+    check_against_manifest(&assets, &files, required);
 
     let mut src = String::from(
         "/// Every file under `assets/`, keyed by its path relative to that directory.\n\
@@ -133,11 +135,16 @@ fn collect(root: &Path, dir: &Path, out: &mut BTreeMap<String, PathBuf>) {
 /// Cross-check the tree against the manifest. Scanned rather than parsed with serde: a
 /// build script that pulls in a dependency tree to read four fields is a poor trade, and
 /// the manifest is written by `fetch-payload.sh` two directories away.
-fn check_against_manifest(assets: &Path, files: &BTreeMap<String, PathBuf>) {
+fn check_against_manifest(
+    assets: &Path,
+    files: &BTreeMap<String, PathBuf>,
+    required: bool,
+) {
     let text = std::fs::read_to_string(assets.join("payload-manifest.json"))
         .expect("reading payload-manifest.json");
     let mut missing = Vec::new();
     let mut wrong_size = Vec::new();
+    let mut names_cloudbase = false;
 
     // Every "path": "..." the manifest names must exist, and every "size": N that
     // follows one must match. The manifest is machine-generated with a fixed shape.
@@ -161,12 +168,32 @@ fn check_against_manifest(assets: &Path, files: &BTreeMap<String, PathBuf>) {
                         .push(format!("{rel}: manifest {want}, found {got}"));
                 }
             }
-        } else if let Some(value) = field(line, "\"openSsh\":") {
+        } else if let Some(value) = field(line, "\"openSsh\":").or_else(|| {
+            let value = field(line, "\"cloudbaseInit\":")?;
+            names_cloudbase = true;
+            Some(value)
+        }) {
             let rel =
                 value.strip_prefix("assets/").unwrap_or(&value).to_string();
             if !files.contains_key(&rel) {
                 missing.push(rel);
             }
+        }
+    }
+
+    // The cloudbase-init MSI arrived after the manifest format did, so a manifest
+    // written by an older fetch-payload.sh does not name it. That is tolerable for a
+    // development build, but a release built from it would ship a binary whose
+    // default build (cloud-init on) refuses: so a required payload must name it.
+    if !names_cloudbase {
+        if required {
+            missing.push("cloudbaseInit (not named by the manifest)".into());
+        } else {
+            println!(
+                "cargo::warning=payload-manifest.json names no cloudbaseInit \
+                 MSI; builds with cloud-init will refuse. Rerun \
+                 ./tools/fetch-payload.sh."
+            );
         }
     }
 

@@ -120,12 +120,22 @@ pub fn lint(xml: &str, cx: &LintContext) -> Vec<Problem> {
     }
 
     if cx.cloud_init && !xml.contains("bootstrap.ps1") {
+        // Only a golden build has a sysprep answer file to fail on the clones;
+        // on a named build the cost is simply that nothing installs it.
+        let consequence = if cx.generalize {
+            "The generated sysprep answer file still runs it on each clone, so \
+             every one of those commands will fail with nothing installed to \
+             run."
+        } else {
+            "Nothing else installs it, so the machine comes up with no \
+             cloud-init: no per-instance SSH keys and no user_data."
+        };
         v.push(Problem::warn(
             "unattend_cloud_init",
-            "This file does not invoke setup\\bootstrap.ps1, which is what \
-             installs cloud-init. The generated sysprep answer file still runs \
-             it on each clone, so every one of those commands will fail with \
-             nothing installed to run.",
+            format!(
+                "This file does not invoke setup\\bootstrap.ps1, which is what \
+                 installs cloud-init. {consequence}"
+            ),
         ));
     }
 
@@ -562,6 +572,25 @@ mod tests {
             "{problems:?}"
         );
         assert!(problems.iter().all(|p| !p.blocking || p.field == "unattend"));
+    }
+
+    /// A named build has no sysprep answer file, so its warning must not
+    /// promise one: it names what does fail instead.
+    #[test]
+    fn the_cloud_init_warning_matches_the_kind_of_build() {
+        let message = |generalize| {
+            let cx = LintContext { cloud_init: true, generalize, ..cx() };
+            lint("<unattend></unattend>", &cx)
+                .into_iter()
+                .find(|p| p.field == "unattend_cloud_init")
+                .expect("the warning")
+                .message
+        };
+        let named = message(false);
+        assert!(!named.contains("sysprep"), "{named}");
+        assert!(named.contains("no per-instance SSH keys"), "{named}");
+        let golden = message(true);
+        assert!(golden.contains("sysprep answer file"), "{golden}");
     }
 
     #[test]
