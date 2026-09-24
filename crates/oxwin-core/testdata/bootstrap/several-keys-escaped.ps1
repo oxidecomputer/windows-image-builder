@@ -103,9 +103,12 @@ if (Get-Service -Name sshd -ErrorAction SilentlyContinue) {
   $acl = Get-Acl $akFile
   $acl.SetAccessRuleProtection($true, $false)
   $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
-  foreach ($who in 'BUILTIN\Administrators', 'NT AUTHORITY\SYSTEM') {
+  # Names are localized and translating one throws on non-English Windows,
+  # so every principal here is a well-known SID instead.
+  foreach ($who in 'S-1-5-32-544', 'S-1-5-18') {
+    $sid = New-Object System.Security.Principal.SecurityIdentifier($who)
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-      $who, 'FullControl', 'None', 'None', 'Allow'))) | Out-Null
+      $sid, 'FullControl', 'None', 'None', 'Allow'))) | Out-Null
   }
   Set-Acl -Path $akFile -AclObject $acl
   Log "Wrote $($keys.Count) authorized key(s)"

@@ -205,9 +205,12 @@ if (Get-Service -Name sshd -ErrorAction SilentlyContinue) {
   $acl = Get-Acl $akFile
   $acl.SetAccessRuleProtection($true, $false)
   $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
-  foreach ($who in 'BUILTIN\Administrators', 'NT AUTHORITY\SYSTEM') {
+  # Names are localized and translating one throws on non-English Windows,
+  # so every principal here is a well-known SID instead.
+  foreach ($who in 'S-1-5-32-544', 'S-1-5-18') {
+    $sid = New-Object System.Security.Principal.SecurityIdentifier($who)
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-      $who, 'FullControl', 'None', 'None', 'Allow'))) | Out-Null
+      $sid, 'FullControl', 'None', 'None', 'Allow'))) | Out-Null
   }
   Set-Acl -Path $akFile -AclObject $acl
   Log "Wrote $($keys.Count) authorized key(s)""#,
@@ -912,6 +915,28 @@ mod tests {
         })
         .unwrap();
         assert!(script.contains("'ssh-rsa AAAA o''brien@host'"));
+    }
+
+    /// Names are localized (e.g. `VORDEFINIERT\Administratoren`) and
+    /// `FileSystemAccessRule(string, ...)` resolving one through `NTAccount`
+    /// throws on non-English Windows, leaving `administrators_authorized_keys`
+    /// with `C:\`'s inherited ACL -- which OpenSSH then refuses to read.
+    #[test]
+    fn the_authorized_keys_acl_is_built_from_sids_not_names() {
+        let script =
+            build(&Config { ssh_keys: vec!["ssh-rsa AAAA".into()], ..base() })
+                .unwrap();
+        for sid in ["S-1-5-32-544", "S-1-5-18"] {
+            assert!(script.contains(sid), "{sid}");
+        }
+        assert!(script.contains(
+            "New-Object System.Security.Principal.SecurityIdentifier"
+        ));
+        assert!(
+            !script.contains(r"'BUILTIN\")
+                && !script.contains(r"'NT AUTHORITY\"),
+            "every principal in the ACL must be a SID, never a name literal"
+        );
     }
 
     /// The ESP fallback is the difference between a machine that boots after install

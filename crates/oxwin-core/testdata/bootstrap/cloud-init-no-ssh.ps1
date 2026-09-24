@@ -42,12 +42,16 @@ try {
   $oxAcl = Get-Acl -LiteralPath $oxDir
   $oxAcl.SetAccessRuleProtection($true, $false)
   $oxAcl.Access | ForEach-Object { $oxAcl.RemoveAccessRule($_) | Out-Null }
+  # Names are localized (e.g. VORDEFINIERT\Administratoren) and translating
+  # one throws on non-English Windows, so every principal here is a
+  # well-known SID instead.
   foreach ($grant in @(
-      @('NT AUTHORITY\SYSTEM', 'FullControl'),
-      @('BUILTIN\Administrators', 'FullControl'),
-      @('BUILTIN\Users', 'ReadAndExecute'))) {
+      @('S-1-5-18', 'FullControl'),
+      @('S-1-5-32-544', 'FullControl'),
+      @('S-1-5-32-545', 'ReadAndExecute'))) {
+    $sid = New-Object System.Security.Principal.SecurityIdentifier($grant[0])
     $oxAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-      $grant[0], $grant[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) | Out-Null
+      $sid, $grant[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) | Out-Null
   }
   Set-Acl -LiteralPath $oxDir -AclObject $oxAcl
   Log "${oxDir}: access limited to SYSTEM and Administrators; Users may read"
