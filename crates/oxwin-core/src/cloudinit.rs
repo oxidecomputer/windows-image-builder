@@ -609,16 +609,8 @@ TLog "starting"
              }}\n"
         ));
     }
-    s.push_str(
-        r#"# The task fires at every startup, including boots where Setup is still
-# working. Do nothing until it has finished and let the next boot try again.
-$setup = Get-ItemProperty -Path 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue
-if ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {
-  TLog "Setup still in progress; waiting for the next boot"
-  exit 0
-}
-"#,
-    );
+    s.push_str(&crate::bootstrap::setup_wait("TLog"));
+    s.push('\n');
     if !config.cloud_init.is_some_and(|c| c.manage_account) {
         s.push_str(&profile_step(config));
     }
@@ -1250,6 +1242,40 @@ mod tests {
             for later in ["Add-Type", "Get-ItemProperty", "Test-Path"] {
                 if let Some(at) = task.find(later) {
                     assert!(first < at, "{later} precedes the first log");
+                }
+            }
+        }
+    }
+
+    /// The task waits in place for Setup, as `OxideGeneralize` does, rather
+    /// than exiting to a next boot nothing triggers. On a golden image the
+    /// marker gate still comes first, and the wait precedes everything that
+    /// needs a finished install.
+    #[test]
+    fn the_task_waits_for_setup_in_place() {
+        let wait = crate::bootstrap::setup_wait("TLog");
+        for manage_account in [false, true] {
+            for generalize in [false, true] {
+                let script = install_block(&Config {
+                    generalize,
+                    cloud_init: Some(CloudInit { manage_account }),
+                    ..base()
+                });
+                let task = here_string(&script, "$ciTask");
+                assert!(!task.contains("waiting for the next boot"), "{task}");
+                let at = task.find(&wait).expect("the wait, verbatim");
+                assert!(task.contains("Start-Sleep -Seconds 30"));
+                assert!(task.contains("if ($waited -ge 1800)"));
+                let starting = task.find("\nTLog \"starting\"\n").unwrap();
+                assert!(starting < at);
+                if generalize {
+                    let gate = task.find("not generalized yet").unwrap();
+                    assert!(gate < at, "the golden gate must come first");
+                }
+                let service = task.find("Get-Service").unwrap();
+                assert!(at < service);
+                if let Some(profile) = task.find("ProfileList") {
+                    assert!(at < profile);
                 }
             }
         }

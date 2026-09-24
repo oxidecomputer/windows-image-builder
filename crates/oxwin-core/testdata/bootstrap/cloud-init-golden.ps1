@@ -315,11 +315,23 @@ if (-not (Test-Path "$env:SystemDrive\oxide-generalized.txt")) {
   exit 0
 }
 # The task fires at every startup, including boots where Setup is still
-# working. Do nothing until it has finished and let the next boot try again.
+# working. Wait here for it to finish. Do NOT exit and wait for the next
+# boot: nothing reboots the machine after OOBE, so that next boot never
+# comes. Only after 30 minutes is it left to the next boot.
 $setup = Get-ItemProperty -Path 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue
 if ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {
-  TLog "Setup still in progress; waiting for the next boot"
-  exit 0
+  TLog "Setup still in progress; waiting up to 30 minutes for it to finish"
+  $waited = 0
+  while ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {
+    if ($waited -ge 1800) {
+      TLog "Setup still in progress after $waited seconds; giving up until the next boot"
+      exit 0
+    }
+    Start-Sleep -Seconds 30
+    $waited += 30
+    $setup = Get-ItemProperty -Path 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue
+  }
+  TLog "Setup finished after waiting $waited seconds"
 }
 # Keep-my-account mode. SetUserSSHPublicKeysPlugin writes to the account's
 # profile, which it finds through ProfileList\<SID>\ProfileImagePath, and an
@@ -546,12 +558,24 @@ if (Test-Path $marker) {
   Unregister-ScheduledTask -TaskName 'OxideGeneralize' -Confirm:$false -ErrorAction SilentlyContinue
   exit 0
 }
-# The task fires at every startup, including boots where Setup is still working. Do
-# nothing until it has finished and let the next boot try again.
+# The task fires at every startup, including boots where Setup is still
+# working. Wait here for it to finish. Do NOT exit and wait for the next
+# boot: nothing reboots the machine after OOBE, so that next boot never
+# comes. Only after 30 minutes is it left to the next boot.
 $setup = Get-ItemProperty -Path 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue
 if ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {
-  GLog "Setup still in progress; waiting for the next boot"
-  exit 0
+  GLog "Setup still in progress; waiting up to 30 minutes for it to finish"
+  $waited = 0
+  while ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {
+    if ($waited -ge 1800) {
+      GLog "Setup still in progress after $waited seconds; giving up until the next boot"
+      exit 0
+    }
+    Start-Sleep -Seconds 30
+    $waited += 30
+    $setup = Get-ItemProperty -Path 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue
+  }
+  GLog "Setup finished after waiting $waited seconds"
 }
 $unattend = "$env:SystemRoot\System32\Sysprep\oxide-unattend.xml"
 if (-not (Test-Path $unattend)) {

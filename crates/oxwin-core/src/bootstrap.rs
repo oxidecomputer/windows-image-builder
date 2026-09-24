@@ -39,6 +39,57 @@ use anyhow::Result;
 /// the build and the install both looking fine -- the `VOLUME_LABEL` shape.
 pub const GENERALIZED_MARKER: &str = "oxide-generalized.txt";
 
+/// How often, in seconds, a startup task re-reads the Setup flags while it
+/// waits for Setup to finish.
+pub const SETUP_POLL_SECONDS: u32 = 30;
+
+/// How long, in seconds, a startup task waits for Setup before it gives up
+/// and leaves it to the next boot.
+pub const SETUP_WAIT_LIMIT_SECONDS: u32 = 30 * 60;
+
+/// The PowerShell block a startup task runs before doing anything that needs
+/// a finished install: wait, in place, for Setup and OOBE to clear. `log` is
+/// the name of the script's own log function. LF-separated, no trailing
+/// newline.
+///
+/// **It waits rather than exiting for the next boot**, because nothing
+/// reboots the machine after OOBE. QEMU run 4: the golden's `OxideGeneralize`
+/// fired while OOBE was still finishing, logged "waiting for the next boot"
+/// and exited, and the machine sat at the logon screen with no sysprep.exe
+/// running until a SAC `restart`. On a rack that is a golden that never
+/// shuts down. Shared by `OxideGeneralize` and `OxideCloudInit`, so there is
+/// one spelling of the loop.
+///
+/// Nothing in it throws: the read is `-ErrorAction SilentlyContinue`, and a
+/// failed read leaves `$setup` null, which compares as still in progress --
+/// as the single check before it did.
+pub(crate) fn setup_wait(log: &str) -> String {
+    let poll = SETUP_POLL_SECONDS;
+    let limit = SETUP_WAIT_LIMIT_SECONDS;
+    let minutes = limit / 60;
+    format!(
+        "# The task fires at every startup, including boots where Setup is still\n\
+         # working. Wait here for it to finish. Do NOT exit and wait for the next\n\
+         # boot: nothing reboots the machine after OOBE, so that next boot never\n\
+         # comes. Only after {minutes} minutes is it left to the next boot.\n\
+         $setup = Get-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -ErrorAction SilentlyContinue\n\
+         if ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {{\n\
+         \x20 {log} \"Setup still in progress; waiting up to {minutes} minutes for it to finish\"\n\
+         \x20 $waited = 0\n\
+         \x20 while ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {{\n\
+         \x20   if ($waited -ge {limit}) {{\n\
+         \x20     {log} \"Setup still in progress after $waited seconds; giving up until the next boot\"\n\
+         \x20     exit 0\n\
+         \x20   }}\n\
+         \x20   Start-Sleep -Seconds {poll}\n\
+         \x20   $waited += {poll}\n\
+         \x20   $setup = Get-ItemProperty -Path 'HKLM:\\SYSTEM\\Setup' -ErrorAction SilentlyContinue\n\
+         \x20 }}\n\
+         \x20 {log} \"Setup finished after waiting $waited seconds\"\n\
+         }}"
+    )
+}
+
 /// Append a block of literal lines. Split on LF so a multi-line literal in the source
 /// reads the way it will in the guest; the CRLF join happens once, at the end.
 fn push(lines: &mut Vec<String>, block: &str) {
@@ -313,8 +364,8 @@ Log "Oxide guest bootstrap complete""#,
     // session nobody is can see.
     //
     // So what this block emits is only the *registration*: a SYSTEM task that fires at
-    // every startup, does nothing while Setup is still running, and generalizes on the
-    // first boot where Setup reports itself finished.
+    // every startup, waits in place while Setup is still running (see `setup_wait`),
+    // and generalizes once Setup reports itself finished.
     if config.generalize {
         // Its own copy of the answer file, with the password still in it. See
         // `unattend::build_sysprep`: the copy Windows caches has the password replaced
@@ -361,15 +412,14 @@ function GLog($m) {
   GLog "already generalized; this is a clone, nothing to do"
   Unregister-ScheduledTask -TaskName 'OxideGeneralize' -Confirm:$false -ErrorAction SilentlyContinue
   exit 0
-}
-# The task fires at every startup, including boots where Setup is still working. Do
-# nothing until it has finished and let the next boot try again.
-$setup = Get-ItemProperty -Path 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue
-if ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0) {
-  GLog "Setup still in progress; waiting for the next boot"
-  exit 0
-}
-$unattend = "$env:SystemRoot\System32\Sysprep\oxide-unattend.xml"
+}"#,
+        );
+        // After the marker check, never before it: a clone must exit at once,
+        // not wait for anything.
+        push(&mut lines, &setup_wait("GLog"));
+        push(
+            &mut lines,
+            r#"$unattend = "$env:SystemRoot\System32\Sysprep\oxide-unattend.xml"
 if (-not (Test-Path $unattend)) {
   GLog "WARNING: $unattend is missing. Sysprep would fall back to the cached answer"
   GLog "file, whose password Windows has already deleted, and the clone would stop at"
@@ -552,6 +602,37 @@ mod tests {
             unknown < undo,
             "an unknown exit code must not reach the marker removal"
         );
+    }
+
+    /// QEMU run 4: `OxideGeneralize` fired while OOBE was still finishing,
+    /// exited to "wait for the next boot", and nothing ever rebooted -- a
+    /// golden at the logon screen with no sysprep.exe running. It waits in
+    /// place now, and only after the clone check.
+    #[test]
+    fn generalize_waits_for_setup_in_place() {
+        let wait = setup_wait("GLog");
+        // The loop, with its poll and its bound.
+        assert!(wait.contains("\n    Start-Sleep -Seconds 30\n"), "{wait}");
+        assert!(wait.contains("\n    if ($waited -ge 1800) {\n"), "{wait}");
+        assert!(wait.contains(
+            "\n  while ($setup.SystemSetupInProgress -ne 0 \
+             -or $setup.OOBEInProgress -ne 0) {\n"
+        ));
+        // The only exit is the one past the bound.
+        let bound = wait.find("if ($waited -ge 1800)").unwrap();
+        assert_eq!(wait.matches("exit 0").count(), 1, "{wait}");
+        assert!(bound < wait.find("exit 0").unwrap());
+        assert!(!wait.contains("waiting for the next boot"), "{wait}");
+
+        let golden = build(&Config { generalize: true, ..base() }).unwrap();
+        let golden = golden.replace("\r\n", "\n");
+        assert!(!golden.contains("waiting for the next boot"));
+        let at = golden.find(&wait).expect("the wait, verbatim");
+        // A clone exits before it waits for anything.
+        let marker = golden.find("if (Test-Path $marker) {").unwrap();
+        assert!(marker < at, "the marker check must come first");
+        // And sysprep comes after it.
+        assert!(at < golden.find("Start-Process -FilePath").unwrap());
     }
 
     /// The generated PowerShell is written out with -Encoding ASCII, so a stray
