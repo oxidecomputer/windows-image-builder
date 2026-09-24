@@ -15,6 +15,9 @@
 
 # Built answer disks and installer images — multi-GB, always regenerable.
 *.img
+*.zip
+*.msi
+*.iso
 
 # Per-machine Claude Code permission grants, not project config.
 .claude/settings.local.json
@@ -24,3 +27,4 @@
 # Working notes, kept locally rather than in the repository.
 CLAUDE.md
 PLAN.md
+/docs/superpowers
