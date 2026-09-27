@@ -262,6 +262,13 @@ marked done is skipped on the next boot rather than re-run.
 For a **named** deployment `SetHostNamePlugin` is omitted entirely, from both
 files: the user typed a name and it is not cloud-init's to overwrite.
 
+Task 15: `SetUserSSHPublicKeysPlugin` runs *before* `SetHostNamePlugin` in
+`service_conf`, not after -- a rack clone showed the key written only after
+the rename's reboot, so SSH with the instance key failed for the whole of
+boot 1, and moving the key plugin ahead of the rename puts the key on boot 1
+instead, at the cost of one dropped session in the moments before the rename
+reboot follows.
+
 ## The conf files
 
 Generated from `Config`, pinned by goldens in `testdata/cloudbase/`,
@@ -299,10 +306,11 @@ one-shot" above. `RDPSettingsPlugin` only when RDP is enabled.
 `groups=Administrators` from the credentials, `allow_reboot=true` (unlike the
 one-shot, so a rename can reboot), the same single metadata service and
 config-drive block, `log_file=cloudbase-init.log`, and plugins `CreateUser`
-(Mode B only), `SetHostName` (golden only, and only here), `SetUserSSHPublicKeys`,
-`ExtendVolumes`, `UserData`, with `user_data_plugins` set to the cloud-config
-and shell-script plugins so both `#cloud-config` YAML and
-`<powershell>`/`<script>` blobs work.
+(Mode B only), `SetUserSSHPublicKeys`, `SetHostName` (golden only, and only
+here), `ExtendVolumes`, `UserData` -- keys before the rename, per Task 15
+above -- with `user_data_plugins` set to the cloud-config and shell-script
+plugins so both `#cloud-config` YAML and `<powershell>`/`<script>` blobs
+work.
 
 ### Four deliberate departures from the prototype
 

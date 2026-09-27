@@ -237,9 +237,17 @@ pub fn unattend_conf(config: &Config) -> String {
 pub fn service_conf(config: &Config) -> String {
     // Order: CreateUser first when present -- SetHostNamePlugin does not need
     // the account, and there is no reason to delay account creation behind a
-    // reboot. SetHostName next, ahead of the key/user-data plugins that a
-    // rename should not block: see `is_golden` for why the rename lives here
-    // and why the reboot it triggers cannot loop.
+    // reboot. Keys next: a rack clone (2026-09-27) showed the key plugin
+    // still behind SetHostNamePlugin's reboot, so SSH with the instance key
+    // failed on boot 1 and only worked ~20s into boot 2, after the rename
+    // rebooted the guest. Moving the key plugin ahead of SetHostNamePlugin
+    // lands the key on boot 1; the rename reboot still follows moments
+    // later, so a session opened in that narrow gap is dropped once, but
+    // every session after boot 1's key write has the right key rather than
+    // none. SetHostName runs after the key plugin and before
+    // ExtendVolumes/UserData, which a rename should not block: see
+    // `is_golden` for why the rename lives here and why the reboot it
+    // triggers cannot loop.
     let mut plugins: Vec<&str> = Vec::new();
     if manages_account(config) {
         // Mode B. Creates the Windows profile the key plugin needs -- and
@@ -248,12 +256,14 @@ pub fn service_conf(config: &Config) -> String {
         plugins
             .push("cloudbaseinit.plugins.windows.createuser.CreateUserPlugin");
     }
+    plugins.push(
+        "cloudbaseinit.plugins.common.sshpublickeys.SetUserSSHPublicKeysPlugin",
+    );
     if is_golden(config) {
         plugins
             .push("cloudbaseinit.plugins.common.sethostname.SetHostNamePlugin");
     }
     plugins.extend([
-        "cloudbaseinit.plugins.common.sshpublickeys.SetUserSSHPublicKeysPlugin",
         "cloudbaseinit.plugins.windows.extendvolumes.ExtendVolumesPlugin",
         "cloudbaseinit.plugins.common.userdata.UserDataPlugin",
     ]);
@@ -934,20 +944,22 @@ mod tests {
     }
 
     /// CreateUserPlugin (Mode B) does not need the new hostname, so it runs
-    /// first rather than being held up behind SetHostNamePlugin's reboot; the
-    /// key and user-data plugins run last, after the name is settled.
+    /// first rather than being held up behind SetHostNamePlugin's reboot.
+    /// Keys run next, ahead of the rename, so they land on the guest's first
+    /// boot rather than being lost to the rename reboot -- see the comment
+    /// above `service_conf`'s plugin list. Hostname and the rest follow.
     #[test]
-    fn the_service_plugin_order_is_create_user_then_hostname_then_the_rest() {
+    fn the_service_plugin_order_is_create_user_then_keys_then_hostname() {
         let managed_golden = Config {
             cloud_init: Some(CloudInit { manage_account: true }),
             ..base()
         };
         let conf = service_conf(&managed_golden);
         let create = conf.find("CreateUserPlugin").expect("CreateUserPlugin");
+        let keys = conf.find("SetUserSSHPublicKeysPlugin").expect("keys");
         let hostname =
             conf.find("SetHostNamePlugin").expect("SetHostNamePlugin");
-        let keys = conf.find("SetUserSSHPublicKeysPlugin").expect("keys");
-        assert!(create < hostname && hostname < keys, "{conf}");
+        assert!(create < keys && keys < hostname, "{conf}");
     }
 
     /// Mode A must not carry `CreateUserPlugin`: it resets the password to a

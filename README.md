@@ -258,6 +258,8 @@ finished, not in the specialize-pass one-shot — Setup applies the answer file'
 own placeholder computer name after that one-shot runs, which would otherwise
 overwrite the rename. Renaming the guest needs a reboot, so **a golden image's
 clone takes one extra reboot the first time cloud-init finds a config drive.**
+The SSH key is written before that rename reboot, so it is usable from the
+clone's first boot rather than only after the reboot the rename triggers.
 
 **Two account modes**, `--cloud-init-account=keep|manage`:
 
