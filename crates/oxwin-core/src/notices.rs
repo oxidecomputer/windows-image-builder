@@ -278,7 +278,7 @@ pub static PAYLOAD: &[Component] = &[
         // Over-complying by conveying notice and source we might not
         // strictly owe costs nothing; under-complying if LGPL actually
         // governs would not. A future reader who disagrees with that
-        // reading has both statements above to redo the judgement.
+        // reading has both statements above to redo the judgment.
         //
         // No commit or tag of jpassing/elevate could be tied to the exact
         // object code cloudbase-init built -- the binary carries no

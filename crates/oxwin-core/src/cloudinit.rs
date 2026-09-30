@@ -111,7 +111,7 @@ const METADATA_SERVICE: &str =
 /// plugin overwrites it with the instance's name when it is there. A named
 /// machine gets neither -- the user typed that name.
 ///
-/// Task 13: the plugin used to run from the `specialize` one-shot instead, but
+/// The plugin used to run from the `specialize` one-shot instead, but
 /// Setup applies `<ComputerName>*</ComputerName>` *after* that pass's
 /// `RunSynchronousCommand`s, so it silently overwrote cloud-init's rename
 /// (`cloudbase-init-unattend.log` showed the rename; the clone still came up
@@ -887,7 +887,7 @@ mod tests {
 
     /// A named deployment is a machine whose name the user typed. Cloud-init has
     /// no business overwriting it, so the plugin is absent from both files.
-    /// A golden image gets it too, but only in the service conf: Task 13 found
+    /// A golden image gets it too, but only in the service conf: tests found
     /// Setup applies the sysprep answer file's `<ComputerName>*</ComputerName>`
     /// after the specialize one-shot runs, so a rename made there is
     /// overwritten. See `is_golden`.
@@ -907,7 +907,7 @@ mod tests {
         assert!(service_conf(&base()).contains("SetHostNamePlugin"));
     }
 
-    /// Task 13: the one-shot never renames the guest, in any configuration --
+    /// The one-shot never renames the guest, in any configuration --
     /// Setup's own `<ComputerName>*</ComputerName>` application, which runs
     /// after the specialize pass's RunSynchronousCommands, would silently
     /// undo it.
@@ -1075,11 +1075,11 @@ mod tests {
         assert!(install_block(&base()).contains("Unattend.xml"));
     }
 
-    /// Mode A materialises the profile itself, because without one
+    /// Mode A materializes the profile itself, because without one
     /// `get_user_home` raises `User profile not found!` and the metadata keys
     /// are simply absent. Mode B lets `CreateUserPlugin` do it.
     #[test]
-    fn only_mode_a_materialises_the_profile() {
+    fn only_mode_a_materializes_the_profile() {
         let keep = install_block(&base());
         assert!(keep.contains("CreateProfile("));
         let managed = install_block(&Config {
@@ -1151,7 +1151,7 @@ mod tests {
         assert!(script.contains(&format!("$mtools = '{MTOOLS_PATH}'")));
     }
 
-    /// Task 12: mtools' own sanity check refuses any FAT volume whose total
+    /// mtools' own sanity check refuses any FAT volume whose total
     /// sector count is not a multiple of its declared sectors-per-track,
     /// which cloudbase-init's direct `mlabel` call cannot be told to skip
     /// except through mtools' own configuration. The install side sets the
@@ -1418,7 +1418,7 @@ mod tests {
     /// In .NET, `(?m)$` matches before `\n` only, never before `\r`, and the
     /// sshd_config_default OpenSSH ships is CRLF: a bare `$` never matched on
     /// a guest. The line end is a lookahead, so the `\r` is kept, not eaten.
-    /// Behaviour against the fixtures is checked with pwsh (see the task-3
+    /// Behavior against the fixtures is checked with pwsh (see the task-3
     /// report); what can be held here is the shape.
     #[test]
     fn the_sshd_pattern_matches_crlf_line_ends() {

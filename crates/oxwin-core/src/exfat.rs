@@ -1024,7 +1024,7 @@ mod tests {
         spec.name.replace(' ', "-")
     }
 
-    /// Serialise a block stream: offset as u64 LE, length as u32 LE, then the bytes.
+    /// Serialize a block stream: offset as u64 LE, length as u32 LE, then the bytes.
     /// This is the encoding the committed goldens were written in, so it is fixed.
     fn encode_blocks(blocks: &[(u64, Vec<u8>)]) -> Vec<u8> {
         let mut out = Vec::new();

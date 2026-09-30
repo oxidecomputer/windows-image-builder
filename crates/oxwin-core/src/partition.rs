@@ -72,7 +72,7 @@ pub struct Partition {
 /// layout.
 ///
 /// Note what is *not* here: the WinRE recovery partition Windows normally creates.
-/// That is existing behaviour, not a decision taken by this module.
+/// That is existing behavior, not a decision taken by this module.
 pub fn default_layout() -> Vec<Partition> {
     vec![
         Partition {

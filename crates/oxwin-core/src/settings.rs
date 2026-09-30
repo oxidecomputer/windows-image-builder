@@ -55,7 +55,7 @@ impl Deployment {
 pub struct Credentials {
     pub username: String,
     pub password: String,
-    /// Optional. Authorised for SSH in addition to the password.
+    /// Optional. Authorized for SSH in addition to the password.
     pub keys: Vec<String>,
 }
 
@@ -92,7 +92,7 @@ pub struct CloudInit {
     /// upstream's only way to create the Windows *profile* that
     /// `SetUserSSHPublicKeysPlugin` needs is `CreateUserPlugin`, and it sets a
     /// password on every path it takes -- including the branch for an account
-    /// that already exists. `false` keeps the typed password and materialises
+    /// that already exists. `false` keeps the typed password and materializes
     /// the profile ourselves instead.
     pub manage_account: bool,
 }
@@ -212,7 +212,7 @@ impl WindowsRelease {
     /// watched it finish: a rack attempt was given up on after fifteen minutes, since
     /// 2016's Setup writes nothing to the serial console and the guest has no
     /// framebuffer, so a slow install and a stuck one look identical from outside. It
-    /// was characterised under QEMU instead — see `TESTED-MEDIA.md` — and is not
+    /// was characterized under QEMU instead — see `TESTED-MEDIA.md` — and is not
     /// supported at this time.
     pub fn verified_on_hardware(self) -> bool {
         matches!(
@@ -227,7 +227,7 @@ impl WindowsRelease {
     ///
     /// The media's own signal for this is `PRODUCTTYPE`:`WinNT` against `ServerNT`,
     /// never a substring of an edition name, which is a marketing string and translated
-    /// on localised media.
+    /// on localized media.
     pub fn is_client(self) -> bool {
         matches!(self, WindowsRelease::Windows10 | WindowsRelease::Windows11)
     }

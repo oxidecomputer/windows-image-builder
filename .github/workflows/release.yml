@@ -39,7 +39,7 @@ jobs:
           key: payload-${{ hashFiles('tools/fetch-payload.sh') }}
       - run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       - run: ./tools/fetch-payload.sh
-      - name: Summarise what was fetched
+      - name: Summarize what was fetched
         run: |
           echo "payload files: $(find assets -type f | wc -l)"
           du -sh assets

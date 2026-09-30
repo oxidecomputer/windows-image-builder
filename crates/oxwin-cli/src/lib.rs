@@ -103,7 +103,7 @@ usage: oxwin doctor
   --password=<secret>    the same, on the command line -- readable by anything
                          that can run `ps`, so it warns. OXWIN_PASSWORD works
                          too and is not in `ps`
-  --ssh-key=<a;b>        public keys authorised for SSH, semicolon separated
+  --ssh-key=<a;b>        public keys authorized for SSH, semicolon separated
   --drivers=0            do not inject virtio drivers (diagnostic control:
                          isolates a hang in Setup from the drivers)
   --verbose-serial       an OXIDE-STAGE marker on COM1 at the start of
@@ -216,7 +216,7 @@ snapshot/image/teardown options:
 
   A golden build finishes by shutting itself down, so the signal is the
   instance reaching `stopped`: a guest shutdown stops the instance and a
-  guest reboot does not. Port 22 is polled alongside it for one judgement —
+  guest reboot does not. Port 22 is polled alongside it for one judgment —
   stopping without it ever having answered means Setup never finished.
 
 golden options:
@@ -396,7 +396,7 @@ fn config_from_args(args: &[String], extras: &[Extra]) -> Result<Config> {
         // An empty or whitespace-only `--product-key=` is not "no key was given" --
         // `opt` still returns `Some("")` -- and an empty `<Key>` element is not the
         // same as omitting it: Setup treats it as a key to resolve, matches no
-        // edition, and stalls at the licence-terms page with no error. Trim first
+        // edition, and stalls at the license-terms page with no error. Trim first
         // and treat the empty result as `None`, matching what the GUI already does
         // in `Draft::to_settings`, which stores the trimmed value too.
         product_key: opt("product-key")
@@ -1439,19 +1439,19 @@ fn golden_common(
 ///  was run against a rack.
 ///
 /// The second Ctrl-C exits immediately. Teardown talks to the network, so it can hang,
-/// and a cancel that cannot itself be cancelled  leaving the disk stranded.
+/// and a cancel that cannot itself be canceled  leaving the disk stranded.
 fn cancel_on_interrupt() -> Cancel {
     let cancel = Cancel::new();
     let handler = cancel.clone();
     let result = ctrlc::set_handler(move || {
-        if handler.is_cancelled() {
+        if handler.is_canceled() {
             eprintln!("\nabandoning. The disk may be left mid-import: run");
             eprintln!("  oxide disk import stop  --project <p> --disk <d>");
             eprintln!("  oxide disk import finalize --project <p> --disk <d>");
             eprintln!("before it can be deleted.");
             std::process::exit(130);
         }
-        eprintln!("\ncancelling and cleaning up — Ctrl-C again to abandon");
+        eprintln!("\ncanceling and cleaning up — Ctrl-C again to abandon");
         handler.cancel();
     });
     if result.is_err() {
@@ -1693,7 +1693,7 @@ mod tests {
     /// Nothing can inspect a `match` at runtime, so this reads the arms out of this
     /// file's own source. Ugly, and the alternative is a pair of lists nobody
     /// diffs. `-h`/`--help`/`help` are excluded deliberately: they are handled here
-    /// but the dispatcher recognises them separately, since a bare `--help` has to
+    /// but the dispatcher recognizes them separately, since a bare `--help` has to
     /// reach the CLI without being a subcommand.
     #[test]
     fn every_command_is_handled() {
@@ -1906,7 +1906,7 @@ mod tests {
     /// `--product-key=` with nothing after the `=` is not "install with no key" by
     /// accident -- it must become `None`, not `Some("")`. An empty `<Key>` element
     /// in the answer file is not the same as omitting it: Setup treats it as a key
-    /// to resolve, matches no edition, and stalls at the licence-terms page with no
+    /// to resolve, matches no edition, and stalls at the license-terms page with no
     /// error anywhere.
     #[test]
     fn an_empty_product_key_flag_is_none() {

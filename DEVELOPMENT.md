@@ -280,7 +280,7 @@ The standing preference is to own the code if it is not too complex. Concretely:
 Structure:
 
 - `theme.rs` — the palette in one place. `PRIMARY #00b77d`, `SECONDARY #002923`,
-  `GREY #292c2f`, `BACKGROUND #0b0e12`, plus derived neutrals for text and warnings, which
+  `GRAY #292c2f`, `BACKGROUND #0b0e12`, plus derived neutrals for text and warnings, which
   the brand list does not cover but legibility requires.
 - `stepper.rs` — the stage indicator, painted rather than assembled from widgets. The check
   mark is drawn from two line segments because the default font set cannot be relied on for
@@ -310,7 +310,7 @@ background thread does not wake the event loop.
 
 Two things worth noting:
 
-- Cancelling deletes the partial image. A half-written image that looks like a finished
+- Canceling deletes the partial image. A half-written image that looks like a finished
   one is worse than no image.
 - Stages are re-enterable. Someone who waits eleven minutes and then wants a different
   hostname should not have to start over.
@@ -478,7 +478,7 @@ serial → the chooser booting the installed OS on the next boot
 
 Two things QEMU cannot test, so do not trust a local pass as proof:
 
-- QEMU honours guest NVRAM, so it never re-enters our media after install and
+- QEMU honors guest NVRAM, so it never re-enters our media after install and
   **structurally cannot exercise the chooser's second branch**. Only real hardware can.
 - The VPC firewall does not exist locally, so RDP appears to work in QEMU and then times
   out on a rack.

@@ -654,7 +654,7 @@ mod tests {
         );
         assert!(
             chunks.next().expect("an error, not the end").is_err(),
-            "a cancelled upload must not yield chunks to send"
+            "a canceled upload must not yield chunks to send"
         );
         assert!(chunks.next().is_none(), "and must not resume afterwards");
     }

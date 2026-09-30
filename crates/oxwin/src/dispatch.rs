@@ -23,7 +23,7 @@ pub enum Route {
 }
 
 /// Arguments that ask for the CLI without naming a subcommand. `oxwin --help` has
-/// to print usage rather than open a window, so these are recognised alongside
+/// to print usage rather than open a window, so these are recognized alongside
 /// `oxwin_cli::COMMANDS` and excluded from that list.
 const HELP: &[&str] = &["-h", "--help", "help"];
 
@@ -46,7 +46,7 @@ pub fn route_with(args: &[String], exists: impl Fn(&Path) -> bool) -> Route {
     }
 
     // A process serial number, which older macOS LaunchServices hands a bundled
-    // app. Unrecognised, it would take the CLI's unknown-command path — so a click
+    // app. Unrecognized, it would take the CLI's unknown-command path — so a click
     // would fail on exactly the machines the bundle exists for.
     if first.starts_with("-psn_") {
         return Route::Gui(None);

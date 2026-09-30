@@ -12,7 +12,7 @@
 //! Embedding it is what makes a release artifact a single file: someone who
 //! downloads the app has no repository to walk up into.
 //!
-//! Three behaviours worth knowing about:
+//! Three behaviors worth knowing about:
 //!
 //! - **A missing `assets/` is not an error.** It emits an empty table so `cargo test`
 //!   still runs on a fresh clone with no download. The tests do not need the payload, and

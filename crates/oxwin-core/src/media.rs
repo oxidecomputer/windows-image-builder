@@ -74,7 +74,7 @@ pub struct MediaInfo {
     pub release: Option<WindowsRelease>,
     /// Whether `build` matched a base build in the release table. `false` alongside a
     /// `Some(release)` means that release is a guess, and the caller has to say so.
-    pub build_recognised: bool,
+    pub build_recognized: bool,
 }
 
 /// Read the media and report what it is.
@@ -107,7 +107,7 @@ pub fn inspect(media: &Media) -> Result<MediaInfo> {
     });
 
     let first = images.first();
-    let (release, build_recognised) = release_of(&images);
+    let (release, build_recognized) = release_of(&images);
     Ok(MediaInfo {
         media: media.clone(),
         wim_size,
@@ -116,12 +116,12 @@ pub fn inspect(media: &Media) -> Result<MediaInfo> {
         build: first.and_then(|i| i.build),
         product_type: first.map(|i| i.product_type.clone()).unwrap_or_default(),
         release,
-        build_recognised,
+        build_recognized,
         images,
     })
 }
 
-/// Which release is this, and did we recognise its build?
+/// Which release is this, and did we recognize its build?
 ///
 /// `PRODUCTTYPE` and `BUILD` together, never either alone. **Server 2025 and Windows 11
 /// 24H2 are both build 26100**, so a build-only match installs the wrong answer file with
@@ -372,7 +372,7 @@ pub fn problems_for_image(
     v
 }
 
-/// Which release an image list describes, and whether its build was recognised.
+/// Which release an image list describes, and whether its build was recognized.
 ///
 /// The list's own answer, taken from the first image; [`problems_for`] is what reports a
 /// list whose images disagree.
@@ -673,7 +673,7 @@ mod tests {
                 ));
                 assert!(
                     exact,
-                    "{} build {build} not recognised",
+                    "{} build {build} not recognized",
                     release.label()
                 );
                 assert_eq!(
@@ -741,7 +741,7 @@ mod tests {
     }
 
     /// Server 2016 is build 14393 and is now a release in its own right, not the
-    /// nearest-neighbour guess to Server 2019 it used to resolve to.
+    /// nearest-neighbor guess to Server 2019 it used to resolve to.
     #[test]
     fn server_2016_is_an_exact_match_rather_than_a_guess() {
         let (release, exact) =
@@ -783,7 +783,7 @@ mod tests {
 
     fn info(images: Vec<wim::Image>) -> MediaInfo {
         let first = images.first().cloned();
-        let (release, build_recognised) =
+        let (release, build_recognized) =
             first.as_ref().map(detect_release).unwrap_or((None, false));
         MediaInfo {
             media: Media::Iso("/tmp/test.iso".into()),
@@ -793,7 +793,7 @@ mod tests {
             build: first.as_ref().and_then(|i| i.build),
             product_type: first.map(|i| i.product_type).unwrap_or_default(),
             release,
-            build_recognised,
+            build_recognized,
             images,
         }
     }
@@ -893,7 +893,7 @@ mod tests {
     /// the build and the driver directory it guessed — those are what someone checking
     /// the guess needs.
     #[test]
-    fn an_unrecognised_build_warns_and_still_builds() {
+    fn an_unrecognized_build_warns_and_still_builds() {
         let info = info(vec![image("ServerNT", 30000, "Server")]);
         assert!(info.is_buildable());
         let warning = info
@@ -1039,7 +1039,7 @@ mod tests {
             info.product_type
         );
         assert!(
-            info.build_recognised,
+            info.build_recognized,
             "build {:?} is not in the release table; if this ISO is legitimate, add it",
             info.build
         );

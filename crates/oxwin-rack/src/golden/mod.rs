@@ -538,7 +538,7 @@ mod tests {
     /// already succeeded.
     ///
     /// There is no rack in `cargo test`, so this pins the shape rather than the
-    /// behaviour: each step's source contains its existence check. A source-text
+    /// behavior: each step's source contains its existence check. A source-text
     /// test is weak evidence and is here only because the strong evidence needs an
     /// hour of rack time, the real check is running the same command twice, which
     /// is what the rack procedure in DEVELOPMENT.md asks for.

@@ -20,7 +20,7 @@
 //! ```
 //!
 //! Windows Setup insists `install.wim` sit on the volume it booted from, point
-//! `<InstallFrom><Path>` at a second partition and it fails to resolve the licence
+//! `<InstallFrom><Path>` at a second partition and it fails to resolve the license
 //! terms, and omit the path and it looks only on the boot volume. So the whole media has
 //! to be one volume, and since `install.wim` is over FAT32's 4 GiB file limit, that
 //! volume cannot be FAT32. UEFI firmware only guarantees a FAT driver, which is the
@@ -327,7 +327,7 @@ pub fn plan(payload_bytes: u64) -> Result<Layout> {
 /// ```
 ///
 /// which surfaces as "Windows cannot find the Microsoft Software License Terms". The
-/// licence lives at `\Windows\System32\<lang>\Licenses\<Channel>\<EditionID>\license.rtf`
+/// license lives at `\Windows\System32\<lang>\Licenses\<Channel>\<EditionID>\license.rtf`
 /// inside the image, so `Channel` has to name a directory that is actually in there.
 ///
 /// Which directories exist, read out of the WIMs with `wimlib-imagex dir`:
@@ -432,7 +432,7 @@ struct SizedExtra {
 /// list: cluster allocation follows this order, so it decides the bytes of the
 /// volume.
 ///
-/// With [`cloud_init_volume_paths`], the one place `bare` is honoured for
+/// With [`cloud_init_volume_paths`], the one place `bare` is honored for
 /// what this branch adds to the volume: `assemble` calls both
 /// unconditionally and writes whatever they return.
 fn size_extras(
@@ -1108,7 +1108,7 @@ mod tests {
 
     /// The two stores on Windows media, and nothing else, whatever their case.
     #[test]
-    fn recognises_both_bcd_stores() {
+    fn recognizes_both_bcd_stores() {
         assert!(is_bcd_store("/efi/microsoft/boot/bcd"));
         assert!(is_bcd_store("/EFI/MICROSOFT/BOOT/BCD"));
         assert!(is_bcd_store("/boot/bcd"));
@@ -1234,14 +1234,14 @@ mod tests {
         );
     }
 
-    /// Pinned against the licence directories actually present in the WIMs, because the
+    /// Pinned against the license directories actually present in the WIMs, because the
     /// failure mode is a Setup that stops at "Windows cannot find the Microsoft Software
     /// License Terms" on a machine nobody is watching.
     #[test]
-    fn the_licence_channel_names_a_directory_the_media_has() {
+    fn the_license_channel_names_a_directory_the_media_has() {
         // Evaluation media carries only `Eval`. Note there is no Core spelling here:
         // `ServerDataCenterEvalCore` is a `FLAGS` value, and the Core and Desktop images
-        // share one `EDITIONID`, which is the field the licence directory is keyed by,
+        // share one `EDITIONID`, which is the field the license directory is keyed by,
         // and the field this takes.
         for id in
             ["ServerDatacenterEval", "ServerStandardEval", "EnterpriseEval"]
@@ -1249,7 +1249,7 @@ mod tests {
             assert_eq!(license_channel(id), "Eval", "{id}");
         }
         // Everything else gets the catch-all. `Retail` is deliberately never emitted:
-        // no media examined has ever carried a `Retail` licence directory, including
+        // no media examined has ever carried a `Retail` license directory, including
         // the retail Windows 11 ISO.
         for id in [
             "ServerDatacenter",
@@ -2011,7 +2011,7 @@ mod whole_image {
             )
             .expect("native build with a wrong asserted release");
             // And the release it reports is the media's, not the assertion's.
-            // Anything labelling the result -- the version string on a golden
+            // Anything labeling the result -- the version string on a golden
             // image, a log line -- reads this, so reporting the caller's claim
             // would name the wrong release with total confidence.
             assert_eq!(

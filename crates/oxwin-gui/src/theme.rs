@@ -10,10 +10,10 @@ use egui::Color32;
 
 /// Oxide green. Used for completed stages, focus, and the primary action.
 pub const PRIMARY: Color32 = Color32::from_rgb(0x00, 0xb7, 0x7d);
-/// Deep green, for fills that sit behind the primary colour.
+/// Deep green, for fills that sit behind the primary color.
 pub const SECONDARY: Color32 = Color32::from_rgb(0x00, 0x29, 0x23);
-/// The grey that segments things: incomplete stages, dividers, control fills.
-pub const GREY: Color32 = Color32::from_rgb(0x29, 0x2c, 0x2f);
+/// The gray that segments things: incomplete stages, dividers, control fills.
+pub const GRAY: Color32 = Color32::from_rgb(0x29, 0x2c, 0x2f);
 pub const BACKGROUND: Color32 = Color32::from_rgb(0x0b, 0x0e, 0x12);
 
 /// Derived neutrals. Not in the brand list, but text needs to be legible and
@@ -31,7 +31,7 @@ pub const CORNER: u8 = 3;
 
 pub fn apply(ctx: &egui::Context) {
     // The palette is dark by construction, so pin the theme rather than letting the
-    // host OS switch us into a light style these colours were not chosen for.
+    // host OS switch us into a light style these colors were not chosen for.
     ctx.set_theme(egui::ThemePreference::Dark);
 
     let mut visuals = egui::Visuals::dark();
@@ -45,9 +45,9 @@ pub fn apply(ctx: &egui::Context) {
     visuals.selection.stroke = egui::Stroke::new(1.0, PRIMARY);
 
     visuals.widgets.noninteractive.bg_fill = SURFACE;
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, GREY);
-    visuals.widgets.inactive.bg_fill = GREY;
-    visuals.widgets.inactive.weak_bg_fill = GREY;
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, GRAY);
+    visuals.widgets.inactive.bg_fill = GRAY;
+    visuals.widgets.inactive.weak_bg_fill = GRAY;
     visuals.widgets.hovered.bg_fill = SECONDARY;
     visuals.widgets.hovered.weak_bg_fill = SECONDARY;
     visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, PRIMARY);

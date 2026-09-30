@@ -20,7 +20,7 @@
 //!
 //! # Why port 22 as well
 //!
-//! For one judgement: **an instance that reaches `Stopped` without port 22 ever
+//! For one judgment: **an instance that reaches `Stopped` without port 22 ever
 //! having answered did not finish.** A guest that dies during Setup also stops the
 //! machine. Without that discrimination, a failed install and a finished golden
 //! image are the same observation.
@@ -89,7 +89,7 @@ pub struct Watch {
     reachable_at: Option<Duration>,
     announced_running: bool,
     /// Whether the Reachable milestone has been emitted. Distinct from
-    /// `ever_reachable`, which is the judgement input and is never reset.
+    /// `ever_reachable`, which is the judgment input and is never reset.
     reachable_announced: bool,
     /// Sticky. SSH answering and then going away is what a reboot looks like from
     /// outside, and un-setting this would make the following `Stopped` read as a
@@ -327,7 +327,7 @@ mod tests {
         assert_eq!(w.observe(S::Stopped, false, secs(1800)), Action::Finished);
     }
 
-    /// The judgement the whole watcher exists to make. A guest that dies during
+    /// The judgment the whole watcher exists to make. A guest that dies during
     /// Setup also stops the machine, so `stopped` alone cannot mean "finished" —
     /// and the wrong answer here throws away the whole run and produces an image
     /// of a broken

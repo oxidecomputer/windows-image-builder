@@ -76,7 +76,7 @@ controlling" — the file header is treated as authoritative here, and `Elevate.
 listed as **LGPL-2.1-or-later**, not MIT. Over-complying by conveying a notice and
 source we might not strictly owe costs nothing; under-complying if LGPL actually governs
 would not. A reader who disagrees with that reading has both statements above to redo
-the judgement. No commit or tag of `jpassing/elevate` could be tied to the exact object
+the judgment. No commit or tag of `jpassing/elevate` could be tied to the exact object
 code cloudbase-init built, since the binary carries no version at all, so the source URL
 in `notices.rs` pins the latest commit on that repository's default branch as of this
 review (2026-09-23) rather than an unpinned `HEAD`.

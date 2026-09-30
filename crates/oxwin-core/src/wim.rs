@@ -7,7 +7,7 @@
 //! Minimal WIM metadata reader.
 //!
 //! Only enough to answer "which editions are in this `install.wim`?". Edition names
-//! differ between retail, evaluation, OEM and localised media, so a hardcoded
+//! differ between retail, evaluation, OEM and localized media, so a hardcoded
 //! `/IMAGE/NAME` in the answer file fails on media it was not written for: Setup opens
 //! the WIM, matches nothing, and shows an empty "Select the operating system" list with
 //! no explanation at all.
@@ -238,7 +238,7 @@ pub fn is_core_image(image: &Image) -> bool {
 /// Whether this image is a client release (Windows 10/11) rather than a server one.
 ///
 /// `PRODUCTTYPE` is the only structural signal. Do not sniff for "Server" in an edition
-/// name: it is a marketing string, translated on localised media.
+/// name: it is a marketing string, translated on localized media.
 pub fn is_client_image(image: &Image) -> bool {
     image.product_type.eq_ignore_ascii_case("WinNT")
         || image.installation_type.eq_ignore_ascii_case("client")
@@ -470,7 +470,7 @@ mod tests {
     }
 
     /// Media omitting `INSTALLATIONTYPE` falls back to the string test, which is the only
-    /// thing such media offers. Localised media translates `NAME` but not `FLAGS`, so
+    /// thing such media offers. Localized media translates `NAME` but not `FLAGS`, so
     /// `flags` is checked first.
     #[test]
     fn core_detection_falls_back_to_flags_when_the_tag_is_absent() {

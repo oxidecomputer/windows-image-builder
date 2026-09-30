@@ -78,7 +78,7 @@ impl App {
         let ready = chosen && self.media_ok();
         let hovering = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
 
-        // Optically centre the whole group. An empty stage with one job should not
+        // Optically center the whole group. An empty stage with one job should not
         // leave its only control stranded near the top of the window.
         let box_size = egui::vec2(ui.available_width().min(560.0), 150.0);
         let button_block = if chosen { 68.0 } else { 0.0 };
@@ -115,14 +115,14 @@ impl App {
                 painter.rect_stroke(
                     rect,
                     theme::CORNER,
-                    egui::Stroke::new(1.0, theme::GREY),
+                    egui::Stroke::new(1.0, theme::GRAY),
                     egui::StrokeKind::Inside,
                 );
             } else {
                 dashed_rect(
                     painter,
                     rect,
-                    egui::Stroke::new(1.5, theme::GREY),
+                    egui::Stroke::new(1.5, theme::GRAY),
                     theme::CORNER as f32,
                 );
             }
@@ -218,7 +218,7 @@ impl App {
         }
 
         // No disabled button while the stage is empty. Nothing to continue to yet,
-        // and a greyed-out control is just an obstacle between the user and the
+        // and a grayed-out control is just an obstacle between the user and the
         // single thing this stage wants them to do.
         if chosen && self.media_ok() {
             ui.add_space(26.0);
@@ -288,7 +288,7 @@ impl App {
             "{}, read from the media.",
             info.release
                 .map(|r| r.label().to_string())
-                .unwrap_or_else(|| "An unrecognised Windows".to_string())
+                .unwrap_or_else(|| "An unrecognized Windows".to_string())
         );
         // Said once, under the list, rather than as a tag on every row: on server media
         // half the images are Core and the distinction is the whole reason the picker is
@@ -812,7 +812,7 @@ impl App {
     fn ui_partition_editor(&mut self, ui: &mut Ui) {
         ui.checkbox(
             &mut self.draft.show_partitions,
-            "Customise the partition layout",
+            "Customize the partition layout",
         );
         if !self.draft.show_partitions {
             return;
@@ -883,7 +883,7 @@ impl App {
                         self.draft.partitions[i].size_mb = Some(mb);
                     }
                     // Otherwise keep what was there: the field is shown in the
-                    // warning colour and the layout is unchanged until it parses.
+                    // warning color and the layout is unchanged until it parses.
                 }
 
                 let mut letter = self.draft.partitions[i]
@@ -1140,7 +1140,7 @@ impl App {
                     fmt_duration(*elapsed)
                 );
                 // Same action bar as every other stage, so the way forward is
-                // always in the same place and always the same colour.
+                // always in the same place and always the same color.
                 egui::Panel::bottom("processing-actions").show(ui, |ui| {
                     ui.add_space(12.0);
                     ui.vertical_centered(|ui| {
@@ -1470,7 +1470,7 @@ impl App {
                 } else {
                     hint(
                         ui,
-                        "Cancelling stops the import cleanly. Closing the app instead \
+                        "Canceling stops the import cleanly. Closing the app instead \
                          leaves the disk mid-import, where it refuses deletion until it is \
                          stopped and finalized.",
                     );
@@ -1884,8 +1884,8 @@ fn format_name(format: Option<partition::Format>) -> &'static str {
 
 // --- small widgets --------------------------------------------------------
 
-/// The one action a stage most wants taken. Filled in the primary colour with dark
-/// text, so it reads as the destination rather than as another grey control.
+/// The one action a stage most wants taken. Filled in the primary color with dark
+/// text, so it reads as the destination rather than as another gray control.
 fn primary_button(ui: &mut Ui, label: &str) -> egui::Response {
     ui.add(
         egui::Button::new(
@@ -1929,7 +1929,7 @@ fn heading(ui: &mut Ui, text: &str) {
     ui.add_space(2.0);
 }
 
-/// A group label. Deliberately not the primary colour: green carries meaning in this
+/// A group label. Deliberately not the primary color: green carries meaning in this
 /// app — a stage is done, a control is on, this is the action to take. Spending it on
 /// four static headings per screen drains it of all of that.
 fn section(ui: &mut Ui, text: &str) {
@@ -1973,7 +1973,7 @@ fn code_block(ui: &mut Ui, text: &str) {
     ui.add_space(4.0);
     egui::Frame::new()
         .fill(theme::SURFACE)
-        .stroke(egui::Stroke::new(1.0, theme::GREY))
+        .stroke(egui::Stroke::new(1.0, theme::GRAY))
         .inner_margin(egui::Margin::same(10))
         .corner_radius(theme::CORNER)
         .show(ui, |ui| {
@@ -1986,16 +1986,16 @@ fn code_block(ui: &mut Ui, text: &str) {
         });
 }
 
-fn problem_box(ui: &mut Ui, colour: egui::Color32, title: &str, body: &str) {
+fn problem_box(ui: &mut Ui, color: egui::Color32, title: &str, body: &str) {
     ui.add_space(8.0);
     egui::Frame::new()
         .fill(theme::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour))
+        .stroke(egui::Stroke::new(1.0, color))
         .inner_margin(egui::Margin::same(10))
         .corner_radius(theme::CORNER)
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.label(RichText::new(title).size(12.5).strong().color(colour));
+            ui.label(RichText::new(title).size(12.5).strong().color(color));
             ui.label(RichText::new(body).size(12.0).color(theme::TEXT_DIM));
         });
 }
@@ -2019,10 +2019,10 @@ fn dirs_ssh() -> Option<PathBuf> {
 /// The release is stated as a fact because it was read out of the media, not chosen —
 /// the point of saying it here is that a user who dropped the wrong ISO sees so at once.
 fn describe_detection(info: &MediaInfo) -> String {
-    let release = match (info.release, info.build_recognised) {
+    let release = match (info.release, info.build_recognized) {
         (Some(r), true) => r.label().to_string(),
         (Some(r), false) => format!("{} (probably)", r.label()),
-        (None, _) => "an unrecognised Windows".to_string(),
+        (None, _) => "an unrecognized Windows".to_string(),
     };
     format!(
         "{release} · {} edition{} · {} media",

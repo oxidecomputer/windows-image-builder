@@ -17,7 +17,7 @@
 //! several times since, so they are known-good configurations rather than a fixed
 //! reference — `TESTED-MEDIA.md` records which releases an answer file has actually
 //! installed. An answer file that is subtly wrong does not error, it installs
-//! a machine with no network, or no bootstrap, or stalls at a licence page.
+//! a machine with no network, or no bootstrap, or stalls at a license page.
 //! So the formatting needs to be reproduced exactly, including the blank line an empty
 //!  pass leaves behind, rather than tidied up.
 //!
@@ -92,7 +92,7 @@ impl Edition {
 /// The editions on server media, which is one vocabulary across every release.
 ///
 /// Server 2019, 2022 and 2025 ship the same four images with the same ids, differing only
-/// in the year in the name — so this is parameterised rather than copy-pasted three
+/// in the year in the name — so this is parameterized rather than copy-pasted three
 /// times. Copy-pasting is how `datacenter` came to be spelled two ways in one codebase.
 ///
 /// The names must keep their exact spelling: `SERVERDATACENTER` is Desktop Experience and
@@ -219,7 +219,7 @@ pub struct Config {
     /// is usually `C:` when the target disk is still unformatted, but nothing guarantees
     /// it. Diagnostic, not something to depend on.
     pub log_path: Option<String>,
-    /// `OnError` on every `WillShowUI`, which is the shipped behaviour, or `Never`.
+    /// `OnError` on every `WillShowUI`, which is the shipped behavior, or `Never`.
     ///
     /// **On an Oxide guest `OnError` means an infinite hang.** There is no console to show
     /// UI on, so Setup waits forever for a click nobody can make, and from the outside
@@ -239,13 +239,13 @@ pub struct Config {
     /// Setup's log.
     pub verbose_serial: bool,
     /// Index of the image to install, read from the WIM's own metadata. Preferred over
-    /// a name: names vary across retail, evaluation, OEM and localised media, so a
+    /// a name: names vary across retail, evaluation, OEM and localized media, so a
     /// hardcoded name silently matches nothing and Setup shows an empty edition list.
     pub image_index: Option<u32>,
     /// Diagnostic escape hatch: drop `<ImageInstall>` so Setup picks the edition and
-    /// resolves the licence itself.
+    /// resolves the license itself.
     pub skip_image_install: bool,
-    /// Public keys authorised for SSH. Read only by the bootstrap script, the answer
+    /// Public keys authorized for SSH. Read only by the bootstrap script, the answer
     /// file has nowhere to put them, since the account does not exist until
     /// `oobeSystem` and sshd is configured in `specialize`.
     pub ssh_keys: Vec<String>,
@@ -322,7 +322,7 @@ fn will_show_ui(config: &Config) -> &'static str {
 pub fn build(config: &Config) -> Result<String> {
     let target = target_for(config.release)?;
     // The edition is needed for exactly one thing: the `/IMAGE/NAME` written when no
-    // image index is known. With an index it is dead weight, so an unrecognised one is
+    // image index is known. With an index it is dead weight, so an unrecognized one is
     // only fatal without an index — which is what lets the caller select an image by
     // number, or by anything else the WIM's own list offers, without also having to name
     // it in a table here. Requiring it turned a Windows 11 ISO into "unknown win11
@@ -576,7 +576,7 @@ fn windows_pe_pass(
         String::new()
     } else {
         // No `<Path>`: Setup resolves sources\install.wim relative to the volume it
-        // booted from, and naming a second partition there fails to resolve the licence
+        // booted from, and naming a second partition there fails to resolve the license
         // terms. `builder`'s media is one volume for exactly that reason, so the only
         // correct path is the one Setup finds unaided.
         let metadata = match config.image_index {
@@ -616,7 +616,7 @@ fn windows_pe_pass(
     // Omit <ProductKey> entirely when there is no key. An *empty* <Key> is not the
     // same as no key: Setup treats it as a key to resolve, matches no edition, and
     // fails with "Windows cannot find the Microsoft Software License Terms" before it
-    // shows any page, because the licence lookup is downstream of edition resolution.
+    // shows any page, because the license lookup is downstream of edition resolution.
     // That cost a day. When a key *is* given it filters the image list to editions it
     // is valid for, so a retail key against evaluation media matches nothing.
     let product_key = match &config.product_key {
@@ -1015,7 +1015,7 @@ mod tests {
                     ..base()
                 },
             ),
-            // One golden per release, because `target_for` now parameterises the
+            // One golden per release, because `target_for` now parameterizes the
             // edition table by release and nothing else pins what comes out of it.
             // All of them carry `image_index: None`: with an index set, the edition table
             // never reaches the file and every one of these would be byte-identical to
@@ -1026,7 +1026,7 @@ mod tests {
             // waits: on a rack, forever.
             // 2016's edition vocabulary is right and its media detects correctly, so
             // the table stays. It is not supported at this time: its NVMe namespace
-            // enumeration has known trouble, characterised under QEMU because a rack
+            // enumeration has known trouble, characterized under QEMU because a rack
             // attempt showed nothing on serial — see `TESTED-MEDIA.md`. EOL Jan 2027.
             (
                 "release-server-2016",
@@ -1452,7 +1452,7 @@ mod tests {
     /// A golden image re-resolves its name on every clone. That only happens because
     /// `specialize` is in this file; without it each clone keeps the template's name.
     #[test]
-    fn the_sysprep_answer_file_re_randomises_the_computer_name() {
+    fn the_sysprep_answer_file_re_randomizes_the_computer_name() {
         let xml =
             build_sysprep(&Config { computer_name: "*".into(), ..base() })
                 .unwrap();
@@ -1761,7 +1761,7 @@ mod tests {
 
     #[test]
     fn no_product_key_element_when_there_is_no_key() {
-        // An empty <Key> is not the same as no key: Setup fails the licence lookup
+        // An empty <Key> is not the same as no key: Setup fails the license lookup
         // before showing any page.
         assert!(!build(&base()).expect("build").contains("<ProductKey>"));
     }

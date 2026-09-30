@@ -39,7 +39,7 @@ pub fn run(opened_with: Option<PathBuf>) -> eframe::Result<()> {
         .with_title("Windows Image Builder")
         .with_icon(icon::icon())
         // The reverse-DNS id is what Wayland matches against a `.desktop` file and what
-        // GNOME shows in place of the binary name; without it the window is labelled
+        // GNOME shows in place of the binary name; without it the window is labeled
         // `oxwin-gui`, which means nothing to the person running it.
         .with_app_id(APP_ID);
 

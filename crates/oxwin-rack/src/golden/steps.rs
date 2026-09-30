@@ -583,7 +583,7 @@ impl Rack {
                 last_tick = Some(std::time::Instant::now());
             }
             last_state = Some(state);
-            sleep_until_cancelled(opts.poll, cancel);
+            sleep_until_canceled(opts.poll, cancel);
         }
     }
 
@@ -617,18 +617,18 @@ impl Rack {
     }
 }
 
-/// Wait, but wake up promptly when cancelled.
+/// Wait, but wake up promptly when canceled.
 ///
 /// A plain `sleep(poll)` makes Ctrl-C take up to a full poll interval to be
 /// noticed, and during a watch there is nothing to tear down — the guest is
 /// installing and does not care — so a cancel there should be immediate. Someone
 /// who presses Ctrl-C and sees nothing happen for twenty seconds presses it again,
 /// and the second press is the one that abandons rather than cleans up.
-fn sleep_until_cancelled(total: Duration, cancel: &Cancel) {
+fn sleep_until_canceled(total: Duration, cancel: &Cancel) {
     const SLICE: Duration = Duration::from_millis(200);
     let deadline = std::time::Instant::now() + total;
     while std::time::Instant::now() < deadline {
-        if cancel.is_cancelled() {
+        if cancel.is_canceled() {
             return;
         }
         std::thread::sleep(SLICE.min(deadline - std::time::Instant::now()));
@@ -683,23 +683,23 @@ mod tests {
     /// long enough that the natural response is to press it again, and the second
     /// press abandons rather than cleans up. Found on a rack, not in a test.
     #[test]
-    fn a_cancelled_sleep_returns_at_once() {
+    fn a_canceled_sleep_returns_at_once() {
         let cancel = Cancel::new();
         cancel.cancel();
         let started = std::time::Instant::now();
-        sleep_until_cancelled(Duration::from_secs(30), &cancel);
+        sleep_until_canceled(Duration::from_secs(30), &cancel);
         assert!(
             started.elapsed() < Duration::from_secs(1),
-            "a cancelled sleep waited {:?}",
+            "a canceled sleep waited {:?}",
             started.elapsed()
         );
     }
 
-    /// And an uncancelled one still waits.
+    /// And an uncanceled one still waits.
     #[test]
-    fn an_uncancelled_sleep_waits_its_full_time() {
+    fn an_uncanceled_sleep_waits_its_full_time() {
         let started = std::time::Instant::now();
-        sleep_until_cancelled(Duration::from_millis(500), &Cancel::new());
+        sleep_until_canceled(Duration::from_millis(500), &Cancel::new());
         assert!(started.elapsed() >= Duration::from_millis(450));
     }
 

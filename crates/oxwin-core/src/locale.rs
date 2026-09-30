@@ -55,7 +55,7 @@ macro_rules! regions {
 // Labels are deliberately ASCII: this codebase forbids glyphs that may be
 // missing from the default font, and it shipped a missing-glyph box next to a
 // button once already. An uncommented ASCII label invites a future editor to
-// "correct" it. Time zones are labelled by cities (following Microsoft's own
+// "correct" it. Time zones are labeled by cities (following Microsoft's own
 // convention) rather than countries, because a zone is a set of cities and
 // city names are neutral, accurate, and useful when choosing.
 regions! {
@@ -149,7 +149,7 @@ pub fn problems(
             format!(
                 "{region_tag:?} is not a region this tool knows. It will be \
                  written to the answer file as given; Windows ignores an \
-                 unrecognised one without an error."
+                 unrecognized one without an error."
             ),
         ));
     }

@@ -21,7 +21,7 @@ use oxide::types::{DiskState, InstanceState};
 /// The SDK's `DiskState` carries an attachment id and does not implement
 /// `PartialEq`, and neither fact matters here: what the cycle needs to know is
 /// whether a disk is finished enough to use. Classifying at the boundary keeps the
-/// deciding code comparable and testable, and puts the judgement about which
+/// deciding code comparable and testable, and puts the judgment about which
 /// states are usable in one place with a reason next to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiskStatus {
@@ -145,7 +145,7 @@ mod tests {
     }
 
     /// A stopped instance is not proof the install finished — the watcher makes
-    /// that judgement, and on a resume it makes it from the already-stopped state.
+    /// that judgment, and on a resume it makes it from the already-stopped state.
     /// What matters here is only that we do not try to create an instance that
     /// exists.
     #[test]

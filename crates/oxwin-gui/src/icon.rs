@@ -105,7 +105,7 @@ impl Canvas {
         let r2 = (radius * radius) as i64;
         for row in 0..h {
             for col in 0..w {
-                // Distance from the corner circle's centre, but only within the corner
+                // Distance from the corner circle's center, but only within the corner
                 // squares; everywhere else is unconditionally inside.
                 let dx = if col < radius {
                     (radius - col) as i64
@@ -188,7 +188,7 @@ mod tests {
         );
 
         // And that the mark is actually on the plate. Sampling the middle of the top
-        // bar against the gap below it catches a stack drawn in one flat colour, which
+        // bar against the gap below it catches a stack drawn in one flat color, which
         // the opacity check above cannot see.
         let at = |x: usize, y: usize| {
             let i = (y * SIZE + x) * 4;

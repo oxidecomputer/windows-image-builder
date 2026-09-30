@@ -13,7 +13,7 @@
 //!
 //! Scope is deliberately tiny. This is not a registry library: it walks to one
 //! known object, adds two subkeys, and validates what it produced. Anything it
-//! does not recognise it declines to touch, because the store it would be
+//! does not recognize it declines to touch, because the store it would be
 //! corrupting is the one that boots the installer.
 
 use anyhow::{Result, anyhow, bail};
@@ -491,7 +491,7 @@ pub(crate) fn enable_ems(store: &[u8], port: u64, baud: u64) -> Outcome {
     // binary search can find things in. Check that here, on our own output
     // only — never in `validate`, which also runs on third-party stores
     // this module never wrote, where a leaf we judged unsorted might
-    // simply use a comparison we have not modelled. A mistake here must
+    // simply use a comparison we have not modeled. A mistake here must
     // become `NotApplicable`, not a hive that validates yet mis-reads in
     // Windows.
     let rebuilt = match find(&out, &path) {
@@ -903,7 +903,7 @@ mod tests {
         ///
         /// Rounding the bin up to a whole 4096-byte multiple can leave more
         /// slack than `free_tail` asked for — up to 4095 bytes of it — which
-        /// would silently defeat Task 4's test that allocation appends a new
+        /// would silently defeat the test that allocation appends a new
         /// bin when there is no room. Any slack beyond exactly `free_tail` is
         /// therefore consumed by an allocated filler cell, so the trailing
         /// free cell is always precisely the requested size. `free_tail` must
@@ -1026,9 +1026,6 @@ mod tests {
     }
 
     /// R4: `bcd_like` must leave EXACTLY `free_tail` bytes free, not "at least".
-    /// Task 4's no-room-to-grow test relies on this being exact, since rounding
-    /// up to a whole bin could otherwise leave thousands of spare bytes and let
-    /// an allocation succeed in place when it should have to append a new bin.
     #[test]
     fn free_tail_is_exact() {
         for free_tail in [512usize, 8] {
@@ -1460,7 +1457,7 @@ mod tests {
     /// A real BCD store's `Elements` list is an `lf` leaf; an `li`
     /// index-root is a shape this module declines rather than mis-reads.
     /// Silently doing nothing here would mean EMS never gets enabled with
-    /// no reason surfaced, which Task 6 needs to see.
+    /// no reason surfaced.
     #[test]
     fn declines_an_index_root_subkey_list() {
         let mut v = fixture::bcd_like(512);

@@ -46,7 +46,7 @@ All server media reports `ARCH 9` (amd64) and `PRODUCTTYPE ServerNT`, and carrie
 images: Standard and Datacenter, each as `Server` and `Server Core`. Server 2016 uses the
 same edition vocabulary as 2019, 2022 and 2025, including the
 `ServerDatacenterEval`/`ServerDataCenterEvalCore` casing split between `EDITIONID` and
-`FLAGS`. That is why `unattend::server_editions` is one table parameterised by year rather
+`FLAGS`. That is why `unattend::server_editions` is one table parameterized by year rather
 than four.
 
 ### Server 2016 and NVMe
@@ -74,7 +74,7 @@ Anyone who needs Server 2016 on Oxide should open an issue. Server 2016 goes out
 in January 2027, unless someone has a strong need, we will leave 2016 as un-supported.
 
 Everything else about 2016 is settled by reading and by the build: detection, the same
-edition vocabulary as the later server releases, the `Eval` licence channel resolving to a
+edition vocabulary as the later server releases, the `Eval` license channel resolving to a
 directory that really exists in the image, and virtio-win 0.1.285's `2k16` drivers, which
 are byte-identical to `2k19` — 38 files with matching hashes.
 
@@ -116,7 +116,7 @@ with a message naming Arm64 and leaves no image behind.
 | Server 2016 | Built and installed under emulation, never on a rack — see [Server 2016 and NVMe](#server-2016-and-nvme) |
 | Server 2019 | **Installed and verified** |
 | Server 2022 | **Installed and verified** (the reference ISO) |
-| Server 2022 volume licensing | **Installed and verified** — proves the `_Default` licence channel |
+| Server 2022 volume licensing | **Installed and verified** — proves the `_Default` license channel |
 | Windows 10 22H2 | **Installed and verified**, before the LabConfig bypasses were removed from its answer file — see the note below |
 | Server 2025 | **Cannot be hardware-verified right now** — blocked in the hypervisor, see below |
 | Windows 11 22H2 | **Cannot be hardware-verified right now** — blocked in the hypervisor, see below |
@@ -146,7 +146,7 @@ it. Emulation is the only evidence available meanwhile, and
 
 ## Golden images
 
-A golden build does more than randomise the computer name: once the install finishes the
+A golden build does more than randomize the computer name: once the install finishes the
 guest generalizes itself with `sysprep /generalize /oobe /shutdown` and powers off, ready
 to snapshot. Verified on rack2 with Server 2022 evaluation media on 2026-08-31: the whole
 cycle — upload, install, generalize, shutdown, snapshot, image, teardown — ran end to end
@@ -157,17 +157,16 @@ above are ordinary installs.
 
 ## Cloud-init
 
-**Unverified on hardware as of 2026-09-23.** Everything above this line predates
-cloud-init; none of those rack installs read a config drive, and a finished install
-proves nothing about that path on its own — see the rack checklist in `README.md` for
-what actually has to be checked on a clone: both log files naming the drive they
-found, the computer name equalling the instance name, both key files authenticating,
-and `C:` at the full disk size.
+Everything above this line predates cloud-init; none of those rack installs read a
+config drive, and a finished install proves nothing about that path on its own — see
+the rack checklist in `README.md` for what actually has to be checked on a clone:
+both log files naming the drive they found, the computer name equalling the
+instance name, both key files authenticating, and `C:` at the full disk size.
 
 | Release | Cloud-init status |
 |---|---|
 | Server 2019 | Can be verified on a rack — not yet attempted |
-| Server 2022 | Can be verified on a rack — not yet attempted |
+| Server 2022 | **Installed and verified** |
 | Windows 10 22H2 | Can be verified on a rack — not yet attempted |
 | Server 2025 | **Cannot be hardware-verified** — blocked on the Propolis NVMe problem, same as every other install path for this release |
 | Windows 11 22H2 | **Cannot be hardware-verified** — blocked on the Propolis NVMe problem, same as every other install path for this release |

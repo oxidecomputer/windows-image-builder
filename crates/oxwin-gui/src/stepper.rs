@@ -5,12 +5,12 @@
 // Copyright 2026 Oxide Computer Company
 
 //! The stage indicator across the top: a circle per stage, a label under each,
-//! and a connecting line between them. Grey until a stage is done, then green.
+//! and a connecting line between them. Gray until a stage is done, then green.
 //!
 //! Drawn rather than assembled from widgets, because the shape is specific and
 //! painting it directly is less code than bending a layout to it.
 
-use crate::theme::{GREY, PRIMARY, SECONDARY, TEXT, TEXT_DIM};
+use crate::theme::{GRAY, PRIMARY, SECONDARY, TEXT, TEXT_DIM};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,27 +41,27 @@ pub fn show(
 
     let slot = rect.width() / n as f32;
     let cy = rect.top() + RADIUS + 6.0;
-    let centre =
+    let center =
         |i: usize| Pos2::new(rect.left() + slot * (i as f32 + 0.5), cy);
 
     // Connectors first, so the circles sit on top of them.
     for i in 0..n.saturating_sub(1) {
-        let a = centre(i);
-        let b = centre(i + 1);
+        let a = center(i);
+        let b = center(i + 1);
         // A connector is green only once the stage it leads *out of* is done.
-        let colour = if state(i) == State::Done { PRIMARY } else { GREY };
+        let color = if state(i) == State::Done { PRIMARY } else { GRAY };
         painter.line_segment(
             [
                 Pos2::new(a.x + RADIUS + 4.0, cy),
                 Pos2::new(b.x - RADIUS - 4.0, cy),
             ],
-            Stroke::new(2.0, colour),
+            Stroke::new(2.0, color),
         );
     }
 
     let mut clicked = None;
     for (i, label) in labels.iter().enumerate() {
-        let c = centre(i);
+        let c = center(i);
         match state(i) {
             State::Done => {
                 painter.circle_filled(c, RADIUS, PRIMARY);
@@ -73,7 +73,7 @@ pub fn show(
                 painter.circle_filled(c, 4.5, PRIMARY);
             }
             State::Todo => {
-                painter.circle_filled(c, RADIUS, GREY);
+                painter.circle_filled(c, RADIUS, GRAY);
                 painter.text(
                     c,
                     Align2::CENTER_CENTER,
@@ -84,7 +84,7 @@ pub fn show(
             }
         }
 
-        let colour = match state(i) {
+        let color = match state(i) {
             State::Done | State::Current => TEXT,
             State::Todo => TEXT_DIM,
         };
@@ -93,7 +93,7 @@ pub fn show(
             Align2::CENTER_TOP,
             *label,
             FontId::proportional(12.5),
-            colour,
+            color,
         );
 
         // Hit-test the whole slot, not just the circle, so the label is clickable too.

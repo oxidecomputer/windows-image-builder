@@ -62,7 +62,7 @@ fn dump(path: &str) -> anyhow::Result<()> {
     println!(
         "   release      {}{}",
         info.release.map(|r| r.label()).unwrap_or("-- undetermined --"),
-        if info.release.is_some() && !info.build_recognised {
+        if info.release.is_some() && !info.build_recognized {
             "  (guessed: this build is not in the release table)"
         } else {
             ""

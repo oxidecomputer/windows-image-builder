@@ -7,7 +7,7 @@
 //! A sparse block-addressed image buffer.
 //!
 //! An install image is several GiB but most of it is holes: zero padding to reach a
-//! whole GiB, and unallocated filesystem space. Materialising all of it costs memory
+//! whole GiB, and unallocated filesystem space. Materializing all of it costs memory
 //! for nothing, so only written blocks are kept and everything else reads as zero.
 //!
 //! Blocks are 512 KiB, deliberately the same size as the chunks Nexus's bulk-write

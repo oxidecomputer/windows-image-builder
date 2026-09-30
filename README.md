@@ -169,7 +169,7 @@ using the names you chose. Work down it in order.
 
 ---
 
-## Customising the image
+## Customizing the image
 
 Everything below is optional. Skip it and you get `en-US`, `UTC`, and the standard
 EFI/MSR/Windows partition layout — what every build has used until now.
@@ -196,7 +196,7 @@ Setup decides what to do with it.
 
 ### Partition layout
 
-Behind a "Customise the partition layout" disclosure in the app, closed by default.
+Behind a "Customize the partition layout" disclosure in the app, closed by default.
 The default is EFI / MSR / a Windows partition that takes the rest of the disk, which
 is what every build has used until now and is fine to leave alone.
 
@@ -267,7 +267,7 @@ clone's first boot rather than only after the reboot the rename triggers.
   ends up with; cloud-init only adds the per-instance SSH key on top. Nothing about
   the password changes from clone to clone.
 - **`manage`.** Cloud-init's own `CreateUserPlugin` owns the account, which is the
-  only way upstream will materialise the Windows *profile* the per-instance SSH key
+  only way upstream will materialize the Windows *profile* the per-instance SSH key
   plugin needs before first logon. **The cost:** that plugin resets the password to a
   random, per-instance value on every path it takes, including the one for an account
   that already exists — so the password you typed does not survive into the clone.

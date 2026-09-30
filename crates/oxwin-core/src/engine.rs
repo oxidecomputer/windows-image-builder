@@ -39,15 +39,15 @@ impl Cancel {
         self.0.store(true, Ordering::SeqCst);
     }
 
-    pub fn is_cancelled(&self) -> bool {
+    pub fn is_canceled(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }
 
     /// Fail if cancellation has been requested, so a long build can be written as a
     /// straight line of `?` rather than as nested checks.
     pub fn check(&self) -> anyhow::Result<()> {
-        if self.is_cancelled() {
-            anyhow::bail!("cancelled");
+        if self.is_canceled() {
+            anyhow::bail!("canceled");
         }
         Ok(())
     }
@@ -196,10 +196,10 @@ mod tests {
         );
     }
 
-    /// Cancelling must not leave a half-written image behind: one that looks finished
+    /// Canceling must not leave a half-written image behind: one that looks finished
     /// and is not is worse than none at all.
     #[test]
-    fn a_cancelled_build_leaves_no_image() {
+    fn a_canceled_build_leaves_no_image() {
         let engine =
             Engine::new(Assets::Directory(PathBuf::from("/nonexistent")));
         let out = std::env::temp_dir()

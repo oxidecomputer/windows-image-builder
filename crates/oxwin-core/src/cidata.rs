@@ -198,7 +198,7 @@ mod tests {
     /// `partition_start_lba` to zero, so the boot sector -- and this field --
     /// sit at absolute offset 0 in a bare volume like this one.
     #[test]
-    fn the_volume_is_labelled_for_no_cloud() {
+    fn the_volume_is_labeled_for_no_cloud() {
         let image = build(&drive()).unwrap();
         let label: Vec<u8> = image[0x47..0x47 + 11].to_vec();
         assert_eq!(

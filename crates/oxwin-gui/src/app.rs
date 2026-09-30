@@ -77,7 +77,7 @@ pub struct Draft {
     /// rather than a comparison with `DEFAULT_REGION` because that comparison
     /// answers a different question: someone whose first ISO was German ends up
     /// unequal to the default without having chosen anything, and the choice
-    /// then survived onto media that could not honour it.
+    /// then survived onto media that could not honor it.
     pub ui_language_edited: bool,
     /// Formats and keyboard.
     pub region: String,
@@ -329,7 +329,7 @@ pub struct App {
     /// Why the media could not be read at all. Distinct from `media.problems()`, which
     /// is media that was read and is unusable.
     pub media_error: Option<String>,
-    /// Where the build was told to write. Kept so a cancelled or failed run can be
+    /// Where the build was told to write. Kept so a canceled or failed run can be
     /// cleaned up and a retry can reuse the same destination.
     pub out_path: Option<PathBuf>,
     pub saved_to: Option<PathBuf>,
@@ -444,7 +444,7 @@ impl App {
         }
     }
 
-    /// Whether a stage counts as finished, which drives the stepper's colour.
+    /// Whether a stage counts as finished, which drives the stepper's color.
     pub fn state_of(&self, i: usize) -> State {
         let stage = Stage::from_index(i);
         if stage == self.stage {

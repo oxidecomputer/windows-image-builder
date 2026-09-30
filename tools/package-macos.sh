@@ -8,7 +8,7 @@
 # Terminal and runs it there, which is not a desktop app. A bundle is what gives it
 # a Dock icon, a window title that is not the binary name, and "Open With" for an
 # ISO. The binary inside is the same one the archive ships loose for CLI use, so
-# both front ends stay one file's worth of behaviour.
+# both front ends stay one file's worth of behavior.
 #
 # Signing is deliberately optional and off by default: there is no Developer ID
 # certificate yet. Set MACOS_SIGN_IDENTITY to sign, and NOTARY_KEYCHAIN_PROFILE to

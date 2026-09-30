@@ -75,12 +75,12 @@ pub fn lint(xml: &str, cx: &LintContext) -> Vec<Problem> {
 
     // An empty <Key> is not the same as omitting <ProductKey>: empty means "install
     // with no key", Setup resolves it against no edition, and the install stalls at
-    // the licence terms before showing a page.
+    // the license terms before showing a page.
     if elements(xml, "Key").iter().any(|k| k.trim().is_empty()) {
         v.push(Problem::warn(
             "unattend_product_key",
             "<ProductKey> has an empty <Key>. That means \"install with no key\" \
-             and stalls at the licence terms. To use no key, remove the element.",
+             and stalls at the license terms. To use no key, remove the element.",
         ));
     }
 
