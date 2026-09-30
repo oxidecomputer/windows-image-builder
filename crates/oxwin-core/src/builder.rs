@@ -446,14 +446,17 @@ fn size_extras(
     for extra in extras {
         let what =
             || format!("reading the extra file {}", extra.source.display());
-        let file = File::open(&extra.source).with_context(what)?;
-        let meta = file.metadata().with_context(what)?;
-        if !meta.is_file() {
+        // Checked on the path before opening: Windows refuses to open a
+        // directory at all, so a check on the opened file never runs there
+        // and the refusal would read as a permissions error.
+        if !std::fs::metadata(&extra.source).with_context(what)?.is_file() {
             bail!(
                 "the extra file {} is not a regular file",
                 extra.source.display()
             );
         }
+        let file = File::open(&extra.source).with_context(what)?;
+        let meta = file.metadata().with_context(what)?;
         result.push(SizedExtra {
             volume_path: extra.volume_path.clone(),
             source: extra.source.clone(),
@@ -1606,8 +1609,9 @@ mod tests {
         let _ = std::fs::remove_dir(&dir);
     }
 
-    /// A directory opens fine on Unix, so the regular-file check is what
-    /// refuses one up front rather than when its bytes are streamed.
+    /// A directory opens fine on Unix and not at all on Windows, so the
+    /// regular-file check is what refuses one up front, with the same
+    /// message on both, rather than when its bytes are streamed.
     #[test]
     fn an_extra_that_is_a_directory_is_refused() {
         let dir = scratch_dir("dir-extra");
