@@ -243,8 +243,7 @@ mod tests {
         assert_eq!(
             total_sectors % sectors_per_track,
             0,
-            "mtools' mlabel refuses this exact mismatch -- see the \
-             mlabel-failed trap in CLAUDE.md"
+            "mtools' mlabel refuses this exact mismatch"
         );
     }
 

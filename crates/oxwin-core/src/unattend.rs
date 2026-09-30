@@ -1289,10 +1289,9 @@ mod tests {
     /// The generator must satisfy its own linter, for every case and both deployment
     /// kinds.
     ///
-    /// This is what turns the trap list in CLAUDE.md from prose into a gate. Each rule
-    /// in `lint` describes a way an answer file is silently wrong; without this test,
-    /// nothing stops a future change to this file from reintroducing one, and the next
-    /// evidence would be a rack guest sitting at a wizard page nobody can see.
+    /// Each rule in `lint` describes a way an answer file is silently wrong; without
+    /// this test, nothing stops a future change to this file from reintroducing one,
+    /// and the next evidence would be a rack guest sitting at a wizard page nobody can see.
     #[test]
     fn generated_output_is_clean() {
         let mut failures = Vec::new();

@@ -203,8 +203,7 @@ file:
   boot) and warns on everything else. It cannot check whether the sizes fit the real
   disk — that disk does not exist yet when this code runs.
 - **`unattend::lint`** is `unattend::lint(xml, &LintContext)`, ten rules over an
-  `autounattend.xml`, one per entry in CLAUDE.md's "Traps that have already cost
-  days". Only a parse failure (no `<unattend>` element) blocks; everything else
+  `autounattend.xml`. Only a parse failure (no `<unattend>` element) blocks; everything else
   warns and lets the build proceed, because a user who supplied their own file owns
   the outcome.
 
@@ -213,8 +212,7 @@ file:
 variant — not just against files a user supplies. That is what makes it worth having:
 a change to the generator that reintroduces one of these traps fails there, in CI,
 rather than surfacing as a black screen on a rack weeks later. **A newly discovered
-trap belongs in `unattend::lint` as a rule, not only as a paragraph in CLAUDE.md** —
-the paragraph does not run.
+trap belongs in `unattend::lint` as a rule.
 
 One rule is context-sensitive in a way worth remembering if it starts misfiring:
 `unattend_locale` only fires on a document with no `windowsPE` pass at all, because

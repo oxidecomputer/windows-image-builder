@@ -67,10 +67,9 @@ fn is_bcd_store(volume_path: &str) -> bool {
 }
 
 /// The one store an Oxide guest ever boots. A sibling of `is_bcd_store`
-/// rather than a second, independent comparison against `UEFI_BCD_STORE` —
+/// rather than a second, independent comparison against `UEFI_BCD_STORE`,
 /// two case-lowering comparisons of the same constant, done separately in
-/// two places, is exactly the shape of the `VOLUME_LABEL` drift documented
-/// in this workspace's `CLAUDE.md`.
+/// two places.
 fn is_uefi_bcd_store(volume_path: &str) -> bool {
     volume_path.eq_ignore_ascii_case(UEFI_BCD_STORE)
 }

@@ -101,7 +101,7 @@ fn ps_quote(s: &str) -> String {
 
 /// The one metadata service. The stock list probes HTTP endpoints that do not
 /// exist on a rack, and a guest with no route to them spends its first boot
-/// timing out -- a trap in CLAUDE.md.
+/// timing out.
 const METADATA_SERVICE: &str =
     "cloudbaseinit.metadata.services.nocloudservice.NoCloudConfigDriveService";
 

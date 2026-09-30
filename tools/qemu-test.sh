@@ -19,14 +19,6 @@
 #   * No display device at all, matching a rack guest.
 #   * The installer as disk 0 and a blank disk as disk 1, because the answer file installs
 #     to disk 1 by default. Getting that order wrong makes Setup overwrite the installer.
-#
-# What it cannot tell you, from CLAUDE.md: a QEMU guest honours its own NVRAM, so after an
-# install it re-enters the installed OS directly and never exercises the chooser's
-# "installed Windows exists" branch. There is no VPC firewall either, so RDP appears to
-# work here and then times out on a rack. And --cloud-init below attaches a drive shaped
-# like a NoCloud config drive, built by `oxwin cidata` -- it is not the control plane's
-# own config drive, so this cannot prove the rack's metadata path, only that cloud-init
-# itself, the MSI, the service ordering and the answer file's plumbing all work.
 set -euo pipefail
 
 VNC=0

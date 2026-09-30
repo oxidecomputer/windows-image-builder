@@ -461,13 +461,11 @@ fn cloud_init_from_args(args: &[String]) -> Result<Option<CloudInit>> {
 /// machine doing the build.
 ///
 /// `read_dir` order differs between filesystems, and that order decides which
-/// clusters each file gets — see "The media file list must be sorted by the
-/// path the file will have on the volume" in `CLAUDE.md` — so a directory is
-/// walked with an explicit sort at every level rather than trusted as given.
-/// A symlink inside a directory extra is followed: `fs::metadata` (which
-/// follows links) rather than `symlink_metadata` decides file-vs-directory,
-/// so the walk is deterministic in what it includes rather than in how it
-/// arrived there.
+/// clusters each file gets, a directory is walked with an explicit sort at
+/// every level rather than trusted as given. A symlink inside a directory
+/// extra is followed: `fs::metadata` (which follows links) rather than
+/// `symlink_metadata` decides file-vs-directory, so the walk is
+/// deterministic in what it includes rather than in how it arrived there.
 fn extras_from_args(args: &[String]) -> Result<Vec<Extra>> {
     let mut extras = Vec::new();
     for path in args

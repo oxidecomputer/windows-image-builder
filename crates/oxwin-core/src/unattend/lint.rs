@@ -4,12 +4,9 @@
 
 // Copyright 2026 Oxide Computer Company
 
-//! Advisory checks over an `autounattend.xml`.
-//!
-//! Every rule here is a failure this project has already paid for, listed in
-//! CLAUDE.md under "Traps that have already cost days". They share one shape: the
-//! build succeeds, the install looks fine, and the machine is broken in a way no
-//! error message names.
+//! Advisory checks over an `autounattend.xml`. Every rule here is a failure this
+//! project has already paid for. With no VNC on the systems in the rack, this
+//! protects users from a dead vm that will not respond.
 //!
 //! As prose that list protects nothing automatically. As a linter it runs against a
 //! user's supplied file *and* against our own generated output
@@ -17,7 +14,7 @@
 //! reintroduces one of these fails the suite rather than a rack.
 //!
 //! Advisory, not a gate: a malformed file is refused because Setup would refuse it
-//! anyway, and everything else warns and builds. The user owns the outcome.
+//! anyway, and everything else warns and builds.
 
 use crate::settings::Problem;
 use crate::unattend::PATH_LIMIT;
@@ -257,7 +254,7 @@ fn elements(xml: &str, tag: &str) -> Vec<String> {
     found
 }
 
-/// Every `name="…"` attribute value in the document, in order.
+/// Every `name="..."` attribute value in the document, in order.
 ///
 /// The counterpart to [`elements`] for the rules that read an attribute rather than
 /// an element body. Every occurrence, because a rule that asks only whether a good
