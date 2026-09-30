@@ -1,0 +1,7 @@
+# The goldens are compared byte for byte, so git must not translate their line
+# endings on checkout. The unattend answer files are LF and the bootstrap
+# scripts are CRLF, deliberately; a Windows checkout with core.autocrlf=true --
+# which is the default on GitHub's windows runners -- rewrites the LF ones into
+# CRLF and then every case differs from its golden, while the diff reports
+# equal line counts because `str::lines` drops the trailing CR.
+crates/**/testdata/** -text

@@ -1,0 +1,32 @@
+[Desktop Entry]
+Type=Application
+Name=Windows Image Builder
+GenericName=Windows install media builder
+Comment=Build bootable Windows install media for an Oxide rack
+# Most file managers refuse to launch a bare executable, which is why this file
+# exists. Absolute path required by the spec: edit it to wherever oxwin was put,
+# or install with
+#
+#   install -Dm755 oxwin ~/.local/bin/oxwin
+#   sed 's|^Exec=.*|Exec=oxwin %f|' tools/oxide-windows.desktop \
+#     > ~/.local/share/applications/oxide-windows.desktop
+#
+# which puts it on PATH and lets the unqualified Exec below resolve.
+Exec=oxwin %f
+# Named, not a path, so the icon theme resolves it. Nothing installs it for you —
+# the app draws its own icon and has no file to copy — so write one out of the same
+# renderer:
+#
+#   cargo run -p oxwin-gui --example icon-png -- \
+#     ~/.local/share/icons/hicolor/256x256/apps/oxide-windows.png 256
+#
+# Without it the launcher shows a generic icon; the window icon is unaffected,
+# since the app sets that itself.
+Icon=oxide-windows
+Terminal=false
+Categories=System;Utility;
+# %f above and this pair are the "open an ISO with it" path, which the dispatcher
+# turns into the app opened on that file.
+MimeType=application/x-cd-image;application/vnd.efi.iso;
+# Matches ViewportBuilder::with_app_id in the app, and must keep matching it.
+StartupWMClass=com.oxide.windows-image-builder

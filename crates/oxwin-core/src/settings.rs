@@ -1,0 +1,1300 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// Copyright 2026 Oxide Computer Company
+
+//! User selection and image options.
+
+use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// Is this image for one specific machine, or a template many machines clone?
+///
+/// This is not just a hostname switch. A golden image is sysprepped then copied, so anything
+/// unique baked into it stops being unique the moment it is cloned, which is why
+/// [`Credentials`] is constrained by this choice rather than sitting beside it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Deployment {
+    /// A template meant to be cloned.
+    ///
+    /// Sets `<ComputerName>*</ComputerName>`, so Setup picks a random name instead of a
+    /// fixed one. **That is all it does, and on its own it is not enough.** `*` is
+    /// resolved once, during `specialize`; a clone of the resulting disk keeps the name
+    /// that was picked, and the machine SID with it. Windows re-runs `specialize`, and
+    /// so re-resolves `*` only after `sysprep /generalize`.
+    GoldenImage,
+    /// One machine that keeps the name it is given.
+    Named { hostname: String },
+}
+
+impl Deployment {
+    /// What to hand the builder as `--name`. `*` is Windows' own "pick a random
+    /// name" token, which is exactly the golden-image requirement.
+    pub fn computer_name(&self) -> &str {
+        match self {
+            Deployment::GoldenImage => "*",
+            Deployment::Named { hostname } => hostname,
+        }
+    }
+
+    pub fn is_golden(&self) -> bool {
+        matches!(self, Deployment::GoldenImage)
+    }
+}
+
+/// Creds for how the first administrator signs in.
+///
+/// A password is not optional on Windows. The serial console (SAC) and Remote Desktop
+///  both authenticate with a password and have no notion of an SSH key, so a key-only
+/// account produces a machine reachable over SSH and nowhere else, including from the
+/// serial console, which is the one way in when something has gone wrong. Perhaps
+/// eventually worth allowing that if cloudinit works well, and users request it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Credentials {
+    pub username: String,
+    pub password: String,
+    /// Optional. Authorized for SSH in addition to the password.
+    pub keys: Vec<String>,
+}
+
+impl Default for Credentials {
+    fn default() -> Self {
+        Self {
+            username: "oxide".into(),
+            // Deliberately empty: there is no default password anywhere in this
+            // crate, so an image can never be built with a shared secret nobody
+            // chose. The UI offers to generate one.
+            password: String::new(),
+            keys: Vec::new(),
+        }
+    }
+}
+
+/// Cloud-init (cloudbase-init) in the guest.
+///
+/// Present means on: the MSI is installed offline during the install, the
+/// service is configured to read an Oxide no-cloud config drive, and each clone
+/// gets its own hostname, its own metadata SSH keys, a `C:` extended to the
+/// real disk, and whatever its `user_data` says. `None` means an image
+/// byte-identical to one built before this existed.
+///
+/// A password is still mandatory and the answer file still creates the account
+/// in both modes: the serial console is the one way into a guest whose network
+/// never came up, and SAC authenticates with a password and knows nothing about
+/// SSH keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudInit {
+    /// Let cloud-init own the account (`CreateUserPlugin`).
+    ///
+    /// **This resets the password to a per-instance random one**, because
+    /// upstream's only way to create the Windows *profile* that
+    /// `SetUserSSHPublicKeysPlugin` needs is `CreateUserPlugin`, and it sets a
+    /// password on every path it takes -- including the branch for an account
+    /// that already exists. `false` keeps the typed password and materializes
+    /// the profile ourselves instead.
+    pub manage_account: bool,
+}
+
+/// One file the user wants on the media, copied to `C:\oxide\extras`.
+///
+/// Not the vehicle for anything this tool does: execution stays with
+/// cloud-init's `user_data`, which runs per instance rather than being baked
+/// into an image. This exists because the supplied-answer-file escape hatch can
+/// reference `E:\whatever` and until now there was no way to get a file there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Extra {
+    /// Where to read it from, on the machine running the build.
+    pub source: PathBuf,
+    /// Where it lands on the installer volume. Always under `/extras/`, and
+    /// built by the caller from the file's name -- never typed by a user.
+    pub volume_path: String,
+}
+
+impl Extra {
+    /// One file, named by its own file name under `/extras/`.
+    ///
+    /// The one path-construction rule (`/extras/<file name>`) shared by the CLI's
+    /// `--extra=` and the GUI's file picker, so it exists in one place rather
+    /// than twice with the chance of drifting. Does not walk directories --
+    /// the CLI's directory case has its own recursive walk with a volume
+    /// prefix threaded through, which does not fit this single-file shape.
+    pub fn from_file(path: PathBuf) -> Result<Extra> {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                anyhow!("{}: not a valid UTF-8 file name", path.display())
+            })?
+            .to_string();
+        Ok(Extra { source: path, volume_path: format!("/extras/{name}") })
+    }
+}
+
+/// A random password strong enough for a Windows administrator account, satisfying
+/// the default complexity policy (upper, lower, digit, symbol).
+///
+/// Symbols are restricted to characters that survive being written into
+/// `autounattend.xml` and typed at a SAC prompt without quoting surprises.
+pub fn generate_password() -> String {
+    use rand::seq::{IndexedRandom, SliceRandom};
+    const UPPER: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
+    const LOWER: &[u8] = b"abcdefghijkmnpqrstuvwxyz";
+    const DIGIT: &[u8] = b"23456789";
+    const SYMBOL: &[u8] = b"!@#$%^*-_=+?";
+
+    let mut rng = rand::rng();
+    let mut chars: Vec<u8> = Vec::with_capacity(20);
+    // One from each class first, so complexity is guaranteed rather than likely.
+    for class in [UPPER, LOWER, DIGIT, SYMBOL] {
+        chars.push(*class.choose(&mut rng).expect("non-empty"));
+    }
+    let all: Vec<u8> = [UPPER, LOWER, DIGIT, SYMBOL].concat();
+    while chars.len() < 20 {
+        chars.push(*all.choose(&mut rng).expect("non-empty"));
+    }
+    chars.shuffle(&mut rng);
+    String::from_utf8(chars).expect("ascii")
+}
+
+/// Which Windows release.
+///
+/// Not a preference: the media says which of these it is, and [`crate::media::inspect`]
+/// reads it. A user-asserted release is unchecked by anything, and picking the wrong one
+/// fails the way everything here fails, the build succeeds and the install looks fine,
+/// with the hardware-check bypasses in the wrong state and server edition names on client
+/// media. Server 2012 R2 and below are out of scope: some of the answer-file primitives
+/// this relies on do not work that far back, the NVMe trouble already seen on 2016 only
+/// gets worse the older the release, and they are out of support. Server 2016 itself
+/// goes end of life in January 2027.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WindowsRelease {
+    Server2016,
+    Server2019,
+    Server2022,
+    Server2025,
+    Windows10,
+    Windows11,
+}
+
+impl WindowsRelease {
+    /// The builder's `--windows=` token.
+    pub fn token(self) -> &'static str {
+        match self {
+            WindowsRelease::Server2016 => "ws2016",
+            WindowsRelease::Server2019 => "ws2019",
+            WindowsRelease::Server2022 => "ws2022",
+            WindowsRelease::Server2025 => "ws2025",
+            WindowsRelease::Windows10 => "win10",
+            WindowsRelease::Windows11 => "win11",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            WindowsRelease::Server2016 => "Windows Server 2016",
+            WindowsRelease::Server2019 => "Windows Server 2019",
+            WindowsRelease::Server2022 => "Windows Server 2022",
+            WindowsRelease::Server2025 => "Windows Server 2025",
+            WindowsRelease::Windows10 => "Windows 10",
+            WindowsRelease::Windows11 => "Windows 11",
+        }
+    }
+
+    /// Whether we have actually booted this on an Oxide rack. The UI should say
+    /// so rather than implying equal support.
+    ///
+    /// Kept in step with the hardware table in `TESTED-MEDIA.md`, which is the record.
+    /// Server 2025 and Windows 11 are absent deliberately: both build correctly and
+    /// neither has installed on a rack, blocked on propolis#1199 and on an NVMe
+    /// controller fault on the rack itself. Server 2016 is absent because nobody has
+    /// watched it finish: a rack attempt was given up on after fifteen minutes, since
+    /// 2016's Setup writes nothing to the serial console and the guest has no
+    /// framebuffer, so a slow install and a stuck one look identical from outside. It
+    /// was characterized under QEMU instead — see `TESTED-MEDIA.md` — and is not
+    /// supported at this time.
+    pub fn verified_on_hardware(self) -> bool {
+        matches!(
+            self,
+            WindowsRelease::Server2019
+                | WindowsRelease::Server2022
+                | WindowsRelease::Windows10
+        )
+    }
+
+    /// Client (Windows 10/11) rather than server.
+    ///
+    /// The media's own signal for this is `PRODUCTTYPE`:`WinNT` against `ServerNT`,
+    /// never a substring of an edition name, which is a marketing string and translated
+    /// on localized media.
+    pub fn is_client(self) -> bool {
+        matches!(self, WindowsRelease::Windows10 | WindowsRelease::Windows11)
+    }
+
+    /// virtio-win's directory name for this release, and the key into the payload
+    /// manifest's `drivers` map.
+    ///
+    /// The one place this mapping lives. It used to exist twice: a `match` in
+    /// `builder.rs` whose `_` arm handed 2k22 drivers to everything that was not Windows
+    /// 11, and a field in `unattend::Target` that nothing read. `tools/fetch-payload.sh`
+    /// fetches exactly these names, and a test asserts the embedded payload carries
+    /// every one of them.
+    ///
+    /// In virtio-win 0.1.285 `2k16` is byte-identical to `2k19`, `2k22` and `w10` — 38
+    /// files, same names, same hashes.
+    pub fn driver_dir(self) -> &'static str {
+        match self {
+            WindowsRelease::Server2016 => "2k16",
+            WindowsRelease::Server2019 => "2k19",
+            WindowsRelease::Server2022 => "2k22",
+            WindowsRelease::Server2025 => "2k25",
+            WindowsRelease::Windows10 => "w10",
+            WindowsRelease::Windows11 => "w11",
+        }
+    }
+
+    /// The `BUILD` values this release's media reports.
+    ///
+    /// These are *base* builds, not patch levels: the Windows 10 media whose filename
+    /// says 19045 reports 19041, so this can never be the number a filename implies.
+    ///
+    /// Windows 11 has several because each annual release bumps it, and 26100 appears
+    /// here *and* under Server 2025: the same build number ships as both, which is why
+    /// nothing may key on the build alone. `is_client` is what separates them.
+    pub fn base_builds(self) -> &'static [u32] {
+        match self {
+            WindowsRelease::Server2016 => &[14393],
+            WindowsRelease::Server2019 => &[17763],
+            WindowsRelease::Server2022 => &[20348],
+            WindowsRelease::Server2025 => &[26100],
+            WindowsRelease::Windows10 => &[10240, 19041],
+            WindowsRelease::Windows11 => &[22000, 22621, 26100, 26200],
+        }
+    }
+
+    /// Every release this workspace knows how to build. Iterate this, never a literal
+    /// list, so adding a variant cannot leave a table half-filled.
+    pub const ALL: &'static [WindowsRelease] = &[
+        WindowsRelease::Server2016,
+        WindowsRelease::Server2019,
+        WindowsRelease::Server2022,
+        WindowsRelease::Server2025,
+        WindowsRelease::Windows10,
+        WindowsRelease::Windows11,
+    ];
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Settings {
+    /// The `.iso` the user picked. Mounting it is the engine's problem.
+    pub iso: PathBuf,
+    pub release: WindowsRelease,
+    /// Which image to install, as an index, an `EDITIONID` or part of a name. Resolved
+    /// against the media's own image list by [`crate::wim::select_image`]. Empty means
+    /// no preference, and [`crate::media::default_image`] chooses, which is the default,
+    /// because `datacenter` is not an edition any client media carries.
+    pub edition: String,
+    pub deployment: Deployment,
+    pub credentials: Credentials,
+    pub enable_ssh: bool,
+    pub enable_rdp: bool,
+    pub inject_drivers: bool,
+    pub enable_serial_console: bool,
+    /// Patch the media's BCD stores so Windows Setup talks on COM1.
+    pub enable_ems: bool,
+    /// A retail/volume key, or `None` for evaluation media (which rejects keys).
+    pub product_key: Option<String>,
+    /// What Setup and the shell are rendered in. Detected from the media where the
+    /// media says; `locale::DEFAULT_REGION` otherwise.
+    pub ui_language: String,
+    /// Formats and keyboard: one choice driving `UserLocale`, `SystemLocale` and
+    /// `InputLocale`. See [`crate::locale`] for why these are not one field.
+    pub region: String,
+    /// A Windows time zone ID, never an IANA name.
+    pub timezone: String,
+    /// Disk index Setup installs onto. 1 = the second disk, because disk 0 is our
+    /// own install media.
+    pub target_disk: u8,
+    /// How the target disk is partitioned. `partition::default_layout()` unless the
+    /// user changed it.
+    pub partitions: Vec<crate::partition::Partition>,
+    /// An answer file the caller supplied, as its text -- never a path, because
+    /// this crate does not read files on a caller's behalf. `None` means the
+    /// generated answer file, built from every other field above.
+    ///
+    /// A supplied file replaces the generated one entirely, so everything the
+    /// generator would have written from these settings is silently bypassed:
+    /// the release detected from the media, `ui_language`, `region`, `timezone`
+    /// and `partitions` all become dead. `bootstrap.ps1` is the exception -- it
+    /// is still generated from these settings and copied separately, so a file
+    /// that never invokes `setup\bootstrap.ps1` builds an image that installs
+    /// and leaves the guest unreachable.
+    pub unattend: Option<String>,
+    /// Cloud-init in the guest. See [`CloudInit`]. On by default.
+    pub cloud_init: Option<CloudInit>,
+    /// Files that ride the installer volume and land in `C:\oxide\extras`.
+    pub extras: Vec<Extra>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            iso: PathBuf::new(),
+            release: WindowsRelease::Server2022,
+            edition: String::new(),
+            deployment: Deployment::GoldenImage,
+            credentials: Credentials::default(),
+            enable_ssh: true,
+            enable_rdp: true,
+            inject_drivers: true,
+            enable_serial_console: true,
+            enable_ems: true,
+            product_key: None,
+            ui_language: crate::locale::DEFAULT_REGION.to_string(),
+            region: crate::locale::DEFAULT_REGION.to_string(),
+            timezone: crate::locale::DEFAULT_TIME_ZONE.to_string(),
+            target_disk: 1,
+            partitions: crate::partition::default_layout(),
+            unattend: None,
+            cloud_init: Some(CloudInit { manage_account: false }),
+            extras: Vec::new(),
+        }
+    }
+}
+
+/// A reason the current settings cannot be built, or a caution about them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem {
+    pub field: &'static str,
+    pub message: String,
+    pub blocking: bool,
+}
+
+impl Problem {
+    pub(crate) fn block(
+        field: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self { field, message: message.into(), blocking: true }
+    }
+    pub(crate) fn warn(
+        field: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self { field, message: message.into(), blocking: false }
+    }
+}
+
+impl Settings {
+    /// The hint the image chooser gets.
+    ///
+    /// An image index, an `EDITIONID`, or any substring of a name, whatever the caller
+    /// has. The GUI fills it with the index of the row picked out of the media's own
+    /// image list, which is the only unambiguous selector: two images on server media
+    /// share `ServerDatacenterEval`, differing only in Core-ness.
+    pub fn edition_hint(&self) -> String {
+        self.edition.trim().to_lowercase()
+    }
+
+    /// Everything wrong with these settings. Blocking problems stop the build;
+    /// non-blocking ones are shown but do not gate it.
+    pub fn problems(&self) -> Vec<Problem> {
+        let mut v = Vec::new();
+
+        if self.iso.as_os_str().is_empty() {
+            v.push(Problem::block("iso", "Choose a Windows ISO."));
+        }
+
+        if let Deployment::Named { hostname } = &self.deployment {
+            v.extend(hostname_problem(hostname));
+        }
+
+        let Credentials { username, password, keys } = &self.credentials;
+
+        if username.trim().is_empty() {
+            v.push(Problem::block("username", "Enter a username."));
+        } else if is_reserved_username(username) {
+            v.push(Problem::block(
+                "username",
+                format!(
+                    "{username:?} is reserved by Windows; pick another name."
+                ),
+            ));
+        }
+        if password.is_empty() {
+            v.push(Problem::block("password", "Set a password."));
+        } else if password.len() < 8 {
+            v.push(Problem::block(
+                "password",
+                "Windows' default policy needs at least 8 characters.",
+            ));
+        }
+        // The password lands in autounattend.xml as cleartext on media that stays
+        // attached to the instance, so this is worth saying regardless; on a golden
+        // image it is worse, because every clone inherits the same one.
+        if self.deployment.is_golden() && !password.is_empty() {
+            v.push(Problem::warn(
+                "credentials",
+                "Every machine cloned from this image will share this password, and it \
+                 is stored in cleartext on the install media. Change it after the first \
+                 boot, or build a separate image per machine.",
+            ));
+        }
+        for k in keys {
+            if let Some(p) = key_problem(k) {
+                v.push(p);
+            }
+        }
+
+        if !self.enable_ssh && !self.enable_rdp && !self.enable_serial_console {
+            v.push(Problem::block(
+                "access",
+                "With SSH, RDP and the serial console all off there is no way to reach the guest.",
+            ));
+        }
+
+        if self.enable_rdp {
+            v.push(Problem::warn(
+                "enable_rdp",
+                "RDP also needs a VPC firewall rule for tcp/3389 — the default VPC allows \
+                 only SSH and ICMP, so enabling it here is necessary but not sufficient.",
+            ));
+        }
+
+        if !self.inject_drivers {
+            v.push(Problem::warn(
+                "inject_drivers",
+                "Without the virtio drivers the guest will install but have no network.",
+            ));
+        }
+
+        if !self.release.verified_on_hardware() {
+            v.push(Problem::warn(
+                "release",
+                format!(
+                    "{} has not been verified on an Oxide rack yet.",
+                    self.release.label()
+                ),
+            ));
+        }
+
+        // Deliberately duplicated with `builder::assemble`, which runs the same
+        // check: this copy is what gives the GUI live feedback before a build
+        // starts, and that one is what covers the CLI, which builds a `Config`
+        // from flags and never constructs a `Settings` at all.
+        v.extend(crate::locale::problems(&self.region, &self.timezone));
+
+        if let Some(key) = &self.product_key {
+            if !looks_like_product_key(key) {
+                v.push(Problem::block(
+                    "product_key",
+                    "A product key is 5 groups of 5 characters, e.g. XXXXX-XXXXX-XXXXX-XXXXX-XXXXX.",
+                ));
+            }
+        }
+
+        // Also duplicated with `builder::assemble`, for the same reason and
+        // deliberately: without the copy there the CLI can write media with no
+        // EFI system partition and nothing says a word.
+        v.extend(crate::partition::problems(&self.partitions));
+
+        if let Some(xml) = &self.unattend {
+            let cx = crate::unattend::LintContext {
+                target_disk: self.target_disk,
+                generalize: self.deployment.is_golden(),
+                cloud_init: self.cloud_init.is_some(),
+            };
+            v.extend(crate::unattend::lint(xml, &cx));
+        }
+
+        v.extend(extra_problems(&self.extras));
+        v.extend(cloud_init_username_problem(
+            &self.credentials.username,
+            self.cloud_init,
+        ));
+
+        v.extend(manage_account_problem(self.cloud_init));
+
+        v
+    }
+
+    pub fn is_buildable(&self) -> bool {
+        !self.problems().iter().any(|p| p.blocking)
+    }
+}
+
+/// NetBIOS rules, which are stricter than DNS: 15 characters, no dots, and a
+/// short list of forbidden punctuation.
+fn hostname_problem(hostname: &str) -> Vec<Problem> {
+    let mut v = Vec::new();
+    if hostname.trim().is_empty() {
+        v.push(Problem::block("hostname", "Enter a hostname."));
+        return v;
+    }
+    if hostname.len() > 15 {
+        v.push(Problem::block(
+            "hostname",
+            format!(
+                "{} characters; Windows truncates names over 15.",
+                hostname.len()
+            ),
+        ));
+    }
+    if hostname.contains('.') {
+        v.push(Problem::block(
+            "hostname",
+            "A computer name cannot contain dots.",
+        ));
+    }
+    if hostname.chars().any(|c| r#"\/:*?"<>|,~!@#$%^&'(){}_ "#.contains(c)) {
+        v.push(Problem::block(
+            "hostname",
+            "Use only letters, digits and hyphens.",
+        ));
+    }
+    if hostname.chars().all(|c| c.is_ascii_digit()) {
+        v.push(Problem::block(
+            "hostname",
+            "A computer name cannot be all digits.",
+        ));
+    }
+    v
+}
+
+/// Dont want to make the system mad.
+fn is_reserved_username(name: &str) -> bool {
+    const RESERVED: &[&str] = &[
+        "administrator",
+        "guest",
+        "system",
+        "network service",
+        "local service",
+        "defaultaccount",
+        "wdagutilityaccount",
+        "public",
+    ];
+    RESERVED.contains(&name.trim().to_ascii_lowercase().as_str())
+}
+
+/// What letting cloud-init manage the account costs, in the one spelling the
+/// settings warning, the GUI and the CLI all show.
+///
+/// `CreateUserPlugin` sets a random password on its first run, and nothing
+/// records it. SAC and RDP authenticate with a password and know nothing
+/// about SSH keys, so from then on the serial console -- the one way into a
+/// guest whose network did not come up -- has no usable login. Leads with
+/// that consequence, because the mechanism is not what the user needs to
+/// hear first.
+pub const MANAGE_ACCOUNT_WARNING: &str = "Cloud-init will manage this \
+    account. After the first boot of each clone (or of this machine, if it \
+    is not a golden image), the password you set no longer works and nobody \
+    knows the new one: the serial console (SAC) and RDP have no usable \
+    login, and SSH keys are the only way in. To keep the password, keep your \
+    account and let cloud-init only add keys.";
+
+/// The Mode B warning, or nothing. A warning, never a block: the mode works,
+/// and the user may want exactly this. Shared by `Settings::problems` and
+/// the CLI's build paths, which never construct a `Settings`.
+pub fn manage_account_problem(
+    cloud_init: Option<CloudInit>,
+) -> Option<Problem> {
+    cloud_init
+        .filter(|c| c.manage_account)
+        .map(|_| Problem::warn("cloud_init", MANAGE_ACCOUNT_WARNING))
+}
+
+/// A username cloud-init cannot be relied on to handle. Shared by
+/// `Settings::problems` and the CLI's build paths, which build a `Config`
+/// from flags and never construct a `Settings`.
+///
+/// The guest scripts the bootstrap writes are written `-Encoding ASCII`, so a
+/// non-ASCII character in the name reaches the startup task as `?`. In
+/// keep-my-account mode that task looks the account up by name to make its
+/// profile; the lookup fails, no profile is made, and the instance's SSH keys
+/// are silently not written. A warning rather than a refusal: the account
+/// itself, the password and SAC are unaffected.
+pub fn cloud_init_username_problem(
+    username: &str,
+    cloud_init: Option<CloudInit>,
+) -> Option<Problem> {
+    let cloud_init = cloud_init?;
+    if username.is_ascii() {
+        return None;
+    }
+    Some(Problem::warn(
+        "username",
+        if cloud_init.manage_account {
+            format!(
+                "{username:?} is not plain ASCII. Cloud-init has not been \
+                 checked with such a name; use an ASCII username if the \
+                 instance's SSH keys matter."
+            )
+        } else {
+            format!(
+                "{username:?} is not plain ASCII, and the cloud-init startup \
+                 script is written as ASCII, so it cannot find this account \
+                 to make its profile: the instance's SSH keys will not be \
+                 written. Use an ASCII username, or turn cloud-init off."
+            )
+        },
+    ))
+}
+
+/// Everything wrong with a set of extra files.
+///
+/// The volume path is constructed by the caller from the file's name, so every
+/// rule here is a caller bug rather than user error -- which is exactly why it
+/// blocks: an extra that escaped `/extras/` would overwrite the media's own
+/// tree, and two extras on one path would lose a file in silence.
+///
+/// "One path" is judged the way the volume judges it. exFAT compares names
+/// case-insensitively and `exfat::insert_file` replaces a same-named entry in
+/// place, last writer wins, so `a/Notes.txt` and `b/notes.txt` flattened to
+/// `/extras/Notes.txt` and `/extras/notes.txt` are one file on the media.
+/// Every comparison below is on [`fold`]ed paths, the same key the volume
+/// builder uses. Sets rather than a scan of everything seen so far, so a
+/// directory of thousands of files is not quadratic.
+pub fn extra_problems(extras: &[Extra]) -> Vec<Problem> {
+    use std::collections::BTreeMap;
+    let mut v = Vec::new();
+    // Every file accepted so far, folded, to the path as given.
+    let mut files: BTreeMap<String, &str> = BTreeMap::new();
+    // Every directory those files sit under, folded, to one file beneath it.
+    let mut dirs: BTreeMap<String, &str> = BTreeMap::new();
+    for e in extras {
+        if e.source.as_os_str().is_empty() {
+            v.push(Problem::block("extras", "An extra file has no path."));
+            continue;
+        }
+        let name = e.volume_path.strip_prefix("/extras/").unwrap_or("");
+        if name.is_empty()
+            || name.starts_with('/')
+            || name.contains('\\')
+            || name.split('/').any(|c| c == ".." || c.is_empty())
+        {
+            v.push(Problem::block(
+                "extras",
+                format!(
+                    "{:?} is not a path under /extras/ on the media.",
+                    e.volume_path
+                ),
+            ));
+            continue;
+        }
+        let folded = fold(&e.volume_path);
+        if let Some(other) = files.get(&folded) {
+            let on = if *other == e.volume_path {
+                e.volume_path.clone()
+            } else {
+                format!(
+                    "{} and {} (the media does not tell names apart by \
+                     case)",
+                    other, e.volume_path
+                )
+            };
+            v.push(Problem::block(
+                "extras",
+                format!(
+                    "Two files would both land on {on}. Rename one, or pick \
+                     their parent directory so the structure is preserved."
+                ),
+            ));
+            continue;
+        }
+        // A directory extra and a file extra can collide without their
+        // `volume_path`s ever being equal: `--extra=fileA` named `foo` and
+        // `--extra=dirB` also named `foo` produce `/extras/foo` and
+        // `/extras/foo/bar.txt`, and the second cannot be created on a
+        // filesystem where the first is a plain file. Compared by whole
+        // path components, not by string prefix, so `/extras/foo` next to
+        // `/extras/foobar` is not flagged. Either order: this file sits under
+        // one already seen, or one already seen sits under this file.
+        let ancestors = ancestors(&folded);
+        let clash = ancestors
+            .iter()
+            .find_map(|a| files.get(*a).copied())
+            .or_else(|| dirs.get(&folded).copied());
+        if let Some(other) = clash {
+            v.push(Problem::block(
+                "extras",
+                format!(
+                    "{} and {} collide: one is a file at the other's \
+                     directory. Rename one, or move it out from under the \
+                     other.",
+                    other, e.volume_path
+                ),
+            ));
+            continue;
+        }
+        for a in ancestors {
+            dirs.entry(a.to_string()).or_insert(&e.volume_path);
+        }
+        files.insert(folded, &e.volume_path);
+    }
+    v
+}
+
+/// A volume path as the installer volume compares it: uppercased, which is
+/// the key `exfat::insert_file` and `add_dir` look entries up by.
+fn fold(path: &str) -> String {
+    path.to_uppercase()
+}
+
+/// Every strict component prefix of `path`, shortest first:
+/// `/EXTRAS/A/B.TXT` gives `/EXTRAS` and `/EXTRAS/A`. Split on whole
+/// components, never a string prefix, so `/extras/foo` is not an ancestor of
+/// `/extras/foobar`.
+fn ancestors(path: &str) -> Vec<&str> {
+    path.match_indices('/')
+        .map(|(at, _)| &path[..at])
+        .filter(|a| !a.is_empty())
+        .collect()
+}
+
+fn key_problem(key: &str) -> Option<Problem> {
+    let key = key.trim();
+    // Anything else is a private key, a filename, or a paste accident — all of
+    // which would otherwise fail silently inside the guest.
+    const PREFIXES: &[&str] = &[
+        "ssh-rsa ",
+        "ssh-ed25519 ",
+        "ecdsa-sha2-nistp256 ",
+        "ecdsa-sha2-nistp384 ",
+        "ecdsa-sha2-nistp521 ",
+        "sk-ssh-ed25519@openssh.com ",
+        "sk-ecdsa-sha2-nistp256@openssh.com ",
+    ];
+    if PREFIXES.iter().any(|p| key.starts_with(p)) {
+        return None;
+    }
+    if key.contains("PRIVATE KEY") {
+        return Some(Problem::block(
+            "credentials",
+            "That is a private key. Use the .pub file.",
+        ));
+    }
+    Some(Problem::block(
+        "credentials",
+        "Not an SSH public key — it should start with ssh-ed25519 or ssh-rsa.",
+    ))
+}
+
+fn looks_like_product_key(key: &str) -> bool {
+    let groups: Vec<&str> = key.trim().split('-').collect();
+    groups.len() == 5
+        && groups.iter().all(|g| {
+            g.len() == 5 && g.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base() -> Settings {
+        Settings {
+            iso: PathBuf::from("/tmp/x.iso"),
+            credentials: Credentials {
+                username: "oxide".into(),
+                password: "0xide!230xide!23".into(),
+                keys: vec!["ssh-ed25519 AAAA test".into()],
+            },
+            ..Default::default()
+        }
+    }
+
+    /// A warning shown against a release somebody has actually installed is noise, and
+    /// noise is how a real warning gets ignored. This exists so that moving a release
+    /// between the two lists is a deliberate edit rather than something nobody notices.
+    #[test]
+    fn the_verified_list_matches_the_hardware_record() {
+        use WindowsRelease::*;
+        for release in [Server2019, Server2022, Windows10] {
+            assert!(release.verified_on_hardware(), "{release:?}");
+        }
+        // Blocked on propolis#1199 and a rack NVMe fault — see TESTED-MEDIA.md.
+        for release in [Server2025, Windows11] {
+            assert!(!release.verified_on_hardware(), "{release:?}");
+        }
+    }
+
+    #[test]
+    fn golden_image_gets_a_random_computer_name() {
+        assert_eq!(Deployment::GoldenImage.computer_name(), "*");
+    }
+
+    #[test]
+    fn defaults_carry_no_password() {
+        assert!(Settings::default().credentials.password.is_empty());
+        assert!(!Settings::default().is_buildable());
+    }
+
+    #[test]
+    fn a_complete_setup_is_buildable() {
+        assert!(base().is_buildable(), "{:?}", base().problems());
+    }
+
+    #[test]
+    fn no_iso_blocks() {
+        let s = Settings { iso: PathBuf::new(), ..base() };
+        assert!(!s.is_buildable());
+    }
+
+    /// Keys are additive on Windows, never a substitute: SAC and RDP authenticate
+    /// with a password and know nothing about SSH keys, so an account with keys and
+    /// no password can only be reached over SSH.
+    #[test]
+    fn keys_without_a_password_still_blocks() {
+        let s = Settings {
+            credentials: Credentials {
+                password: String::new(),
+                ..base().credentials
+            },
+            ..base()
+        };
+        assert!(!s.is_buildable());
+        assert!(
+            s.problems().iter().any(|p| p.field == "password" && p.blocking)
+        );
+    }
+
+    #[test]
+    fn no_keys_at_all_is_fine() {
+        let s = Settings {
+            credentials: Credentials { keys: vec![], ..base().credentials },
+            ..base()
+        };
+        assert!(s.is_buildable(), "{:?}", s.problems());
+    }
+
+    #[test]
+    fn private_key_paste_is_caught() {
+        let s = Settings {
+            credentials: Credentials {
+                keys: vec!["-----BEGIN OPENSSH PRIVATE KEY-----".into()],
+                ..base().credentials
+            },
+            ..base()
+        };
+        assert!(s.problems().iter().any(|p| p.message.contains("private key")));
+    }
+
+    #[test]
+    fn a_golden_image_warns_that_clones_share_the_password() {
+        let s = Settings { deployment: Deployment::GoldenImage, ..base() };
+        assert!(s.is_buildable());
+        assert!(
+            s.problems()
+                .iter()
+                .any(|p| !p.blocking && p.field == "credentials")
+        );
+    }
+
+    #[test]
+    fn short_password_blocks() {
+        let s = Settings {
+            credentials: Credentials {
+                password: "short".into(),
+                ..base().credentials
+            },
+            ..base()
+        };
+        assert!(!s.is_buildable());
+    }
+
+    #[test]
+    fn reserved_username_blocks() {
+        let s = Settings {
+            credentials: Credentials {
+                username: "Administrator".into(),
+                ..base().credentials
+            },
+            ..base()
+        };
+        assert!(!s.is_buildable());
+    }
+
+    #[test]
+    fn overlong_hostname_blocks() {
+        let s = Settings {
+            deployment: Deployment::Named {
+                hostname: "this-name-is-far-too-long".into(),
+            },
+            ..base()
+        };
+        assert!(!s.is_buildable());
+    }
+
+    #[test]
+    fn all_access_off_blocks() {
+        let s = Settings {
+            enable_ssh: false,
+            enable_rdp: false,
+            enable_serial_console: false,
+            ..base()
+        };
+        assert!(!s.is_buildable());
+    }
+
+    #[test]
+    fn generated_passwords_meet_windows_complexity() {
+        for _ in 0..50 {
+            let p = generate_password();
+            assert_eq!(p.len(), 20);
+            assert!(p.chars().any(|c| c.is_ascii_uppercase()), "{p}");
+            assert!(p.chars().any(|c| c.is_ascii_lowercase()), "{p}");
+            assert!(p.chars().any(|c| c.is_ascii_digit()), "{p}");
+            assert!(p.chars().any(|c| !c.is_ascii_alphanumeric()), "{p}");
+            // Nothing that would need escaping in XML or confuse a SAC prompt.
+            assert!(!p.contains(['<', '>', '&', '"', '\'', ' ']), "{p}");
+        }
+    }
+
+    /// The hint is passed through untouched apart from case and whitespace.
+    ///
+    /// It used to have `core` appended here when a separate Desktop/Core switch was set,
+    /// while `Config::from_settings` appended `-core` for the same fact, two spellings
+    /// of one thing. Core-ness now comes from the image chosen out of the media's own
+    /// list, so there is nothing left to append and nothing left to disagree about.
+    #[test]
+    fn the_edition_hint_is_the_edition_verbatim() {
+        // Empty by default: no preference, resolved against the media rather than
+        // asserted against a table.
+        assert_eq!(base().edition_hint(), "");
+
+        let standard = Settings { edition: "  Standard ".into(), ..base() };
+        assert_eq!(standard.edition_hint(), "standard");
+
+        // An index is the selector the GUI actually sends, and it must survive intact:
+        // `wim::select_image` treats an all-digits hint as an image index.
+        let by_index = Settings { edition: "3".into(), ..base() };
+        assert_eq!(by_index.edition_hint(), "3");
+    }
+
+    #[test]
+    fn generated_passwords_differ() {
+        assert_ne!(generate_password(), generate_password());
+    }
+
+    #[test]
+    fn malformed_product_key_blocks() {
+        let s = Settings { product_key: Some("ABC-DEF".into()), ..base() };
+        assert!(!s.is_buildable());
+    }
+
+    /// Defaults must be exactly what every committed golden was built with.
+    #[test]
+    fn locale_defaults_match_the_goldens() {
+        let s = Settings::default();
+        assert_eq!(s.ui_language, crate::locale::DEFAULT_REGION);
+        assert_eq!(s.region, crate::locale::DEFAULT_REGION);
+        assert_eq!(s.timezone, crate::locale::DEFAULT_TIME_ZONE);
+    }
+
+    /// An unknown tag reaches the answer file untouched and Windows ignores it in
+    /// silence, so the table is the only check there is. A warning, not a refusal:
+    /// someone may know a tag this curated list does not carry.
+    #[test]
+    fn an_unknown_region_warns_but_does_not_block() {
+        let s = Settings { region: "xx-XX".into(), ..base() };
+        assert!(s.is_buildable());
+        assert!(
+            s.problems().iter().any(|p| p.field == "region" && !p.blocking),
+            "{:?}",
+            s.problems()
+        );
+    }
+
+    #[test]
+    fn an_unknown_timezone_warns_but_does_not_block() {
+        let s = Settings { timezone: "Europe/Berlin".into(), ..base() };
+        assert!(s.is_buildable());
+        assert!(
+            s.problems().iter().any(|p| p.field == "timezone" && !p.blocking)
+        );
+    }
+
+    #[test]
+    fn no_supplied_unattend_adds_no_problems() {
+        assert!(base().unattend.is_none());
+        assert!(base().is_buildable(), "{:?}", base().problems());
+    }
+
+    /// A file that is not an answer file at all is the one thing a supplied
+    /// unattend can do that blocks the build -- Setup would refuse it too.
+    #[test]
+    fn a_supplied_file_that_is_not_an_answer_file_blocks() {
+        let s = Settings { unattend: Some("not xml at all".into()), ..base() };
+        assert!(!s.is_buildable(), "{:?}", s.problems());
+        assert!(
+            s.problems().iter().any(|p| p.field == "unattend" && p.blocking)
+        );
+    }
+
+    /// A well-formed but hazardous supplied file warns -- linted, but used
+    /// regardless, because the user chose it on purpose and owns the outcome.
+    /// This one has no reference to `setup\bootstrap.ps1`, so the guest
+    /// bootstrap would never run: the install looks fine and the guest is
+    /// unreachable.
+    #[test]
+    fn a_supplied_file_with_a_hazard_warns_but_stays_buildable() {
+        let s = Settings {
+            unattend: Some("<unattend></unattend>".into()),
+            ..base()
+        };
+        assert!(s.is_buildable(), "{:?}", s.problems());
+        assert!(
+            s.problems()
+                .iter()
+                .any(|p| p.field == "unattend_bootstrap" && !p.blocking),
+            "{:?}",
+            s.problems()
+        );
+    }
+
+    /// On by default, in the safer of the two modes: nothing in a default build
+    /// resets the password the user typed.
+    #[test]
+    fn cloud_init_is_on_by_default_and_does_not_manage_the_account() {
+        let s = Settings::default();
+        assert_eq!(s.cloud_init, Some(CloudInit { manage_account: false }));
+        assert!(s.extras.is_empty());
+    }
+
+    #[test]
+    fn cloud_init_off_is_representable() {
+        let s = Settings { cloud_init: None, ..base() };
+        assert!(s.is_buildable(), "{:?}", s.problems());
+    }
+
+    /// Mode B resets the account's password to a per-instance random one the
+    /// first time cloud-init runs, because upstream's only way to create the
+    /// profile the key plugin needs is `CreateUserPlugin`, which sets a
+    /// password on every path. The user has to be told, not left to find out.
+    #[test]
+    fn managing_the_account_warns_that_the_password_will_be_replaced() {
+        let s = Settings {
+            cloud_init: Some(CloudInit { manage_account: true }),
+            ..base()
+        };
+        assert!(s.is_buildable(), "{:?}", s.problems());
+        let found: Vec<_> = s
+            .problems()
+            .into_iter()
+            .filter(|p| p.field == "cloud_init")
+            .collect();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(!found[0].blocking);
+        // It says what it costs, not only what it does: the password stops
+        // working and the serial console is left with no login.
+        let m = &found[0].message;
+        assert!(m.contains("the password you set no longer works"), "{m}");
+        assert!(m.contains("serial console (SAC)"), "{m}");
+        assert!(m.contains("SSH keys are the only way in"), "{m}");
+        assert_eq!(m, MANAGE_ACCOUNT_WARNING);
+
+        // And keep-my-account mode, or no cloud-init, says nothing of it.
+        for quiet in [None, Some(CloudInit { manage_account: false })] {
+            let s = Settings { cloud_init: quiet, ..base() };
+            assert!(
+                !s.problems().iter().any(|p| p.field == "cloud_init"),
+                "{:?}",
+                s.problems()
+            );
+        }
+    }
+
+    /// Keep-my-account mode finds the account by name from a script written
+    /// as ASCII, so a non-ASCII name silently loses the instance's keys. A
+    /// warning, only with cloud-init on, and never for a plain name.
+    #[test]
+    fn a_non_ascii_username_with_cloud_init_warns() {
+        let named = |username: &str, cloud_init| Settings {
+            credentials: Credentials {
+                username: username.into(),
+                ..base().credentials
+            },
+            cloud_init,
+            ..base()
+        };
+        let keep = Some(CloudInit { manage_account: false });
+        let s = named("jos\u{e9}", keep);
+        let found: Vec<_> = s
+            .problems()
+            .into_iter()
+            .filter(|p| p.field == "username")
+            .collect();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(!found[0].blocking);
+        assert!(found[0].message.contains("SSH keys"), "{found:?}");
+        assert!(s.is_buildable());
+        assert!(
+            named("jos\u{e9}", Some(CloudInit { manage_account: true }))
+                .problems()
+                .iter()
+                .any(|p| p.field == "username" && !p.blocking)
+        );
+        for quiet in [named("jos\u{e9}", None), named("jose", keep)] {
+            assert!(
+                !quiet.problems().iter().any(|p| p.field == "username"),
+                "{:?}",
+                quiet.problems()
+            );
+        }
+    }
+
+    fn extra(source: &str, volume_path: &str) -> Extra {
+        Extra {
+            source: PathBuf::from(source),
+            volume_path: volume_path.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_plain_extra_file_is_fine() {
+        let s = Settings {
+            extras: vec![extra("/tmp/a.zip", "/extras/a.zip")],
+            ..base()
+        };
+        assert!(s.is_buildable(), "{:?}", s.problems());
+    }
+
+    /// The volume path is ours to build, never the user's to supply, so
+    /// anything that escapes `/extras/` is a bug in a caller rather than user
+    /// error -- and it would write into the media's own tree.
+    #[test]
+    fn an_extra_escaping_the_extras_directory_blocks() {
+        for path in [
+            "/sources/install.wim",
+            "/extras/../autounattend.xml",
+            "extras/a.zip",
+            "/extras/",
+        ] {
+            let s =
+                Settings { extras: vec![extra("/tmp/a.zip", path)], ..base() };
+            assert!(!s.is_buildable(), "{path} should be refused");
+            assert!(
+                s.problems().iter().any(|p| p.field == "extras" && p.blocking)
+            );
+        }
+    }
+
+    /// Two files with the same basename from different directories both want
+    /// `/extras/<name>`. exFAT would take one and drop the other in silence.
+    #[test]
+    fn two_extras_landing_on_the_same_path_block() {
+        let s = Settings {
+            extras: vec![
+                extra("/tmp/one/a.zip", "/extras/a.zip"),
+                extra("/tmp/two/a.zip", "/extras/a.zip"),
+            ],
+            ..base()
+        };
+        assert!(!s.is_buildable(), "{:?}", s.problems());
+        assert!(s.problems().iter().any(|p| {
+            p.field == "extras" && p.blocking && p.message.contains("a.zip")
+        }));
+    }
+
+    /// A file and a directory can be given different names and still collide
+    /// on the volume: `--extra=fileA` named `foo` and `--extra=dirB` also
+    /// named `foo` produce `/extras/foo` and `/extras/foo/bar.txt`, which
+    /// cannot both exist -- one is a plain file where the other needs a
+    /// directory. `two_extras_landing_on_the_same_path_block` above only
+    /// catches an exact match, so this is a separate case.
+    #[test]
+    fn a_directory_and_a_file_colliding_on_one_name_blocks() {
+        let s = Settings {
+            extras: vec![
+                extra("/tmp/fileA", "/extras/foo"),
+                extra("/tmp/dirB/bar.txt", "/extras/foo/bar.txt"),
+            ],
+            ..base()
+        };
+        assert!(!s.is_buildable(), "{:?}", s.problems());
+        assert!(s.problems().iter().any(|p| {
+            p.field == "extras" && p.blocking && p.message.contains("foo")
+        }));
+    }
+
+    /// The collision check is by path component, not by string prefix:
+    /// `/extras/foo` and `/extras/foobar` share six characters but name two
+    /// unrelated files, so this must build cleanly.
+    #[test]
+    fn extras_sharing_a_string_prefix_but_not_a_path_prefix_are_fine() {
+        let s = Settings {
+            extras: vec![
+                extra("/tmp/foo", "/extras/foo"),
+                extra("/tmp/foobar", "/extras/foobar"),
+            ],
+            ..base()
+        };
+        assert!(s.is_buildable(), "{:?}", s.problems());
+    }
+
+    /// exFAT does not tell names apart by case, and the volume builder
+    /// replaces a same-named entry in place: `--extra=a/Notes.txt
+    /// --extra=b/notes.txt` land on `/extras/Notes.txt` and
+    /// `/extras/notes.txt`, which are one file on the media. One of them would
+    /// vanish in silence on any host OS.
+    #[test]
+    fn extras_differing_only_by_case_block() {
+        let s = Settings {
+            extras: vec![
+                extra("/tmp/a/Notes.txt", "/extras/Notes.txt"),
+                extra("/tmp/b/notes.txt", "/extras/notes.txt"),
+            ],
+            ..base()
+        };
+        assert!(!s.is_buildable(), "{:?}", s.problems());
+        let problems = extra_problems(&s.extras);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].blocking);
+        assert!(problems[0].message.contains("/extras/Notes.txt"));
+        assert!(problems[0].message.contains("/extras/notes.txt"));
+        // Directory components fold too.
+        let s = Settings {
+            extras: vec![
+                extra("/tmp/x/Docs/a.txt", "/extras/Docs/a.txt"),
+                extra("/tmp/y/docs/a.txt", "/extras/docs/A.TXT"),
+            ],
+            ..base()
+        };
+        assert!(!s.is_buildable(), "{:?}", s.problems());
+    }
+
+    /// The file/directory collision, with the two spelled in different case:
+    /// `/extras/FOO` is a file, so `/extras/foo/bar` cannot be created under
+    /// it on a volume where `FOO` and `foo` are the same name. Both orders.
+    #[test]
+    fn a_case_folded_file_and_directory_collision_blocks() {
+        let file = extra("/tmp/FOO", "/extras/FOO");
+        let under = extra("/tmp/dir/bar", "/extras/foo/bar");
+        for extras in [vec![file.clone(), under.clone()], vec![under, file]] {
+            let problems = extra_problems(&extras);
+            assert_eq!(problems.len(), 1, "{extras:?}: {problems:?}");
+            assert!(problems[0].blocking);
+            assert!(problems[0].message.contains("collide"), "{problems:?}");
+        }
+    }
+
+    /// Different names in different directories, and the same name in two
+    /// different directories, are not collisions.
+    #[test]
+    fn distinct_extras_in_distinct_directories_are_fine() {
+        let extras = vec![
+            extra("/tmp/d/one/a.txt", "/extras/d/one/a.txt"),
+            extra("/tmp/d/two/a.txt", "/extras/d/two/a.txt"),
+            extra("/tmp/d/one/b.txt", "/extras/d/one/b.txt"),
+            extra("/tmp/d/one", "/extras/d/one2"),
+        ];
+        assert!(extra_problems(&extras).is_empty());
+    }
+
+    #[test]
+    fn an_extra_with_no_source_blocks() {
+        let s = Settings { extras: vec![extra("", "/extras/a.zip")], ..base() };
+        assert!(!s.is_buildable());
+    }
+}
