@@ -237,17 +237,16 @@ pub fn unattend_conf(config: &Config) -> String {
 pub fn service_conf(config: &Config) -> String {
     // Order: CreateUser first when present -- SetHostNamePlugin does not need
     // the account, and there is no reason to delay account creation behind a
-    // reboot. Keys next: a rack clone (2026-09-27) showed the key plugin
-    // still behind SetHostNamePlugin's reboot, so SSH with the instance key
-    // failed on boot 1 and only worked ~20s into boot 2, after the rename
-    // rebooted the guest. Moving the key plugin ahead of SetHostNamePlugin
-    // lands the key on boot 1; the rename reboot still follows moments
-    // later, so a session opened in that narrow gap is dropped once, but
-    // every session after boot 1's key write has the right key rather than
-    // none. SetHostName runs after the key plugin and before
-    // ExtendVolumes/UserData, which a rename should not block: see
-    // `is_golden` for why the rename lives here and why the reboot it
-    // triggers cannot loop.
+    // reboot. Keys next: a rack clone (2026-09-27) showed the key plugin still
+    // behind SetHostNamePlugin's reboot, so SSH with the instance key failed on
+    // boot 1 and only worked ~20s into boot 2, after the rename rebooted the
+    // guest. Moving the key plugin ahead of SetHostNamePlugin lands the key on
+    // boot 1; the rename reboot still follows moments later, so a session
+    // opened in that narrow gap is dropped once, but every session after boot
+    // 1's key write has the right key rather than none. SetHostName runs after
+    // the key plugin and before ExtendVolumes/UserData, which a rename should
+    // not block: see `is_golden` for why the rename lives here and why the
+    // reboot it triggers cannot loop.
     let mut plugins: Vec<&str> = Vec::new();
     if manages_account(config) {
         // Mode B. Creates the Windows profile the key plugin needs -- and
@@ -276,11 +275,10 @@ pub fn service_conf(config: &Config) -> String {
         format!("username={}", config.username),
         "groups=Administrators".into(),
         "inject_user_password=false".into(),
-        // true, unlike the one-shot: SetHostNamePlugin (golden images) needs
-        // to be able to reboot after the rename. See `is_golden`. This now
-        // governs the whole plugin list below, so it is worth recording that
-        // none of the others can trigger it (1.1.8 checked line by line):
-        // CreateUserPlugin returns reboot_required=False unconditionally
+        // SetHostNamePlugin (golden images) needs to be able to reboot after
+        // the rename. See `is_golden`. This now governs the whole plugin list
+        // below, so it is worth recording that none of the others can trigger
+        // it: CreateUserPlugin returns reboot_required=False unconditionally
         // (createuser.py:92); so do SetUserSSHPublicKeysPlugin
         // (sshpublickeys.py:35,58), UserDataPlugin (userdata.py:45,48,58) and
         // RDPSettingsPlugin (rdp.py:30,47). ExtendVolumesPlugin returns

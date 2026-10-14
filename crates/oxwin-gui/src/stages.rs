@@ -7,7 +7,7 @@
 //! The body of each stage. State lives in `app.rs`; this is presentation and the
 //! small amount of glue that turns a click into a core call.
 
-use crate::app::{App, Build, Stage};
+use crate::app::{App, Build, Stage, trim_in_place};
 use crate::theme;
 use egui::{RichText, Ui};
 use oxwin_core::builder;
@@ -1334,20 +1334,14 @@ impl App {
 
         ui.horizontal(|ui| {
             ui.label("Project");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.project)
-                    .desired_width(180.0),
-            );
+            name_field(ui, &mut self.project, 180.0);
             // A golden run derives its installer disk from the run name, so this
             // field would sit there doing nothing -- which is worse than absent,
             // because someone will type in it and expect it to matter.
             if self.upload_goal != UploadGoal::GoldenImage {
                 ui.add_space(12.0);
                 ui.label("Disk name");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.disk_name)
-                        .desired_width(180.0),
-                );
+                name_field(ui, &mut self.disk_name, 180.0);
             }
         });
 
@@ -1394,16 +1388,10 @@ impl App {
         if whole {
             ui.horizontal(|ui| {
                 ui.label("Instance");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.instance_name)
-                        .desired_width(180.0),
-                );
+                name_field(ui, &mut self.instance_name, 180.0);
                 ui.add_space(12.0);
                 ui.label("System disk GiB");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.system_disk_gib)
-                        .desired_width(70.0),
-                );
+                name_field(ui, &mut self.system_disk_gib, 70.0);
             });
             hint(
                 ui,
@@ -1620,10 +1608,7 @@ impl App {
         );
         ui.horizontal(|ui| {
             ui.label("Run name");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.run_name)
-                    .desired_width(180.0),
-            );
+            name_field(ui, &mut self.run_name, 180.0);
             ui.add_space(12.0);
             ui.label("Keep");
             egui::ComboBox::from_id_salt("keep")
@@ -1941,6 +1926,16 @@ fn section(ui: &mut Ui, text: &str) {
             .color(theme::TEXT_DIM),
     );
     ui.add_space(5.0);
+}
+
+/// A text field for an Oxide resource name, trimmed when it loses focus so the
+/// commands shown beside it carry the name the rack will be sent.
+fn name_field(ui: &mut Ui, text: &mut String, width: f32) {
+    let response =
+        ui.add(egui::TextEdit::singleline(text).desired_width(width));
+    if response.lost_focus() {
+        trim_in_place(text);
+    }
 }
 
 fn hint(ui: &mut Ui, text: &str) {

@@ -366,7 +366,31 @@ pub struct App {
 
 const LOG_CAP: usize = 2000;
 
+/// Strip surrounding whitespace without reallocating when there is none.
+pub(crate) fn trim_in_place(text: &mut String) {
+    let trimmed = text.trim();
+    if trimmed.len() != text.len() {
+        *text = trimmed.to_string();
+    }
+}
+
 impl App {
+    /// A stray space in a pasted name is rejected by the rack as an invalid
+    /// name, which reads as the upload being broken. The fields also trim when
+    /// they lose focus; this catches a click on the button while one is still
+    /// focused.
+    fn trim_rack_names(&mut self) {
+        for field in [
+            &mut self.project,
+            &mut self.disk_name,
+            &mut self.instance_name,
+            &mut self.system_disk_gib,
+            &mut self.run_name,
+        ] {
+            trim_in_place(field);
+        }
+    }
+
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         opened_with: Option<PathBuf>,
@@ -578,6 +602,7 @@ impl App {
     /// shows the command that continues it. Closing the window kills this thread and
     /// loses nothing on the rack.
     pub fn start_golden(&mut self) {
+        self.trim_rack_names();
         let Some(artifact) = self.build.artifact().cloned() else {
             self.upload = Upload::Failed(UploadFailure {
                 message: "there is no built image to work from".into(),
@@ -702,6 +727,7 @@ impl App {
     /// `Cancel`. The core's rule that it never prints and never blocks on a human is
     /// what makes `oxwin-rack` drop into this slot unchanged.
     pub fn start_upload(&mut self) {
+        self.trim_rack_names();
         let Some(artifact) = self.build.artifact().cloned() else {
             self.upload = Upload::Failed(UploadFailure {
                 message: "there is no built image to upload".into(),
