@@ -338,6 +338,11 @@ impl App {
 
     pub fn ui_settings(&mut self, ui: &mut Ui) {
         heading(ui, "How should this Windows be set up?");
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.label(RichText::new("*").strong().color(theme::DANGER));
+            hint(ui, "marks a required field");
+        });
 
         // What stops a build, worked out before the action row is drawn.
         let blockers: Vec<String> = self
@@ -429,7 +434,7 @@ impl App {
                     );
                 } else {
                     ui.horizontal(|ui| {
-                        ui.label("Computer name");
+                        required_label(ui, "Computer name");
                         ui.add(
                             egui::TextEdit::singleline(&mut self.draft.hostname)
                                 .desired_width(220.0),
@@ -440,13 +445,13 @@ impl App {
 
                 section(ui, "Administrator account");
                 ui.horizontal(|ui| {
-                    ui.label("Username");
+                    required_label(ui, "Username");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.draft.username).desired_width(200.0),
                     );
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Password");
+                    required_label(ui, "Password");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.draft.password)
                             .password(!self.show_password)
@@ -1936,6 +1941,17 @@ fn name_field(ui: &mut Ui, text: &mut String, width: f32) {
     if response.lost_focus() {
         trim_in_place(text);
     }
+}
+
+/// A field label with a red asterisk, for the fields a build cannot go
+/// without. The asterisk is ASCII so it exists in every font.
+fn required_label(ui: &mut Ui, text: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.label(text);
+        ui.label(RichText::new("*").strong().color(theme::DANGER))
+            .on_hover_text("Required");
+    });
 }
 
 fn hint(ui: &mut Ui, text: &str) {
