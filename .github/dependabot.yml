@@ -6,7 +6,7 @@
 # bump to one of them without the others is not a valid state.
 #
 # egui also makes breaking API changes at every minor release: this project is written
-# against 0.36's reworked `App::ui`/`Panel` API, which is unrecognisable next to 0.35.
+# against 0.36's reworked `App::ui`/`Panel` API, which is unrecognizable next to 0.35.
 # So a minor-version egui PR is a porting task, not a merge button, and it is left
 # ungrouped from the patch stream to make that obvious in the PR title.
 #
@@ -31,6 +31,9 @@ updates:
         applies-to: version-updates
         update-types: [minor]
 
+  # Workflows pin every action to a full commit SHA with the release in a trailing
+  # comment (`@<sha> # v7.0.1`). Dependabot reads that comment and bumps both together,
+  # so the pins stay current without going back to a mutable tag.
   - package-ecosystem: github-actions
     directory: /
     schedule:
