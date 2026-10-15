@@ -98,9 +98,25 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-winrel-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          key: cargo-winrel-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: cargo-winrel-
       - run: cargo build --release --locked -p oxwin
+      # The runner has Visual Studio, so a binary needing the VC++ runtime DLLs
+      # runs here and fails on a vanilla Windows install with "VCRUNTIME140.dll
+      # is missing". Read the import table rather than trusting that it ran.
+      # `.cargo/config.toml` is what keeps the CRT static.
+      - name: the C runtime is linked statically
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup component add llvm-tools
+          readobj="$(rustc --print sysroot)/lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-readobj.exe"
+          "$readobj" --coff-imports target/release/oxwin.exe \
+            | grep 'Name:' | sort -u | tee imports.txt
+          if grep -Eiq 'vcruntime|msvcp|ucrtbase|api-ms-win-crt' imports.txt; then
+            echo "oxwin.exe imports the C runtime from a DLL" >&2
+            exit 1
+          fi
       # `--help` rather than `doctor`: it needs no payload and exits 0. Captured
       # through a pipe, which is also the case AttachConsole must not clobber.
       - name: usage reaches the caller

@@ -152,6 +152,22 @@ jobs:
             > "fingerprint-${{ matrix.name }}.txt"
           cat "fingerprint-${{ matrix.name }}.txt"
 
+      # Running it above proves nothing about the C runtime: the runner has the
+      # VC++ DLLs and a vanilla Windows install does not. See `ci.yml`.
+      - name: The C runtime is linked statically
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup component add llvm-tools
+          readobj="$(rustc --print sysroot)/lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-readobj.exe"
+          "$readobj" --coff-imports dist/oxwin.exe \
+            | grep 'Name:' | sort -u | tee imports.txt
+          if grep -Eiq 'vcruntime|msvcp|ucrtbase|api-ms-win-crt' imports.txt; then
+            echo "oxwin.exe imports the C runtime from a DLL" >&2
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fingerprint-${{ matrix.name }}

@@ -1,0 +1,11 @@
+# Link the MSVC C runtime statically. Rust's default for `*-windows-msvc` is the
+# DLL, `VCRUNTIME140.dll`, which a machine with Visual Studio or the VC++
+# Redistributable has and a vanilla Windows install does not: the binary then
+# refuses to start before `main`. CI runners carry Visual Studio, so running the
+# artifact there cannot catch it; `ci.yml`'s `windows-cli` job reads the import
+# table instead.
+#
+# An explicit `RUSTFLAGS` in the environment replaces this rather than adding to
+# it, so anything that sets one must carry `+crt-static` itself.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
