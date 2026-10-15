@@ -1,0 +1,25 @@
+[package]
+name = "oxwin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The one shipped binary: both front ends, chosen by how it was started.
+[[bin]]
+name = "oxwin"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+oxwin-cli = { version = "0.1.0", path = "../oxwin-cli" }
+oxwin-gui = { version = "0.1.0", path = "../oxwin-gui" }
+anyhow.workspace = true
+eframe = "0.36.1"
+
+# Attaching to the parent console on the CLI route. A GUI-subsystem binary has no
+# stdout of its own; see src/console.rs.
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.61"
+features = ["Win32_Foundation", "Win32_System_Console"]

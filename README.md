@@ -1,244 +1,483 @@
-# Windows Image Builder
+# Windows Image Builder (`oxwin`)
 
-This repo contains the `wimsy` command-line tool for constructing generic
-Windows Server images that can be imported into an Oxide rack and used to
-create new Windows-based instances. This tool sets up Windows in a VM running
-on your computer, automatically customizes that installation using scripts that
-you supply, and minimizes the size of the installation disk once setup is
-complete. You can then upload the installation disk to an Oxide rack and attach
-it to a VM or use it as the source disk for a new disk image.
+Get Windows running on an Oxide rack.
 
-`wimsy` runs on Linux (tested on Ubuntu 20.04) and illumos systems and supports
-creating Windows Server 2019 and Windows Server 2022 images. Windows Server
-2016 is not yet fully supported (but it's on the roadmap). Earlier versions of
-Windows Server and client editions of Windows are not supported. It may be
-possible to use `wimsy` to generate images for these versions, but Oxide has
-not tested them, so your mileage may vary.
+**One binary, two ways to use it.** `oxwin` is the app when you click it and the CLI
+when you give it arguments — the same engine either way, so anything the wizard can
+build a script can build too.
 
-# Usage
+The Oxide rack requires a serial console, and VirtIO drivers installed within a
+Windows image for that image to function. This repo contains an applications which
+can take a Windows install ISO, add drivers, and then convert it into a format
+compatible with the Oxide hypervisor.
 
-## Pre-flight checklist
+![App](./windows-app.png)
 
-To set up a host machine to use `wimsy`:
+---
 
-* Run `install_prerequisites.sh` from the repo or release tarball to install
-  [required tools and packages](#required-tools).
-* Ensure the host has a copy of your [installation media and of a driver
-  ISO](#installation-media-and-drivers).
-* Ensure the host has a network connection that allows VM guests to access the
-  public Internet. This is needed to download software into the guest after
-  Windows Setup runs. See [CONFIGURING.md](CONFIGURING.md) for more details.
+## What you need before you start
 
-### Required tools
+- **A Windows ISO.** Server 2019, 2022, or Windows 10. Microsoft's
+  evaluation ISOs work fine and need no product key. The app reads the ISO to find out
+  which release it is, so there is nothing to select — see
+  [Which Windows versions work](#which-windows-versions-work) for what has been verified.
+  Arm64 media is refused.
+- **Around 20 GB of free disk space.** The image it builds is roughly the size of your
+  ISO, and it has to be written somewhere before it is uploaded.
+- **An SSH public key** is optional. If you have used SSH before you already have one,
+  at `~/.ssh/id_ed25519.pub`. It makes SSH passwordless, but it does not replace the
+  password — see below.
 
-The `install_prerequisites.sh` script installs the tools `wimsy` uses to create
-disks and run VMs. On Linux hosts, a Debian (aptitude-based) package manager is
-required. Linux systems use the following tools and packages:
 
-* `qemu` and `ovmf` to run the Windows installer in a virtual machine
-* `qemu-img` and `libguestfs-tools` to create and manage virtual disks and their
-  filesystems
-* `sgdisk` to modify virtual disks' GUID partition tables
-* `genisoimage` to create an ISO containing the unattended setup scripts
+## Running it
 
-### Installation media and drivers
+Download the archive for your platform from the releases page and open it. There is
+nothing to install and nothing else to download — the drivers, OpenSSH and EFI
+binaries are compiled into the binary. You do not need to mount the ISO first; drop
+the `.iso` straight in.
 
-`wimsy` requires an ISO disk image containing Windows installation media, an ISO
-disk image containing signed virtio drivers, and a UEFI guest firmware image to
-use when running the setup VM.
+- **macOS** — open `Windows Image Builder.app`. The loose `oxwin` beside it is the
+  same binary, for the command line.
+- **Windows** — double-click `oxwin.exe`.
+- **Linux** — run `oxwin`. For a launcher entry, install
+  `oxide-windows.desktop` (the comments in it say how).
 
-Oxide tests Windows guests using the [driver
-images](https://github.com/virtio-win/virtio-win-pkg-scripts/blob/master/README.md)
-created by the Fedora Project. If you use another driver ISO, the drivers must
-be arranged in the same directory structure used by this project.
+These builds are not signed yet. macOS will refuse a downloaded app until you clear
+its quarantine attribute:
 
-On a Linux system with virtualization tools installed, a guest firmware image
-from the OVMF project can generally be found in `/usr/share/OVMF/OVMF_CODE.fd`.
-
-### Setup scripts
-
-`wimsy` uses a number of scripts to run an unattended Windows Setup process and
-customize an image's software and settings. Oxide tests images using lightly
-modified version of the scripts in the `unattend` directory in this repo, but
-you can modify these or provide custom scripts. At a minimum, an
-`Autounattend.xml` answer file is required to run Windows Setup unattended. See
-Microsoft's documentation of the [Windows Setup
-process](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-setup-installation-process?view=windows-11)
-and the [Unattended Windows Setup
-Reference](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/)
-for details.
-
-`wimsy` expects all the unattend scripts it will inject to reside in a single
-flat directory. The `unattend` directory in this repo contains a set of scripts
-that apply the [default image configuration](#default-image-configuration)
-described below.
-
-## Running `wimsy`
-
-### From a release tarball
-
-Unpack the tarball and install the prerequisite tools, then run `wimsy`,
-substituting the appropriate paths to your input ISOs and output disk image:
-
-```bash
-./install_prerequisites.sh
-
-./wimsy \
---work-dir /tmp \
---output-image $OUTPUT_IMAGE_PATH \
-create-guest-disk-image \
---windows-iso $WINDOWS_SETUP_ISO_PATH \
---virtio-iso $VIRTIO_DRIVER_ISO_PATH \
---unattend-dir unattend \
---ovmf-path /usr/share/OVMF/OVMF_CODE.fd \
+```
+xattr -dr com.apple.quarantine "Windows Image Builder.app" oxwin
 ```
 
-### Building from source
+`oxwin doctor` prints what it found — the payload it carries, and which racks this
+machine is logged into. It is the first thing to run if something looks wrong.
 
-Build with `cargo` and view the command-line help as follows:
+> **From source**, if you would rather: you need [Rust](https://rustup.rs), then
+> `cargo run --release -p oxwin`. During development `cargo run -p oxwin-gui` and
+> `cargo run -p oxwin-cli` build the two front ends separately, which is faster —
+> the CLI that way does not link the windowing stack.
 
-```bash
-cargo build --release
-target/release/wimsy create-guest-disk-image --help
+### Using it as a CLI
+
+Give it a command and it never opens a window:
+
+```
+oxwin --help                   # the commands, and every flag
+oxwin doctor                   # what this build carries, and your rack logins
+oxwin build windows.iso out.img --password=… --name=…
 ```
 
-Then invoke `wimsy` with your desired arguments, e.g.:
+One Windows-only wrinkle: `oxwin.exe` is linked as a GUI binary, because that is
+what makes a double-click not flash a console window. It prints to the console that
+started it, but the shell does not wait for it — so in a script that depends on
+ordering, use `start /wait oxwin.exe …` or pipe through `| Out-Host`.
 
-```bash
-target/release/wimsy \
---work-dir /tmp \
---output-image $OUTPUT_IMAGE_PATH \
-create-guest-disk-image \
---windows-iso $WINDOWS_SETUP_ISO_PATH \
---virtio-iso $VIRTIO_DRIVER_ISO_PATH \
---unattend-dir ./unattend \
---ovmf-path /usr/share/OVMF/OVMF_CODE.fd \
+---
+
+## The five stages
+
+### 1. Image Selection
+
+Drag your Windows ISO anywhere onto the window, or click the box to pick one. The app
+tells you how big it is so you can catch it immediately if you grabbed the wrong file.
+
+You can also start the app on a file: `oxwin path/to/windows.iso`. On macOS, "Open
+With" and dropping an ISO on the Dock icon do the same thing.
+
+### 2. Settings
+
+**Is this a golden image, or one specific machine?**
+
+- **Golden image** — a template. You install it once, then clone it for every future
+  Windows machine. The installed machine takes a randomly generated computer name rather
+  than a fixed one. Choose this if you are not sure; it is the more useful thing to have.
+
+  **A golden image ends powered off, and that is the point.** Once the install
+  finishes, the machine generalizes itself with sysprep and shuts down. That is what
+  makes it cloneable — without it every clone would keep this machine's name *and* its
+  SID, which is the problem a golden image exists to avoid.
+- **One specific machine** — you type the computer name, and it keeps it. Up to 15
+  characters, letters, digits and hyphens.
+
+**The administrator account.**
+
+Set a username and a password. **Windows needs a password** — there is no way around
+it. The serial console and Remote Desktop both sign in with one, and neither knows
+anything about SSH keys, so an account with only a key would be reachable over SSH and
+nowhere else, including from the serial console you need when something has gone wrong.
+
+SSH public keys are optional and additive: add one and SSH stops asking for the
+password. The password still exists for everything else.
+
+Two things to know about that password:
+
+- It is stored as **plain text** in the answer file on the install media. Anyone who
+  can read the image, or the disk once uploaded, can read it.
+- On a **golden image**, every machine you clone inherits it. Change it after first
+  boot, or build a separate image per machine.
+
+**Access and hardware.** Sensible defaults are already set. Worth understanding:
+
+- **Inject virtio drivers** — leave this on. Without it Windows installs fine and
+  then has no network, which is a confusing thing to debug.
+- **Enable the serial console** — leave this on. It is how you watch the
+  *installed* OS happen, once it exists, and it is your only way in if something
+  goes wrong.
+- **Serial output during Windows Setup (EMS)** — leave this on too. It is a
+  separate switch, because it covers the earlier moment: without it, Setup itself
+  is silent on serial and the console above only starts talking once the OS
+  reaches first logon. `--no-ems` on the CLI does the same thing. Off is a legal
+  choice, just a surprising one if you did not mean it.
+
+### 3. Processing
+
+The app builds the image. It copies several gigabytes, this takes a few minutes.
+
+### 4. Export
+
+Ways to get the image onto a rack. Each is a complete route on its own rather than a
+step in a sequence, so whichever suits you is all you need.
+
+- **Save the image file.** Writes the image wherever you want. Use this if your rack
+  is airgapped, or if someone else does uploads. Nothing else is needed from this app.
+- **Upload it as a disk.** The app uploads the image itself, using the login you already
+  have from `oxide auth login`, with a progress bar. Pick which rack if you are logged
+  into more than one.
+- **Upload it and build the instance.** The same upload, and then the blank system disk
+  and the instance, booting from the installer with an external IP so you can reach it.
+  This is the whole of stage 5 done for you.
+- **Build a golden image.** All of the above, and then it waits for Windows to install
+  and generalize itself, snapshots the disk, turns that into an image and clears up
+  after itself. About an hour. Only offered for media built as a golden image — see
+  [Making a golden image](#making-a-golden-image).
+
+The equivalent commands are still there under "Or run it yourself". Nothing on this
+screen depends on the app being able to reach your rack.
+
+If you would rather script it, the CLI does the same three things:
+
+```
+oxwin build <iso> out.img --password=... --name=...
+oxwin upload out.img --project=<p> --disk=<name>
+oxwin instance <name> --project=<p> --installer-disk=<name>
 ```
 
-### Running on illumos
+### 5. Guided Install
 
-Running on illumos requires some extra configuration:
+A numbered checklist of everything left to do on the rack, with the commands filled in
+using the names you chose. Work down it in order.
 
-- If you are using the setup scripts in the `unattend` directory, copy them to
-  another directory, then replace `Autounattend.xml` and `prep.cmd` with
-  `illumos/Autounattend.xml` and `illumos/prep.cmd` from the repo.
-- You'll need to run `wimsy build-installation-disk` before running `wimsy
-  create-guest-disk-image`. See the command-line help for more information.
+---
 
-## Additional options
+## Customizing the image
 
-`wimsy` runs an unattended Windows Setup session driven by the files and scripts
-in the directory passed to `--unattend-dir`. You can modify these files directly
-to customize your image, but `wimsy` provides some command line switches to
-apply common modifications:
+Everything below is optional. Skip it and you get `en-US`, `UTC`, and the standard
+EFI/MSR/Windows partition layout — what every build has used until now.
 
-- The `--unattend-image-index` switch changes the image index specified in
-  `Autounattend.xml`, which changes the Windows edition Setup will attempt to
-  install (e.g. selecting between Server Standard and Server Datacenter with or
-  without a Desktop Experience Pack).
-- The `--windows-version` switch rewrites the driver paths in `Autounattend.xml`
-  to install virtio drivers corresponding to a specific Windows version.
+### Locale
 
-When running on Linux, adding the `--vga-console` switch directs QEMU to run
-with a VGA console attached to the guest so that you can watch and interact with
-Windows Setup visually.
+Three separate controls, because "locale" is not one setting on Windows:
 
-# Default image configuration
+- **Display language** — what Setup itself is shown in. This is the one control the
+  media limits: it needs a language pack already in the image, so the app only offers
+  languages the ISO actually carries. If the media does not say which languages it
+  carries, the control disappears rather than offering a guess — pick a different ISO
+  if you need a specific language and the picker is not there.
+- **Region** — number formats, currency, and keyboard layout. Any of the 24 offered
+  tags works on any media, because this does not need a language pack.
+- **Time zone** — a separate choice again, from a curated list of 19. The label names
+  a city (`Amsterdam, Berlin, Rome, Stockholm`), not a country, because a zone covers
+  several countries and Windows itself uses cities in its own list.
 
-`wimsy` and the unattend scripts in this repo create
-[generalized](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/sysprep--generalize--a-windows-installation?view=windows-11)
-images that can be uploaded to the rack and used to create multiple VMs. These
-images contain the following drivers, software, and settings:
+CLI: `--ui-language=<tag>`, `--region=<tag>`, `--timezone=<id>` (a Windows ID, e.g.
+`"W. Europe Standard Time"` — not the `Europe/Berlin` form). Picking a display
+language the media does not carry is a warning, not a refusal: it still builds, and
+Setup decides what to do with it.
 
-- **Drivers**: `virtio-net` and `virtio-block` device drivers will be installed.
-- **User accounts**: The local administrator account is disabled. An account
-  with username `oxide` will be created and added to the Local Administrators
-  group. Any SSH keys that are associated with an instance when that instance is
-  created will be added to the `oxide` user's authorized keys. By default, this
-  account has no password; to set a password, access the machine via SSH and use
-  `net user oxide *`.
-- **Remote access**:
-  - The [Emergency Management Services
-    console](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/boot-parameters-to-enable-ems-redirection)
-    is enabled and accessible over COM1. This console will be accessible through
-    the Oxide web console and CLI.
-  - [OpenSSH for
-    Windows](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse?tabs=powershell)
-    is installed via PowerShell cmdlet (Windows Server 2019 and 2022) or by
-    downloading the latest
-    [release](https://github.com/PowerShell/Win32-OpenSSH/releases/) from
-    GitHub. This operation requires the guest to have Internet access.
-  - The guest is configured to allow Remote Desktop connections, and the guest
-    firewall is configured to accept connections on port 3389. **Note:** VMs
-    using these images must also have their firewall rules set to accept
-    connections on this port for RDP to be accessible.
-- **In-guest agents**: The scripts install an Oxide-compatible
-  [fork](https://github.com/luqmana/cloudbase-init/tree/oxide) of
-  [cloudbase-init](https://cloudbase-init.readthedocs.io/en/latest/) that
-  initializes new VMs when they are run for the first time. This operation
-  requires Internet access. `cloudbase-init` is configured with the following
-  settings and plugins:
-  - Instance metadata will be read from the no-cloud configuration drive the
-    Oxide control plane attaches to each running instance.
-  - The instance's computer name will be set to its Oxide instance hostname on
-    first boot.
-  - The built-in administrator account is disabled. An `oxide` account is
-    in the Local Administrators group is created in its place. Any SSH keys
-    provided in the instance's metadata will be added to this user's
-    `authorized_keys`.
-  - The OS installation volume is automatically extended to include the entire
-    boot disk, even if it is larger than the original image.
+### Partition layout
 
-# Determining the `/IMAGE/INDEX` for your Windows version
+Behind a "Customize the partition layout" disclosure in the app, closed by default.
+The default is EFI / MSR / a Windows partition that takes the rest of the disk, which
+is what every build has used until now and is fine to leave alone.
 
-The index used for a given Windows version will vary by iso file.
-You can use the `wimtools` package to find the versions available on your image:
+**What this cannot check: whether your partitions fit.** The image this app builds is
+installer media; the disk it installs onto is created on the rack afterward and this
+app never sees it. If your sizes do not add up, Setup discovers that, not this tool.
 
-```sh
-# On a debian-based Linux host
-$ sudo apt-get install wimtools 7zip
-$ 7z e '-ir!install.wim' <WIN_ISO>
-$ wiminfo sources/install.wim
+On the CLI, `--partition=kind:size:letter:format:label` is repeatable and replaces the
+whole layout — `size` may be `extend` for "the rest of the disk". For example, the
+default layout spelled out by hand:
+
+```
+--partition=efi:260::FAT32:System --partition=msr:16 --partition=primary:extend:C:NTFS:Windows
 ```
 
-# Configuring the output image
+Leave `--partition=` out entirely to get that same default layout without typing it.
 
-See [CONFIGURING.md](CONFIGURING.md) to learn more about how to customize the
-images `wimsy` produces.
+### Supplying your own answer file
 
-# Troubleshooting
+If the generated `autounattend.xml` does not do what you need, you can hand it your
+own: `--unattend=<file>` on the CLI, or in the app, on the Settings stage. It is
+checked for known hazards (a missing password, an answer file meant for the wrong
+disk, and the rest of the trap list below) and used regardless — the check only warns.
 
-## `wimsy` gets stuck at "waiting for guest to complete installation"
+**What a supplied file does not get:**
 
-Usually, this means either that Windows Setup failed to install Windows or that
-the image prep script, `OxidePrepBaseImage.ps1`, did not run to completion.
+- **`bootstrap.ps1` is still generated from your settings and copied onto the media
+  separately.** If your answer file does not run `setup\bootstrap.ps1`, Windows will
+  install fine and you will have no way to reach it — no SSH keys, no RDP, no
+  `C:\oxide-bootstrap.log`.
+- **The release detected from the ISO is not applied to a supplied file.** The normal
+  build overwrites the release with whatever the media actually is; a file you hand in
+  is used exactly as written, so it has to already agree with the media.
+- **The display language, region and time zone are not applied either.** Those
+  settings only reach the generated answer file, so `--ui-language`, `--region` and
+  `--timezone` (and the pickers in the app) do nothing once you supply your own file.
+  Whatever locale your file names is what the guest gets.
+- **Nor is the partition layout.** `--partition` and the layout editor write the
+  `DiskConfiguration` block of the *generated* file; a supplied one carries its own,
+  and it is that block Setup acts on.
 
-When using a Linux host, you can determine where the setup process has stopped
-by adding the `--vga-console` switch to `wimsy create-guest-disk-image`.
+A file you export from this app (`oxwin unattend`, or "Save answer file" in the app)
+is a one-time snapshot, not a live template — regenerate it if you change settings
+afterward. `oxwin unattend` prints to stdout only, never to a file next to the image,
+because it contains the account password in plain text.
 
-## Windows Setup is waiting for someone to select an edition to install
+### Cloud-init
 
-This can occur if the edition chosen in `Autounattend.xml` or on the command
-line is invalid, or if it conflicts with other settings in `Autounattend.xml`.
-See [CONFIGURING.md](CONFIGURING.md) for information about selecting an edition
-to install.
+On by default: the image carries the [cloudbase-init](https://github.com/cloudbase/cloudbase-init)
+MSI and installs it during the unattended pass, so a clone made from this media reads
+an Oxide instance's config drive on first boot. Each clone then gets its own hostname
+(taken from the instance name, not the answer file's), its own metadata SSH keys, `C:`
+extended to the real disk size rather than the image's, and whatever the instance's
+`user_data` says to run. Turn it off with `--no-cloud-init` if you want an image
+byte-identical to one built before this existed.
 
-## Setup is displaying a command prompt with "Press any key to continue..."
+The rename happens on the cloudbase-init *service*'s first run, after Setup has
+finished, not in the specialize-pass one-shot — Setup applies the answer file's
+own placeholder computer name after that one-shot runs, which would otherwise
+overwrite the rename. Renaming the guest needs a reboot, so **a golden image's
+clone takes one extra reboot the first time cloud-init finds a config drive.**
+The SSH key is written before that rename reboot, so it is usable from the
+clone's first boot rather than only after the reboot the rename triggers.
 
-This usually indicates there was a problem running the `OxidePrepBaseImage.ps1`
-setup script after installing Windows. This script's last step shuts down the
-guest; if the script fails early, this won't happen, and `prep.cmd` will not
-exit.
+**Two account modes**, `--cloud-init-account=keep|manage`:
 
-To investigate, look in the directory you passed to `wimsy --work-dir` for the
-output from `qemu-system-x86_64`:
+- **`keep` (the default).** The account and password you typed are what the guest
+  ends up with; cloud-init only adds the per-instance SSH key on top. Nothing about
+  the password changes from clone to clone.
+- **`manage`.** Cloud-init's own `CreateUserPlugin` owns the account, which is the
+  only way upstream will materialize the Windows *profile* the per-instance SSH key
+  plugin needs before first logon. **The cost:** that plugin resets the password to a
+  random, per-instance value on every path it takes, including the one for an account
+  that already exists — so the password you typed does not survive into the clone.
+  It becomes a random value that nobody knows: nothing records it and there is no way
+  to read it back. After the service's first run the serial console (SAC) therefore
+  has no usable login, and SSH keys are the only way in. Use `manage` only if you can
+  live with that.
 
-```sh
-$ ls *qemu-system-x86_64.stdio.log
-4.qemu-system-x86_64.stdio.log
+A password is mandatory either way — the serial console is the one way into a guest
+whose network never came up, and SAC authenticates with a password and knows nothing
+about SSH keys.
+
+**`--extra=<path>`** (repeatable) copies a local file onto the media at
+`\extras\<name>`, which lands in the guest at `C:\oxide\extras`. It is not itself a
+mechanism for running anything: cloud-init's `user_data` is what runs per instance,
+and `extras` exists so a supplied answer file, or a `user_data` script, has something
+under `E:\` to reference.
+
+**Logs to read, in order of usefulness:**
+
+- `C:\oxide\log\cloudbase-init.log` — the cloudbase-init service, which the
+  `OxideCloudInit` startup task starts once Setup has finished. Every build with
+  cloud-init has this one: SSH keys, `user_data`, and in `manage` mode the account.
+- `C:\oxide\log\cloudbase-init-unattend.log` — golden images only: the one-shot run
+  in each clone's first-boot specialize pass (volume extension, NTP, RDP — not the
+  hostname, which the service sets). A named build never produces it.
+- `C:\oxide-bootstrap.log` — the signature check on the MSI, the `msiexec` exit code,
+  and whether the `sshd_config` rewrite happened.
+
+Both cloudbase-init logs name the config drive they found, or say they found none.
+
+**The rack checklist.** A finished install proves nothing on its own — check the
+artifact on a clone, not that it came up:
+
+- `C:\oxide\log\cloudbase-init.log` exists and names the config drive it found —
+  and on a clone of a golden image, so does `…-unattend.log`. (A named build has no
+  `-unattend.log`; its absence there is expected.)
+- The computer name equals the instance name. An `OXIDEOX-…` name means the drive was
+  never read.
+- `C:\Users\<user>\.ssh\authorized_keys` holds the **instance's** key, and
+  `%ProgramData%\ssh\administrators_authorized_keys` still holds the **baked** one.
+  Both must authenticate.
+- `C:` is the full disk size, not the image's.
+- `C:\oxide-bootstrap.log` shows the signature check passing, the MSI exit code, and
+  the `sshd_config` edit.
+
+See `TESTED-MEDIA.md` for which releases this has actually been checked against —
+Server 2025 and Windows 11 cannot be hardware-verified while the Propolis NVMe problem
+stands, so a clean QEMU run is the only evidence available for those two.
+
+---
+
+## What happens on the rack
+
+Worth knowing, because otherwise the middle of the install looks broken.
+
+You end up with **two disks**: the installer image you just built, and a blank disk for
+Windows to install onto. The instance boots from the installer first. Windows installer
+does not output information over serial, the system will look like nothing is happening
+after loading the boot loader. Windows desktop editions (10 and 11) will never output
+anything over serial.
+
+From there it runs by itself. It partitions the blank disk, installs Windows, sets up
+your account, installs the network drivers and the SSH server, and turns on Remote
+Desktop if you asked for it.
+
+**It will reboot several times. This is normal.** Windows Setup always does. Do not
+intervene; let it finish.
+
+When it is done, the installer disk notices there is now a working Windows on the other
+disk and boots that instead, every time from then on. So it is safe to leave attached —
+you do not have to time anything or catch a window. Once the install is finished you can
+detach it whenever it is convenient.
+
+---
+
+## Making a golden image
+
+A golden image is a Windows image you can stamp out copies of. Instead of running the
+installer every time, you install once, strip the machine of its identity, and turn
+that into an image the rack can create new instances from in a couple of minutes.
+
+**In the app:** choose Golden image in Settings, build, and then pick *Golden image*
+on the Export stage. It is offered only for an image built that way, because nothing
+in an image file says whether it was built to generalize, and one that was not
+installs perfectly and then never finishes.
+
+The whole thing is also one command:
+
+```
+oxwin golden ~/path/to/windows.iso --run=ws2022 --project=<your project> \
+  --user=oxide --password=... --ssh-key="$(cat ~/.ssh/id_ed25519.pub)"
 ```
 
-By default, when `prep.cmd` runs `OxidePrepBaseImage.ps1` in the guest, it
-redirects the script's output to a guest serial port, and `wimsy` asks QEMU to
-write this output to QEMU's stdout. You can use the script outputs in this file
-to determine where the script failed.
+It builds the media, uploads it, creates a temporary instance, waits for Windows to
+install and shut itself down, snapshots the disk, turns the snapshot into an image,
+and deletes everything temporary. What is left is the image, named after `--run`.
+
+Measured against a rack on the same network, from an M5 Pro MacBook Pro with the
+image on its internal SSD: **eighteen and a half minutes** -- ten uploading, six
+installing, two for sysprep and the shutdown. The upload is the biggest part and the
+one that depends on where you are, so expect longer over a slow link and plan around
+that rather than around the install. The two ends of it that are yours -- building the
+7 GiB image and reading it back to upload -- are disk-bound, so an external drive or a
+spinning disk adds minutes that have nothing to do with the rack.
+
+**If it stops — a laptop lid, a lost connection, a Ctrl-C — run exactly the same
+command again.** It works out what already exists on the rack and carries on from
+there. Nothing is kept on your machine, so it does not matter which machine you resume
+from, and nothing is ever deleted because something went wrong: a failure prints what
+exists and how to continue.
+
+`--keep=` controls what survives. The default keeps the image and removes the rest;
+`--keep=all` removes nothing, which is what you want when something has gone wrong and
+you would like to look at it.
+
+### Checking that it worked
+
+```
+oxwin golden ... --verify-clone
+```
+
+Adds a last step: create an instance from the finished image and require it to come up
+**and stay up**. Staying up is the point. A broken golden image comes up fine and then
+powers itself off a minute later, so a check that stopped as soon as the machine
+answered would pass on exactly the image that is broken.
+
+One thing this cannot check for you. Log into the clone and confirm its computer name
+differs from the machine the image came from:
+
+```
+hostname
+```
+
+If two clones share a name they share a Windows security identifier as well, and that
+is the collision the whole exercise exists to prevent.
+
+### If you would rather drive it yourself
+
+The steps are separate commands too — `oxwin upload`, `instance`, `watch`, `snapshot`,
+`image`, `teardown` and `verify` — all taking the same `--run` name. `oxwin --help`
+lists them.
+
+---
+
+## If something goes wrong
+
+**Remote Desktop times out, but SSH works.**
+The most common surprise, and it is not your Windows configuration. An Oxide VPC allows
+only SSH and ping by default, so RDP traffic is dropped before it ever reaches Windows.
+Turning on RDP in this app is necessary but not sufficient — you also need a VPC
+firewall rule allowing inbound `tcp/3389`. Add that and it will work.
+
+**The uploaded disk will not boot at all.**
+Check the block size. The installers image's partition table is laid out in 512-byte
+sectors, the disk has to be imported with `--disk-block-size 512`. With larger blocks
+every partition offset lands in the wrong place and the firmware finds nothing to boot.
+The command the app gives you already includes the flag; a hand-written one might not.
+
+**Windows installed but has no network.**
+The virtio drivers were not injected. Rebuild with that box ticked.
+
+**The install seems stuck.**
+Watch the serial console — `oxide instance serial console` — before assuming it is
+wedged. Setup spends long stretches looking idle, and reboots on its own several times.
+
+**It keeps booting the installer instead of Windows.**
+Check that both disks are attached and that the installer is the boot disk. The
+installer only hands over once it can see a working Windows on another disk.
+
+**Nothing happens for a few minutes after the installer starts.**
+Expected. The screen stays blank between the boot menu and Setup appearing: usually
+two or three minutes. The media says so before it hands over. Nothing needs your
+input at any point, and the machine reboots itself several times before it is done.
+Resetting it during that window is the one way to turn a working install into a
+broken one.
+
+**The app says it cannot build images.**
+A released binary carries the payload inside it, so this means you built from source
+without it. Run `./tools/fetch-payload.sh` — which downloads the virtio drivers, OpenSSH
+and the EFI binaries the media carries — and build again. To point an existing binary at
+a payload directory instead of rebuilding, set `OXWIN_ASSETS` to it.
+
+---
+
+## Which Windows versions work
+
+| Version | Status |
+| --- | --- |
+| Windows Server 2022 | **Verified** — installed on real Oxide hardware, with networking, SSH and RDP confirmed working |
+| Windows Server 2019 | **Verified** — installed on real Oxide hardware, with networking, SSH and RDP confirmed working |
+| Windows Server 2016 | Builds and installs, but never tried on a rack, and it carries a known NVMe risk — see below |
+| Windows Server 2025 | Builds, but does not yet install — see [the blocker](TESTED-MEDIA.md#hardware-verification-status) |
+| Windows 10 | **Verified** — installed on real Oxide hardware, with networking, SSH and RDP confirmed working |
+| Windows 11 | Builds, but does not yet install — same two blockers as Server 2025 |
+| Any Arm64 release | Refused, with a message saying why. The drivers and answer file are amd64 only |
+
+**Server 2016 is not supported** See [Issues with Server 2016](TESTED-MEDIA.md#server2016andnvme), **if you actually need Server 2016, please open an issue**.
+
+Windows versions come with many different versions of media, see [TESTED-MEDIA.md](TESTED-MEDIA.md) for exactly what has been tested on each.
+
+---
+
+## Where things are
+
+- `crates/` — `oxwin` the shipped binary (it picks a front end), `oxwin-core` the
+  engine, `oxwin-rack` the rack client, `oxwin-gui` the desktop app, `oxwin-cli` the
+  command-line one
+- `tools/` — `fetch-payload.sh` for the payload, `package-macos.sh` for the `.app`,
+  `oxide-windows.desktop` for a Linux launcher
+- `assets/` — third-party payload, downloaded by `tools/fetch-payload.sh`, not committed
+- `DEVELOPMENT.md` — how it works inside, and how to work on it
+- `TESTED-MEDIA.md` — which Windows ISOs this has actually been run against
