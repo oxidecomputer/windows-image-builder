@@ -441,11 +441,12 @@ impl Rack {
                     .send(),
             )
             .with_context(|| {
+                let (project, disk) = (&self.project, &spec.name);
                 format!(
-                    "stopping the bulk import of {}. It may be stuck in \
-                     import_ready; `oxide disk finalize-import --disk {}` then delete \
-                     it",
-                    spec.name, spec.name
+                    "stopping the bulk import of {disk}. It may be stuck in \
+                     import_ready, which refuses deletion; clear it with:\n  \
+                     oxide disk import finalize --project {project} --disk {disk}\n  \
+                     oxide disk delete --project {project} --disk {disk}"
                 )
             });
 

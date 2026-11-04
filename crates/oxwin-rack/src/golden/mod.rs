@@ -17,7 +17,7 @@ pub mod watch;
 
 pub use keep::{Keep, Resource};
 pub use names::Names;
-pub use reconcile::{DiskStatus, Existing, Step, next_step};
+pub use reconcile::{Clear, DiskStatus, Existing, Step, next_step};
 pub use steps::{pick_address, port_open};
 pub use watch::{Action, Milestone, Watch, WatchOptions};
 
@@ -339,7 +339,7 @@ impl Rack {
             // whichever step fails next.
             leftovers = leftovers_from(names, &existing);
 
-            let step = match next_step(&existing) {
+            let step = match next_step(&existing, names, self.project()) {
                 Ok(step) => step,
                 Err(e) => fail!(e),
             };
