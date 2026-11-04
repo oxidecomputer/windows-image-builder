@@ -1,0 +1,5 @@
+[toolchain]
+# Pinned rather than "stable" for repeatability, and matched to omicron's channel
+# so this builds with the same compiler as the rest of Oxide's Rust.
+channel = "1.97.1"
+profile = "default"
