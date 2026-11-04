@@ -1693,24 +1693,20 @@ impl App {
                 step(ui, 2, "Create the disk Windows will install onto");
                 hint(
                     ui,
-                    "This one starts blank. 100 GiB is a reasonable starting point.",
+                    "This one starts blank. 100 GiB is a reasonable starting point. Save the \
+                     JSON below as disk.json, then run the command from the same directory.",
                 );
-                code_block(
-                    ui,
-                    &format!(
-                        "oxide disk create --project {} --name windows-system \\\n  \
-                     --description 'Windows system disk' --size 100GiB",
-                        self.project
-                    ),
-                );
+                code_block(ui, &system_disk_json());
+                code_block(ui, &system_disk_command(&self.project));
 
                 step(ui, 3, "Create the instance, booting from the installer");
                 hint(
                 ui,
                 "The installer disk must be the boot disk for the first boot, and the instance \
-                 needs an external IP if you want to reach it.",
+                 needs an external IP if you want to reach it. Save the JSON below as \
+                 instance.json, then run the command from the same directory.",
             );
-                code_block(ui, &instance_json(&self.project, &self.disk_name));
+                code_block(ui, &instance_json(&self.disk_name));
                 code_block(
                     ui,
                     &format!(
@@ -1764,15 +1760,13 @@ impl App {
                 ui,
                 "The installer is safe to leave attached — it detects an installed Windows and \
                  boots that instead. But once the install is finished you do not need it, and \
-                 detaching it removes any chance of a surprise later.",
+                 detaching it removes any chance of a surprise later. The instance must be \
+                 stopped, and the installer is its boot disk, so boot from the system disk \
+                 first — the rack refuses to detach a boot disk. Save the JSON below as \
+                 boot.json, then run the commands from the same directory.",
             );
-                code_block(
-                    ui,
-                    &format!(
-                        "oxide instance disk detach --project {} --instance windows --disk {}",
-                        self.project, self.disk_name
-                    ),
-                );
+                code_block(ui, &boot_update_json());
+                code_block(ui, &detach_commands(&self.project, &self.disk_name));
                 ui.add_space(20.0);
             });
     }
@@ -2170,20 +2164,89 @@ fn golden_unavailable(built_golden: Option<bool>) -> Option<&'static str> {
     }
 }
 
-fn instance_json(project: &str, installer_disk: &str) -> String {
+/// The blank disk Windows installs onto. Its name is the one `instance_json`
+/// attaches.
+const SYSTEM_DISK: &str = "windows-system";
+
+/// 100 GiB, written out in bytes because the JSON body takes a byte count, not
+/// the `100GiB` shorthand the `--size` flag accepts.
+const SYSTEM_DISK_SIZE: u64 = 100 * 1024 * 1024 * 1024;
+
+// The JSON blocks below carry no header line naming the file: someone copies the
+// block straight into the file, and a `# disk.json` line makes it invalid JSON
+// that the CLI refuses. The step's hint names the file instead.
+
+fn system_disk_json() -> String {
+    // `oxide disk create` requires `--json-body`: the disk backend has no flag of
+    // its own, and the file replaces whatever `--name`/`--size`/`--description`
+    // set, so every field lives here and the command passes only the project.
+    format!(
+        "{{\n  \
+           \"name\": \"{SYSTEM_DISK}\",\n  \
+           \"description\": \"Windows system disk\",\n  \
+           \"size\": {SYSTEM_DISK_SIZE},\n  \
+           \"disk_backend\": {{\n    \
+             \"type\": \"distributed\",\n    \
+             \"disk_source\": {{ \"type\": \"blank\", \"block_size\": {DISK_BLOCK_SIZE} }}\n  \
+           }}\n\
+         }}"
+    )
+}
+
+fn system_disk_command(project: &str) -> String {
+    format!("oxide disk create --project {project} --json-body disk.json")
+}
+
+/// Shared by `instance_json` and `boot_update_json`: an instance update restates
+/// every field, so a mismatch would quietly resize the instance.
+const INSTANCE_NCPUS: u32 = 4;
+const INSTANCE_MEMORY: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Moves the boot disk off the installer. `oxide instance update` needs the whole
+/// body, and the flags cannot express `null` for the restart policy or CPU
+/// platform, so this is a file like the others.
+fn boot_update_json() -> String {
+    format!(
+        "{{\n  \
+           \"boot_disk\": \"{SYSTEM_DISK}\",\n  \
+           \"ncpus\": {INSTANCE_NCPUS},\n  \
+           \"memory\": {INSTANCE_MEMORY},\n  \
+           \"auto_restart_policy\": null,\n  \
+           \"cpu_platform\": null,\n  \
+           \"enable_jumbo_frames\": false\n\
+         }}"
+    )
+}
+
+/// Each line is refused by the rack unless the one before it has finished: a
+/// disk detaches only from a fully stopped instance, and never while it is the
+/// boot disk. `oxide instance stop` returns while the instance is still
+/// `stopping`, so the block waits for `stopped` itself; without the loop, pasting
+/// it whole fails on every line after the stop.
+fn detach_commands(project: &str, installer_disk: &str) -> String {
+    format!(
+        "oxide instance stop --project {project} --instance windows\n\
+         until oxide instance view --project {project} --instance windows \
+         | grep -q '\"run_state\": \"stopped\"'; do sleep 2; done\n\
+         oxide instance update --project {project} --instance windows --json-body boot.json\n\
+         oxide instance disk detach --project {project} --instance windows --disk {installer_disk}\n\
+         oxide instance start --project {project} --instance windows"
+    )
+}
+
+fn instance_json(installer_disk: &str) -> String {
     // Written out rather than built with a JSON library: the point is for someone
     // to read it, understand which disk boots, and edit it.
     format!(
-        "# instance.json  (project: {project})\n\
-         {{\n  \
+        "{{\n  \
            \"name\": \"windows\",\n  \
            \"description\": \"Windows server\",\n  \
            \"hostname\": \"windows\",\n  \
-           \"ncpus\": 4,\n  \
-           \"memory\": 8589934592,\n  \
+           \"ncpus\": {INSTANCE_NCPUS},\n  \
+           \"memory\": {INSTANCE_MEMORY},\n  \
            \"boot_disk\": {{ \"type\": \"attach\", \"name\": \"{installer_disk}\" }},\n  \
            \"disks\": [\n    \
-             {{ \"type\": \"attach\", \"name\": \"windows-system\" }}\n  \
+             {{ \"type\": \"attach\", \"name\": \"{SYSTEM_DISK}\" }}\n  \
            ],\n  \
            \"external_ips\": [ {{ \"type\": \"ephemeral\" }} ],\n  \
            \"start\": true\n\
@@ -2306,6 +2369,67 @@ mod tests {
     fn eta_waits_for_a_meaningful_sample() {
         assert!(eta(std::time::Duration::from_secs(5), 0.001).is_none());
         assert!(eta(std::time::Duration::from_secs(60), 0.5).is_some());
+    }
+
+    #[test]
+    fn json_blocks_are_bare_json() {
+        // Copied verbatim into the file the command reads. Anything before the
+        // opening brace, such as a `# disk.json` header, and the CLI fails with
+        // "expected value at line 1 column 1".
+        for (name, j) in [
+            ("disk.json", system_disk_json()),
+            ("instance.json", instance_json("wininst")),
+            ("boot.json", boot_update_json()),
+        ] {
+            assert!(j.starts_with('{') && j.ends_with('}'), "{name}:\n{j}");
+            assert!(!j.contains('#'), "{name}:\n{j}");
+        }
+    }
+
+    #[test]
+    fn system_disk_command_passes_a_json_body() {
+        // `oxide disk create` will not run without --json-body, and the body is
+        // parsed whole, so the flags it replaces must not appear on the line.
+        let c = system_disk_command("danb");
+        assert_eq!(c, "oxide disk create --project danb --json-body disk.json");
+
+        let j = system_disk_json();
+        assert!(j.contains(&format!("\"name\": \"{SYSTEM_DISK}\"")));
+        assert!(j.contains("\"size\": 107374182400"));
+        assert!(j.contains("\"disk_backend\""));
+        assert!(j.contains("\"type\": \"distributed\""));
+        assert!(j.contains("\"type\": \"blank\", \"block_size\": 512"));
+        // The instance attaches the disk by this name.
+        assert!(
+            instance_json("wininst")
+                .contains(&format!("\"name\": \"{SYSTEM_DISK}\""))
+        );
+    }
+
+    #[test]
+    fn detach_switches_the_boot_disk_on_a_stopped_instance_first() {
+        let c = detach_commands("danb", "wininst");
+        let order: Vec<usize> = [
+            "oxide instance stop",
+            // `stop` returns while still stopping; the next lines need `stopped`.
+            "until oxide instance view --project danb --instance windows \
+             | grep -q '\"run_state\": \"stopped\"'; do sleep 2; done",
+            "oxide instance update --project danb --instance windows --json-body boot.json",
+            "oxide instance disk detach --project danb --instance windows --disk wininst",
+            "oxide instance start",
+        ]
+        .iter()
+        .map(|s| c.find(s).unwrap_or_else(|| panic!("missing: {s}")))
+        .collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{c}");
+
+        let j = boot_update_json();
+        assert!(j.contains(&format!("\"boot_disk\": \"{SYSTEM_DISK}\"")));
+        // The update restates size; it must match what the instance was created with.
+        let created = instance_json("wininst");
+        for field in ["\"ncpus\": 4", "\"memory\": 8589934592"] {
+            assert!(j.contains(field) && created.contains(field), "{field}");
+        }
     }
 
     #[test]

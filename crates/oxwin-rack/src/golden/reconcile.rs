@@ -166,7 +166,7 @@ fn installer_refusal(
         ),
     };
     format!(
-        "the installer disk {disk} is in state `{state}`, {why}\n  {}",
+        "The installer disk {disk} is in state `{state}`, {why}\n  {}",
         commands.join("\n  ")
     )
 }

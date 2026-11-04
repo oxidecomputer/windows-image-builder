@@ -722,7 +722,8 @@ fn build(args: &[String]) -> Result<()> {
     let quiet = flag("quiet");
     let (reporter, printer) = printer(quiet, "copying");
 
-    let result = builder::build(&request, &reporter, &cancel_on_interrupt());
+    let result =
+        builder::build(&request, &reporter, &cancel_on_interrupt(None));
     drop(reporter);
     printer.join().ok();
     let output = result?;
@@ -870,7 +871,7 @@ fn upload(args: &[String]) -> Result<()> {
 
     // Installed before the first request, so an interrupt during the upload is
     // caught rather than killing the process mid-import.
-    let cancel = cancel_on_interrupt();
+    let cancel = cancel_on_interrupt(Some((&project, &spec.name)));
     let rack = oxwin_rack::Rack::connect(&selector, &project)?;
     let (reporter, printer) = printer(flag_in(args, "quiet"), "uploading");
     let result = rack.upload_image(&image, &spec, &reporter, &cancel);
@@ -1004,7 +1005,7 @@ fn watch(args: &[String]) -> Result<()> {
         Some(profile) => oxwin_rack::Selector::Profile(profile),
         None => oxwin_rack::Selector::Environment,
     };
-    let cancel = cancel_on_interrupt();
+    let cancel = cancel_on_interrupt(None);
     let rack = oxwin_rack::Rack::connect(&selector, &project)?;
     let (reporter, printer) = printer(flag_in(args, "quiet"), "waiting");
     let result = rack.watch_install(instance, &opts, &reporter, &cancel);
@@ -1108,7 +1109,7 @@ fn golden(args: &[String]) -> Result<()> {
         Some(profile) => oxwin_rack::Selector::Profile(profile),
         None => oxwin_rack::Selector::Environment,
     };
-    let cancel = cancel_on_interrupt();
+    let cancel = cancel_on_interrupt(Some((&project, &names.installer_disk())));
     let rack = oxwin_rack::Rack::connect(&selector, &project)?;
     let (reporter, printer) = printer(quiet, "working");
     let result = rack.run_golden(&spec, &reporter, &cancel);
@@ -1240,7 +1241,8 @@ fn build_for_golden(
     };
 
     let (reporter, printer) = printer(quiet, "copying");
-    let result = builder::build(&request, &reporter, &cancel_on_interrupt());
+    let result =
+        builder::build(&request, &reporter, &cancel_on_interrupt(None));
     drop(reporter);
     printer.join().ok();
     let output = result?;
@@ -1297,7 +1299,7 @@ fn verify_named(
     if let Some(v) = opt("timeout") {
         opts.timeout = oxwin_rack::golden::watch::parse_duration(&v)?;
     }
-    let cancel = cancel_on_interrupt();
+    let cancel = cancel_on_interrupt(None);
     let rack = oxwin_rack::Rack::connect(&selector, &project)?;
     let (reporter, printer) = printer(quiet, "verifying");
     let result = rack.verify_clone(&names, &opts, &reporter, &cancel);
@@ -1440,15 +1442,31 @@ fn golden_common(
 ///
 /// The second Ctrl-C exits immediately. Teardown talks to the network, so it can hang,
 /// and a cancel that cannot itself be canceled  leaving the disk stranded.
-fn cancel_on_interrupt() -> Cancel {
+///
+/// `importing` is the `(project, disk)` a bulk import may be writing to, so the
+/// abandon message can print commands that run as-is. `None` for the commands that
+/// never import, which have nothing to strand.
+fn cancel_on_interrupt(importing: Option<(&str, &str)>) -> Cancel {
     let cancel = Cancel::new();
     let handler = cancel.clone();
+    let importing = importing.map(|(p, d)| (p.to_string(), d.to_string()));
     let result = ctrlc::set_handler(move || {
         if handler.is_canceled() {
-            eprintln!("\nabandoning. The disk may be left mid-import: run");
-            eprintln!("  oxide disk import stop  --project <p> --disk <d>");
-            eprintln!("  oxide disk import finalize --project <p> --disk <d>");
-            eprintln!("before it can be deleted.");
+            match &importing {
+                Some((project, disk)) => {
+                    eprintln!(
+                        "\nabandoning. The disk may be left mid-import: run"
+                    );
+                    eprintln!(
+                        "  oxide disk import stop     --project {project} --disk {disk}"
+                    );
+                    eprintln!(
+                        "  oxide disk import finalize --project {project} --disk {disk}"
+                    );
+                    eprintln!("before it can be deleted.");
+                }
+                None => eprintln!("\nabandoning."),
+            }
             std::process::exit(130);
         }
         eprintln!("\ncanceling and cleaning up — Ctrl-C again to abandon");
